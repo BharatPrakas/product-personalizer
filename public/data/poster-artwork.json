@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "templateId": "poster-art-text",
+  "templateVersion": 1,
+  "product": { "id": "poster-001", "variantId": "18x24", "name": "Custom Poster, 18 x 24 in" },
+  "assetBaseUrl": "../assets/",
+  "canvas": { "width": 1200, "height": 1600, "background": "#FFFDF7" },
+  "print": { "widthMm": 457.2, "heightMm": 609.6, "warnDpi": 150, "minDpi": 100 },
+  "mockup": {
+    "src": "mockups/poster-frame.jpg",
+    "placement": { "x": 0.275, "y": 0.1, "width": 0.45, "height": 0.8 }
+  },
+  "fonts": [
+    { "id": "serif", "family": "PosterSerifBold", "label": "Serif bold", "src": "fonts/serif-bold.woff2" },
+    { "id": "sans", "family": "PosterSans", "label": "Sans", "src": "fonts/sans-regular.woff2" },
+    { "id": "sans-bold", "family": "PosterSansBold", "label": "Sans bold", "src": "fonts/sans-bold.woff2" }
+  ],
+  "fields": [
+    {
+      "id": "headline",
+      "type": "text",
+      "label": "Headline",
+      "required": true,
+      "maxLength": 30,
+      "fontIds": ["serif", "sans-bold"],
+      "colors": ["#111827", "#296FD7", "#B42318"],
+      "defaultValue": { "text": "Our Adventure", "fontId": "serif", "color": "#111827" }
+    },
+    {
+      "id": "subtitle",
+      "type": "text",
+      "label": "Subtitle",
+      "required": false,
+      "maxLength": 40,
+      "fontIds": ["sans", "serif"],
+      "colors": ["#111827", "#296FD7"],
+      "defaultValue": { "text": "Est. 2026", "fontId": "sans", "color": "#296FD7" }
+    },
+    {
+      "id": "art",
+      "type": "artwork",
+      "label": "Artwork",
+      "helpText": "Pick one illustration, or none.",
+      "required": false,
+      "defaultChoiceId": "sun",
+      "choices": [
+        { "id": "sun", "label": "Sun", "src": "clipart/sun.png" },
+        { "id": "moon", "label": "Moon", "src": "clipart/moon.png" },
+        { "id": "star", "label": "Star", "src": "clipart/star.png" },
+        { "id": "heart", "label": "Heart", "src": "clipart/heart.png" },
+        { "id": "leaf", "label": "Leaf", "src": "clipart/leaf.png" },
+        { "id": "paw", "label": "Paw", "src": "clipart/paw.png" }
+      ]
+    }
+  ],
+  "layers": [
+    { "id": "art-layer", "type": "artwork", "fieldId": "art", "x": 250, "y": 380, "width": 700, "height": 700 },
+    {
+      "id": "headline-layer",
+      "type": "text",
+      "fieldId": "headline",
+      "x": 80,
+      "y": 100,
+      "width": 1040,
+      "height": 220,
+      "fontSize": 150,
+      "minFontSize": 48,
+      "align": "center"
+    },
+    {
+      "id": "subtitle-layer",
+      "type": "text",
+      "fieldId": "subtitle",
+      "x": 80,
+      "y": 1180,
+      "width": 1040,
+      "height": 110,
+      "fontSize": 72,
+      "minFontSize": 30,
+      "align": "center"
+    },
+    { "id": "mark", "type": "fixed-image", "src": "clipart/logo-mark.png", "x": 540, "y": 1420, "width": 120, "height": 120 }
+  ],
+  "displayPrice": { "currency": "INR", "exponent": 2, "baseMinor": 69900, "customizationFeeMinor": 12000 }
+}

@@ -1,0 +1,647 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:zb:product-customizer:config:1",
+  "title": "Product customizer configuration, schema version 1",
+  "description": "Structural contract for <zb-product-customizer> configuration. The element also enforces rules a schema cannot express: unique ids, field/font/layer references, one layer per field, layer geometry inside the canvas, print/canvas and mockup aspect-ratio matching, asset URL policy (http(s) only, no '..' in relative paths, host origin allow-list), and the v1 limits documented in the README.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "templateId",
+    "templateVersion",
+    "product",
+    "canvas",
+    "mockup",
+    "fonts",
+    "fields",
+    "layers"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "templateId": {
+      "$ref": "#/$defs/id"
+    },
+    "templateVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "variantId": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      }
+    },
+    "assetBaseUrl": {
+      "description": "Directory that asset paths are resolved against. Relative values resolve against the absolute config URL (configUrl) or the baseUrl / document base (object config).",
+      "$ref": "#/$defs/url"
+    },
+    "canvas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "background": {
+          "oneOf": [
+            {
+              "const": "transparent"
+            },
+            {
+              "$ref": "#/$defs/color"
+            }
+          ],
+          "default": "transparent"
+        }
+      }
+    },
+    "print": {
+      "description": "Physical size of the canvas. Its aspect ratio must match the canvas. Omit it and the element makes no DPI claims.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "widthMm",
+        "heightMm"
+      ],
+      "properties": {
+        "widthMm": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "heightMm": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "warnDpi": {
+          "type": "number",
+          "minimum": 150,
+          "maximum": 10000
+        },
+        "minDpi": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 10000
+        }
+      }
+    },
+    "mockup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "src",
+        "placement"
+      ],
+      "properties": {
+        "src": {
+          "$ref": "#/$defs/url"
+        },
+        "placement": {
+          "description": "0-1 rectangle relative to the natural size of the mockup image; its pixel aspect ratio must match the canvas.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "properties": {
+            "x": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "y": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "width": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "height": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "fonts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "family",
+          "src"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "family": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9 _-]{0,63}$"
+          },
+          "src": {
+            "$ref": "#/$defs/url"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      }
+    },
+    "fields": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/textField"
+          },
+          {
+            "$ref": "#/$defs/imageField"
+          },
+          {
+            "$ref": "#/$defs/artworkField"
+          }
+        ]
+      }
+    },
+    "layers": {
+      "description": "Back to front. Editable layers reference exactly one field of the same type; every field needs exactly one layer.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/imageLayer"
+          },
+          {
+            "$ref": "#/$defs/textLayer"
+          },
+          {
+            "$ref": "#/$defs/artworkLayer"
+          },
+          {
+            "$ref": "#/$defs/fixedImageLayer"
+          }
+        ]
+      }
+    },
+    "displayPrice": {
+      "description": "Indicative price shown to the shopper. Integer minor units. Never authoritative.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currency",
+        "exponent",
+        "baseMinor",
+        "customizationFeeMinor"
+      ],
+      "properties": {
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "exponent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "baseMinor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "customizationFeeMinor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "color": {
+      "type": "string",
+      "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "description": "Relative path or absolute http(s) URL. No data:, blob:, javascript: or file: URLs."
+    },
+    "textField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "label",
+        "required",
+        "maxLength",
+        "fontIds",
+        "colors"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "text"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "helpText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "maxLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "fontIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "colors": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/color"
+          }
+        },
+        "defaultValue": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string",
+              "maxLength": 1000
+            },
+            "fontId": {
+              "$ref": "#/$defs/id"
+            },
+            "color": {
+              "$ref": "#/$defs/color"
+            }
+          }
+        }
+      }
+    },
+    "imageField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "label",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "image"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "helpText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "artworkField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "label",
+        "required",
+        "choices"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "artwork"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "helpText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "defaultChoiceId": {
+          "$ref": "#/$defs/id"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "label",
+              "src"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 60
+              },
+              "src": {
+                "$ref": "#/$defs/url"
+              },
+              "thumbnailSrc": {
+                "$ref": "#/$defs/url"
+              }
+            }
+          }
+        }
+      }
+    },
+    "imageLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "fieldId",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "image"
+        },
+        "fieldId": {
+          "$ref": "#/$defs/id"
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    "artworkLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "fieldId",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "artwork"
+        },
+        "fieldId": {
+          "$ref": "#/$defs/id"
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        }
+      }
+    },
+    "textLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "fieldId",
+        "x",
+        "y",
+        "width",
+        "height",
+        "fontSize",
+        "minFontSize",
+        "align"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "text"
+        },
+        "fieldId": {
+          "$ref": "#/$defs/id"
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        },
+        "fontSize": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "minFontSize": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "align": {
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ]
+        }
+      }
+    },
+    "fixedImageLayer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "src",
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "const": "fixed-image"
+        },
+        "src": {
+          "$ref": "#/$defs/url"
+        },
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 4096
+        }
+      }
+    }
+  }
+}

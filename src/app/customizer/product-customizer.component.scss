@@ -1,0 +1,677 @@
+// All styling for the customizer and its child components lives here. This component uses
+// ShadowDom encapsulation, so these rules apply only inside the element's shadow root, and
+// the host page's CSS cannot reach them (except inherited properties, which :host resets).
+//
+// Public theming hooks (set them on the <zb-product-customizer> element or any ancestor):
+//   --customizer-primary       default #296FD7 (ZenBasket blue)
+//   --customizer-font-family   default system UI stack
+//   --customizer-radius        default 8px
+//   --customizer-border-color  default #6b7280 (3:1+ against white, as WCAG 1.4.11 requires for controls)
+
+:host {
+  all: initial; // stop inherited host-page typography / colour / direction leaking in
+  display: block;
+  container-type: inline-size; // layout follows the element's width, not the viewport's
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.zbc {
+  // Reset every inherited property the host page may have set on <zb-product-customizer> itself
+  // (letter-spacing, text-transform, white-space, ...). Custom properties are not affected by `all`.
+  all: initial;
+  display: block;
+  box-sizing: border-box;
+
+  --c-primary: var(--customizer-primary, #296fd7);
+  --c-radius: var(--customizer-radius, 8px);
+  --c-border: var(--customizer-border-color, #6b7280);
+  --c-border-soft: #d1d5db;
+  --c-text: #1f2937;
+  --c-muted: #4b5563;
+  --c-error: #b42318;
+  --c-warn: #8a5300;
+  --c-ok: #0b6b3a;
+  --c-surface: #ffffff;
+  --c-tint: color-mix(in srgb, var(--c-primary) 8%, #ffffff);
+
+  // Typography lives here, not on :host: a host-page rule such as `* { font-family: ... }` matches the
+  // host element itself and would beat :host styles, but it cannot match elements inside the shadow root.
+  width: 100%;
+  min-width: 0;
+  padding: 16px;
+  color: var(--c-text);
+  background: #ffffff; // a fixed light surface keeps WCAG contrast whatever the host page looks like
+  border-radius: var(--c-radius);
+  font-family: var(
+    --customizer-font-family,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif
+  );
+  font-size: 16px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.5;
+  letter-spacing: normal;
+  text-align: start;
+  text-transform: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+h2,
+p,
+ul,
+fieldset,
+legend {
+  margin: 0;
+  padding: 0;
+}
+
+fieldset {
+  border: 0;
+  min-width: 0;
+}
+
+// ---- layout ---------------------------------------------------------------------------------
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+.preview-col,
+.controls-col {
+  min-width: 0;
+}
+
+.controls-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.product-name {
+  font-size: 1.25rem;
+  line-height: 1.3;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+@container (min-width: 760px) {
+  .layout {
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 32px;
+  }
+
+  .preview-col {
+    position: sticky;
+    top: 16px;
+  }
+}
+
+// ---- preview --------------------------------------------------------------------------------
+
+.preview-frame {
+  width: 100%;
+  border: 1px solid var(--c-border-soft);
+  border-radius: var(--c-radius);
+  overflow: hidden;
+  background: #f3f4f6;
+}
+
+.preview-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+// ---- fields ---------------------------------------------------------------------------------
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.label {
+  display: block;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.label.sub {
+  font-size: 0.9375rem;
+  margin-top: 6px;
+}
+
+.req {
+  font-weight: 400;
+  color: var(--c-muted);
+}
+
+.help,
+.count {
+  font-size: 0.875rem;
+  color: var(--c-muted);
+}
+
+.help-warn {
+  color: var(--c-warn);
+}
+
+.count-over {
+  color: var(--c-error);
+  font-weight: 600;
+}
+
+.control {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  font: inherit;
+  color: var(--c-text);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--c-radius);
+}
+
+.control[aria-invalid='true'] {
+  border-color: var(--c-error);
+  border-width: 2px;
+}
+
+select.control {
+  appearance: auto;
+}
+
+.swatch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+
+.swatch-dot {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--c-border);
+}
+
+.swatch input:checked + .swatch-dot {
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 5px var(--c-primary);
+}
+
+.swatch:has(input:focus-visible) {
+  outline: 3px solid var(--c-primary);
+  outline-offset: 1px;
+  border-radius: 8px;
+}
+
+// ---- artwork cards --------------------------------------------------------------------------
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px;
+  cursor: pointer;
+  text-align: center;
+  background: var(--c-surface);
+  border: 2px solid var(--c-border-soft);
+  border-radius: var(--c-radius);
+}
+
+.card:hover {
+  border-color: var(--c-border);
+}
+
+.card:has(input:checked) {
+  border-color: var(--c-primary);
+  background: var(--c-tint);
+}
+
+.card:has(input:checked)::after {
+  content: '✓';
+  position: absolute;
+  top: 2px;
+  right: 7px;
+  font-weight: 700;
+  color: var(--c-primary);
+}
+
+.card:has(input:focus-visible) {
+  outline: 3px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.card-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+
+  img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+}
+
+.card-none {
+  font-size: 1.75rem;
+  color: var(--c-muted);
+  border: 1px dashed var(--c-border);
+  border-radius: var(--c-radius);
+}
+
+.card-name {
+  font-size: 0.875rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+// ---- photo crop -----------------------------------------------------------------------------
+
+.crop {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.crop-canvas {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  background: #e5e7eb;
+  border: 1px solid var(--c-border);
+  border-radius: var(--c-radius);
+  cursor: grab;
+  touch-action: none; // dragging pans the photo instead of scrolling the page
+}
+
+.crop-canvas:active {
+  cursor: grabbing;
+}
+
+.crop-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 320px;
+}
+
+.range {
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--c-primary);
+}
+
+.dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  grid-template-areas:
+    '. up .'
+    'left . right'
+    '. down .';
+  gap: 4px;
+  justify-content: center;
+}
+
+.dpad-up {
+  grid-area: up;
+}
+.dpad-left {
+  grid-area: left;
+}
+.dpad-right {
+  grid-area: right;
+}
+.dpad-down {
+  grid-area: down;
+}
+
+// ---- buttons --------------------------------------------------------------------------------
+
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 16px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--c-primary);
+  background: var(--c-surface);
+  border: 2px solid var(--c-primary);
+  border-radius: var(--c-radius);
+  cursor: pointer;
+  text-align: center;
+}
+
+.btn.icon {
+  padding: 0;
+  font-size: 1rem;
+}
+
+.btn.primary {
+  color: #fff;
+  background: var(--c-primary);
+}
+
+.btn.danger {
+  color: #fff;
+  background: var(--c-error);
+  border-color: var(--c-error);
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn:hover:not(:disabled):not([aria-disabled='true']) {
+  filter: brightness(0.94);
+}
+
+.btn:focus-visible,
+.btn:focus-within,
+.control:focus-visible,
+.crop-canvas:focus-visible,
+.range:focus-visible {
+  outline: 3px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.btn.primary:focus-visible {
+  outline-color: var(--c-text);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.file-btn {
+  overflow: hidden;
+}
+
+.upload-btn {
+  align-self: flex-start;
+}
+
+// The real <input type=file> stays in the tab order and receives clicks; only its look is hidden.
+.file-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+// ---- messages -------------------------------------------------------------------------------
+
+.errors {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.errors:empty {
+  display: none;
+}
+
+.error,
+.warning {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.9375rem;
+}
+
+.error {
+  color: var(--c-error);
+  font-weight: 600;
+}
+
+.warning {
+  color: var(--c-warn);
+}
+
+// Icon shapes make the state clear without relying on colour alone.
+.error-mark,
+.warning-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25em;
+  height: 1.25em;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.error-mark {
+  background: var(--c-error);
+  border-radius: 50%;
+}
+
+.warning-mark {
+  background: var(--c-warn);
+  border-radius: 3px;
+}
+
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9375rem;
+  color: var(--c-muted);
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  color: var(--c-muted);
+  background: var(--c-tint);
+  border-radius: var(--c-radius);
+}
+
+.notice-warn {
+  color: var(--c-warn);
+  background: #fff7e6;
+  border: 1px solid #f0c36d;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  color: var(--c-text);
+  background: #fef3f2;
+  border: 2px solid var(--c-error);
+  border-radius: var(--c-radius);
+}
+
+.panel-title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--c-error);
+}
+
+.issues {
+  padding-left: 20px;
+  font-size: 0.875rem;
+}
+
+.issue-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+
+.spinner {
+  display: inline-block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  border: 2px solid var(--c-border-soft);
+  border-top-color: var(--c-primary);
+  border-radius: 50%;
+  animation: zbc-spin 0.8s linear infinite;
+}
+
+@keyframes zbc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 3s;
+  }
+}
+
+// ---- action bar -----------------------------------------------------------------------------
+
+// The action bar's pieces become direct children of the form's flex column. They are deliberately
+// NOT sticky: a bar pinned over the page would obscure fields and focused controls (WCAG 2.4.11,
+// axe "target-size"), and inside a shadow root the widget cannot set scroll-padding on the host
+// page to compensate. The blockers and status sit right above the buttons instead.
+app-action-bar {
+  display: contents;
+}
+
+.action-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--c-border-soft);
+}
+
+.price {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.price-total {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.price-note {
+  font-size: 0.8125rem;
+  color: var(--c-muted);
+}
+
+.blockers {
+  font-size: 0.9375rem;
+  color: var(--c-muted);
+
+  ul {
+    padding-left: 20px;
+  }
+}
+
+.blockers-title {
+  font-weight: 600;
+}
+
+.status:empty {
+  display: none;
+}
+
+.status-error {
+  color: var(--c-error);
+  font-weight: 600;
+}
+
+.status-ok {
+  color: var(--c-ok);
+  font-weight: 600;
+}
+
+.confirm {
+  padding: 12px;
+  background: #fef3f2;
+  border: 1px solid var(--c-error);
+  border-radius: var(--c-radius);
+
+  .btn-row {
+    margin-top: 8px;
+  }
+}
+
+.confirm-title {
+  font-weight: 600;
+}
+
+.action-row .primary {
+  flex: 1 1 200px;
+}
+
+.action-row .btn-row {
+  flex-wrap: nowrap;
+}

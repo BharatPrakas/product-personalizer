@@ -1,0 +1,17 @@
+/* Emits the public .d.ts files (models + element contract) that ship next to the element bundle. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "dist/element/types",
+    "rootDir": "src/app/customizer/models",
+    "types": [],
+    "composite": false
+  },
+  "files": [],
+  "include": [
+    "src/app/customizer/models/*.ts"
+  ]
+}

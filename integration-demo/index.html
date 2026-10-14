@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plain HTML host for zb-product-customizer</title>
+    <style>
+      /* Deliberately a little hostile: broad host-page rules must not break the element's internals. */
+      * {
+        font-family: Georgia, serif;
+      }
+      body {
+        margin: 0;
+        color: #222;
+        background: #fafafa;
+        line-height: 1.3;
+      }
+      main {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 0 8px;
+      }
+      button,
+      select {
+        min-height: 44px;
+        padding: 6px 12px;
+        font-size: 1rem;
+      }
+      label {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        min-height: 44px;
+      }
+      .instance {
+        margin: 24px 0;
+        padding: 12px;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .note {
+        font-size: 0.875rem;
+        color: #555;
+      }
+      pre {
+        max-height: 200px;
+        overflow: auto;
+        padding: 8px;
+        font: 0.75rem/1.4 monospace;
+        background: #f0f0f0;
+      }
+      /* Theme variables from the element's public contract. */
+      zb-product-customizer {
+        --customizer-primary: #296fd7;
+        --customizer-radius: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Plain HTML host</h1>
+      <p>
+        No Angular here: this page loads one module (<code>../product-customizer.js</code>), assigns
+        properties and listens for
+        <code>customizer-*</code> events. The host below plays the store: it keeps the saved payload
+        <strong>in memory only</strong> and answers with <code>saveResult</code>.
+      </p>
+      <p class="note">
+        Downloaded JSON never contains image bytes. To restore a design later a host must also keep
+        the uploaded image files (and the PNGs).
+      </p>
+      <p><button type="button" id="add">Add another independent instance</button></p>
+      <div id="slots"></div>
+      <h2>Event log</h2>
+      <pre id="log" aria-live="off"></pre>
+    </main>
+
+    <script type="module">
+      import '../product-customizer.js';
+      await customElements.whenDefined('zb-product-customizer');
+
+      const SAMPLES = {
+        tote: { label: 'Tote: name + photo', url: '../data/tote-photo.json' },
+        tshirt: { label: 'T-shirt: text only', url: '../data/tshirt-text.json' },
+        poster: { label: 'Poster: text + artwork', url: '../data/poster-artwork.json' },
+      };
+      const logEl = document.getElementById('log');
+      let counter = 0;
+      const log = (line) => {
+        logEl.textContent = `${line}\n${logEl.textContent}`.split('\n').slice(0, 60).join('\n');
+      };
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      // Host adapter placeholder: a real host uploads detail.assets / the PNG Blobs and stores
+      // detail.customization durably, de-duplicating on detail.requestId.
+      async function persistInDemo(instance, detail) {
+        await delay(500);
+        instance.prepared.set(detail.requestId, detail);
+        instance.last = detail;
+        instance.refreshButtons();
+      }
+
+      function mount(instance, { initialCustomization, assetMap } = {}) {
+        const slot = instance.slot;
+        slot.replaceChildren();
+        const el = document.createElement('zb-product-customizer');
+        // Objects are assigned as properties (never serialised into attributes); the element is appended last.
+        el.configUrl = SAMPLES[instance.sample].url;
+        if (initialCustomization) el.initialCustomization = initialCustomization;
+        if (assetMap) el.assetMap = assetMap;
+        el.disabled = instance.disabled;
+        const tag = `#${instance.id}`;
+        el.addEventListener('customizer-ready', (e) =>
+          log(`${tag} ready ${e.detail.templateId} v${e.detail.templateVersion}`),
+        );
+        el.addEventListener('customizer-change', (e) =>
+          log(
+            `${tag} change valid=${e.detail.valid} dirty=${e.detail.dirty} errors=${e.detail.errors.length}`,
+          ),
+        );
+        el.addEventListener('customizer-error', (e) =>
+          log(`${tag} error ${e.detail.code}: ${e.detail.message}`),
+        );
+        el.addEventListener('customizer-save', async (event) => {
+          const { requestId } = event.detail;
+          log(
+            `${tag} save request ${requestId.slice(0, 8)}${instance.prepared.has(requestId) ? ' (retry, de-duplicated)' : ''}`,
+          );
+          if (instance.mode === 'silent') return;
+          try {
+            if (instance.mode === 'error') throw new Error('demo failure');
+            await persistInDemo(instance, event.detail);
+            el.saveResult = {
+              requestId,
+              status: 'success',
+              message: 'Prepared in demo. Nothing was sent to a server.',
+            };
+          } catch {
+            el.saveResult = {
+              requestId,
+              status: 'error',
+              message: 'Unable to save. Please try again.',
+            };
+          }
+        });
+        instance.el = el;
+        slot.append(el);
+      }
+
+      function download(name, blob) {
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'), { href: url, download: name });
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      function addInstance(sample) {
+        const id = `i${++counter}`;
+        const instance = {
+          id,
+          sample,
+          mode: 'success',
+          disabled: false,
+          prepared: new Map(),
+          last: null,
+          el: null,
+        };
+        const root = document.createElement('section');
+        root.className = 'instance';
+        root.setAttribute('aria-label', `Instance ${counter}`);
+        root.innerHTML = `
+      <div class="toolbar">
+        <strong>#${id}</strong>
+        <label>Template
+          <select data-role="sample">${Object.entries(SAMPLES)
+            .map(([k, v]) => `<option value="${k}">${v.label}</option>`)
+            .join('')}</select>
+        </label>
+        <label>Host answers
+          <select data-role="mode">
+            <option value="success">Success</option><option value="error">Failure</option><option value="silent">Never answers</option>
+          </select>
+        </label>
+        <label><input type="checkbox" data-role="disabled"> Disabled</label>
+        <button type="button" data-role="json" disabled>Download JSON</button>
+        <button type="button" data-role="artwork" disabled>Artwork PNG</button>
+        <button type="button" data-role="preview" disabled>Preview PNG</button>
+        <button type="button" data-role="restore" disabled>Restore last save in a fresh element</button>
+        <button type="button" data-role="remove">Remove</button>
+      </div>
+      <div data-role="slot"></div>`;
+        const $ = (role) => root.querySelector(`[data-role="${role}"]`);
+        instance.slot = $('slot');
+        instance.refreshButtons = () =>
+          ['json', 'artwork', 'preview', 'restore'].forEach((r) => {
+            $(r).disabled = !instance.last;
+          });
+        $('sample').value = sample;
+        $('sample').addEventListener('change', (e) => {
+          instance.sample = e.target.value;
+          instance.last = null;
+          instance.refreshButtons();
+          mount(instance); // new product: a fresh element, nothing restored
+        });
+        $('mode').addEventListener('change', (e) => {
+          instance.mode = e.target.value;
+        });
+        $('disabled').addEventListener('change', (e) => {
+          instance.disabled = e.target.checked;
+          instance.el.disabled = e.target.checked;
+        });
+        $('json').addEventListener('click', () =>
+          download(
+            'customization.json',
+            new Blob([JSON.stringify(instance.last.customization, null, 2)], {
+              type: 'application/json',
+            }),
+          ),
+        );
+        $('artwork').addEventListener('click', () =>
+          download('artwork.png', instance.last.artworkBlob),
+        );
+        $('preview').addEventListener('click', () =>
+          download('preview.png', instance.last.previewBlob),
+        );
+        $('restore').addEventListener('click', () => {
+          const { customization, assets } = instance.last;
+          mount(instance, {
+            initialCustomization: customization,
+            assetMap: new Map(assets.map((asset) => [asset.assetId, asset.blob])),
+          });
+        });
+        $('remove').addEventListener('click', () => {
+          root.remove();
+          log(`#${id} removed`);
+        });
+        document.getElementById('slots').append(root);
+        mount(instance);
+      }
+
+      document.getElementById('add').addEventListener('click', () => addInstance('poster'));
+      addInstance('tote');
+    </script>
+  </body>
+</html>

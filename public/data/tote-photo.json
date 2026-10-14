@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "templateId": "tote-name-photo",
+  "templateVersion": 1,
+  "product": { "id": "tote-001", "variantId": "natural", "name": "Personalized Tote" },
+  "assetBaseUrl": "../assets/",
+  "canvas": { "width": 1200, "height": 1200, "background": "transparent" },
+  "print": { "widthMm": 203.2, "heightMm": 203.2, "warnDpi": 150, "minDpi": 100 },
+  "mockup": {
+    "src": "mockups/tote-natural.jpg",
+    "placement": { "x": 0.25, "y": 0.33, "width": 0.5, "height": 0.5 }
+  },
+  "fonts": [
+    { "id": "sans", "family": "CustomizerSans", "label": "Sans", "src": "fonts/sans-regular.woff2" },
+    { "id": "serif", "family": "CustomizerSerif", "label": "Serif bold", "src": "fonts/serif-bold.woff2" }
+  ],
+  "fields": [
+    {
+      "id": "name",
+      "type": "text",
+      "label": "Your name",
+      "helpText": "Shown under your photo.",
+      "required": true,
+      "maxLength": 24,
+      "fontIds": ["sans", "serif"],
+      "colors": ["#296FD7", "#111827"],
+      "defaultValue": { "text": "", "fontId": "sans", "color": "#296FD7" }
+    },
+    {
+      "id": "photo",
+      "type": "image",
+      "label": "Your photo",
+      "helpText": "Square crop. Drag, zoom or use the buttons to frame it.",
+      "required": true
+    },
+    {
+      "id": "motif",
+      "type": "artwork",
+      "label": "Decoration",
+      "required": false,
+      "choices": [
+        { "id": "star", "label": "Star", "src": "clipart/star.png" },
+        { "id": "heart", "label": "Heart", "src": "clipart/heart.png" },
+        { "id": "moon", "label": "Moon", "src": "clipart/moon.png" },
+        { "id": "sun", "label": "Sun", "src": "clipart/sun.png" },
+        { "id": "leaf", "label": "Leaf", "src": "clipart/leaf.png" },
+        { "id": "paw", "label": "Paw", "src": "clipart/paw.png" }
+      ]
+    }
+  ],
+  "layers": [
+    { "id": "photo-layer", "type": "image", "fieldId": "photo", "x": 200, "y": 100, "width": 800, "height": 800 },
+    {
+      "id": "name-layer",
+      "type": "text",
+      "fieldId": "name",
+      "x": 100,
+      "y": 940,
+      "width": 1000,
+      "height": 140,
+      "fontSize": 90,
+      "minFontSize": 36,
+      "align": "center"
+    },
+    { "id": "motif-layer", "type": "artwork", "fieldId": "motif", "x": 1050, "y": 50, "width": 100, "height": 100 }
+  ],
+  "displayPrice": { "currency": "INR", "exponent": 2, "baseMinor": 49900, "customizationFeeMinor": 10000 }
+}

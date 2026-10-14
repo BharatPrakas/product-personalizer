@@ -1,0 +1,118 @@
+<section class="zbc" aria-label="Product customizer">
+  @switch (state.status()) {
+    @case ('awaiting-config') {
+      <p class="notice" role="status">Waiting for configuration…</p>
+    }
+    @case ('loading') {
+      <p class="notice" role="status">
+        <span class="spinner" aria-hidden="true"></span> Loading customizer…
+      </p>
+    }
+    @case ('invalid-config') {
+      <div class="panel" role="alert">
+        <h2 class="panel-title">This product can't be customized right now</h2>
+        <p>{{ failure()?.message }}</p>
+        @if (failure()?.issues?.length) {
+          <ul class="issues">
+            @for (issue of failure()!.issues.slice(0, 8); track $index) {
+              <li>
+                <span class="issue-path">{{ issue.path || 'config' }}</span> {{ issue.message }}
+              </li>
+            }
+          </ul>
+        }
+      </div>
+    }
+    @case ('asset-error') {
+      <div class="panel" role="alert">
+        <h2 class="panel-title">A required image or font is missing</h2>
+        <p>{{ failure()?.message }}</p>
+      </div>
+    }
+    @case ('ready') {
+      @if (state.config(); as config) {
+        <div class="layout">
+          <div class="preview-col">
+            <h2 class="product-name">{{ config.product.name }}</h2>
+            @if (state.mockup(); as mockup) {
+              @if (state.evaluation(); as evaluation) {
+                <app-preview
+                  [mockup]="mockup"
+                  [placement]="config.mockup.placement"
+                  [scene]="evaluation.scene"
+                  [label]="previewLabel()"
+                />
+              }
+            }
+          </div>
+
+          <form
+            class="controls-col"
+            novalidate
+            aria-label="Personalization options"
+            (submit)="$event.preventDefault()"
+          >
+            @for (notice of restoreNotices(); track notice) {
+              <p class="notice notice-warn" role="status">
+                <span class="warning-mark" aria-hidden="true">i</span> {{ notice }}
+              </p>
+            }
+
+            @for (field of config.fields; track field.id) {
+              @switch (field.type) {
+                @case ('text') {
+                  <app-text-field
+                    [field]="asText(field)"
+                    [allFonts]="config.fonts"
+                    [value]="textValue(field)"
+                    [errors]="errorsFor(field.id)"
+                    [disabled]="editingLocked()"
+                    (changed)="state.setText(field.id, $event)"
+                    (blurred)="state.touch(field.id)"
+                  />
+                }
+                @case ('image') {
+                  <app-photo-field
+                    [field]="field"
+                    [view]="state.photoViews()[field.id] ?? null"
+                    [busy]="isBusy(field.id)"
+                    [uploadError]="uploadErrorFor(field.id)"
+                    [errors]="errorsFor(field.id)"
+                    [warnings]="warningsFor(field.id)"
+                    [disabled]="editingLocked()"
+                    (file)="state.uploadImage(field.id, $event)"
+                    (pan)="state.panImage(field.id, $event.dx, $event.dy)"
+                    (zoomTo)="state.zoomImage(field.id, $event)"
+                    (resetCrop)="state.resetCrop(field.id)"
+                    (remove)="state.removeImage(field.id)"
+                    (blurred)="state.touch(field.id)"
+                  />
+                }
+                @case ('artwork') {
+                  <app-artwork-field
+                    [field]="asArtwork(field)"
+                    [value]="artworkValue(field)"
+                    [errors]="errorsFor(field.id)"
+                    [disabled]="editingLocked()"
+                    (changed)="state.setArtwork(field.id, $event); state.touch(field.id)"
+                  />
+                }
+              }
+            }
+
+            <app-action-bar
+              [price]="price()"
+              [blockers]="blockers()"
+              [state]="save.state()"
+              [message]="save.message()"
+              [saveDisabled]="saveDisabled()"
+              [resetDisabled]="resetDisabled()"
+              (save)="onSave()"
+              (reset)="onReset()"
+            />
+          </form>
+        </div>
+      }
+    }
+  }
+</section>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- A strict policy a security-minded host might use: no inline script, no eval, nonce-only styles,
+       and network access limited to the page's own origin. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'nonce-zbtest123'; img-src 'self'; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="csp-nonce" content="zbtest123" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Test host page (strict CSP)</title>
+  </head>
+  <body>
+    <h1>Test host (strict CSP)</h1>
+    <div id="slots"></div>
+    <script type="module" src="host.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+/* The custom-element bundle: only the registration entry (and what it imports) is compiled, never the demo app. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "files": [
+    "src/main.element.ts"
+  ],
+  "include": []
+}
