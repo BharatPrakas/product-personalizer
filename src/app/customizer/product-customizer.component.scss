@@ -675,3 +675,125 @@ app-action-bar {
 .action-row .btn-row {
   flex-wrap: nowrap;
 }
+
+// ---- variants, views, area groups ------------------------------------------------------------
+
+.area-group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--c-border-soft);
+}
+
+.group-title {
+  margin: 0;
+  font-size: 1.0625rem;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 14px;
+  cursor: pointer;
+  background: var(--c-surface);
+  border: 2px solid var(--c-border-soft);
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.chip:hover {
+  border-color: var(--c-border);
+}
+
+.chip-selected {
+  border-color: var(--c-primary);
+  background: var(--c-tint);
+}
+
+.chip:has(input:focus-visible) {
+  outline: 3px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.chip-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--c-border);
+}
+
+.view-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.view-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 76px;
+  padding: 6px;
+  cursor: pointer;
+  background: var(--c-surface);
+  border: 2px solid var(--c-border-soft);
+  border-radius: var(--c-radius);
+}
+
+.view-selected {
+  border-color: var(--c-primary);
+  background: var(--c-tint);
+}
+
+.view-card:has(input:focus-visible) {
+  outline: 3px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.view-thumb {
+  display: block;
+  max-width: 64px;
+  max-height: 64px;
+  border-radius: 4px;
+}
+
+.view-name {
+  font-size: 0.8125rem;
+  line-height: 1.2;
+}
+
+.style-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn.toggle {
+  padding: 0;
+  min-width: 44px;
+}
+
+.btn.toggle[aria-pressed='true'] {
+  color: #fff;
+  background: var(--c-primary);
+}
+
+.underlined {
+  text-decoration: underline;
+}

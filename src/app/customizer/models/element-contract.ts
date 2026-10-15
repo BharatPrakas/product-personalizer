@@ -4,6 +4,7 @@
  */
 
 import type { CustomizerConfig } from './config.models';
+import type { ProductConfig } from './product.models';
 import type { AssetMapInput, Customization } from './draft.models';
 import type {
   CustomizerChangeDetail,
@@ -24,8 +25,11 @@ export interface ZbProductCustomizerEventMap {
 }
 
 export interface ZbProductCustomizerElement extends HTMLElement {
-  /** Full configuration object. Replace rather than mutate. Exclusive with `configUrl`. */
-  config: CustomizerConfig | null;
+  /**
+   * Full configuration object: schema version 2 (`ProductConfig`) or the original version 1
+   * (`CustomizerConfig`). Replace rather than mutate. Exclusive with `configUrl`.
+   */
+  config: ProductConfig | CustomizerConfig | null;
   /** URL of a JSON configuration (attribute `config-url`). Exclusive with `config`. */
   configUrl: string | null;
   /** Base for relative asset paths in object configuration (attribute `base-url`). */
@@ -36,6 +40,11 @@ export interface ZbProductCustomizerElement extends HTMLElement {
   assetMap: AssetMapInput | null;
   /** Host-controlled allow-list of asset origins (the page's own origin is always allowed). */
   allowedAssetOrigins: readonly string[] | null;
+  /**
+   * Permits `idb:` and inline `data:image/` sources in the configuration. Only for the standalone
+   * authoring app, whose assets live in the browser; leave off for hosted configurations.
+   */
+  allowLocalAssets: boolean;
   /** Disables Save and all inputs (attribute `disabled`). */
   disabled: boolean;
   /** Host acknowledgement of a `customizer-save` request. */

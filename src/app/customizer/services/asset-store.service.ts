@@ -1,18 +1,24 @@
 import { Service, inject, signal } from '@angular/core';
-import { CustomizerConfig } from '../models/config.models';
+import { ProductConfig } from '../models/product.models';
 import { LocalAsset } from '../util/scene';
 import { ImageService } from './image.service';
 
 const LOAD_CONCURRENCY = 6;
 
 /** Absolute URLs of every raster the configuration needs besides the shopper's photos. */
-export function staticAssetUrls(config: CustomizerConfig): string[] {
-  const urls = new Set<string>([config.mockup.src]);
+export function staticAssetUrls(config: ProductConfig): string[] {
+  const urls = new Set<string>();
+  for (const mockup of config.mockups) {
+    urls.add(mockup.src);
+    for (const overlay of mockup.overlays ?? []) urls.add(overlay.src);
+  }
   for (const field of config.fields) {
     if (field.type === 'artwork') field.choices.forEach((choice) => urls.add(choice.src));
   }
-  for (const layer of config.layers) {
-    if (layer.type === 'fixed-image') urls.add(layer.src);
+  for (const artwork of config.artworks) {
+    for (const layer of artwork.layers) {
+      if (layer.type === 'fixed-image') urls.add(layer.src);
+    }
   }
   return [...urls];
 }
@@ -33,11 +39,12 @@ export class AssetStore {
    * Load into a staging map without touching live state, so a superseded load can be discarded.
    * Bitmaps are closed again if the load fails or is aborted.
    */
-  async loadStatic(
-    config: CustomizerConfig,
-    abort: AbortSignal,
-  ): Promise<Map<string, ImageBitmap>> {
-    const urls = staticAssetUrls(config);
+  async loadStatic(config: ProductConfig, abort: AbortSignal): Promise<Map<string, ImageBitmap>> {
+    return this.loadUrls(staticAssetUrls(config), abort);
+  }
+
+  /** Load `urls` into a staging map without touching live state. */
+  async loadUrls(urls: readonly string[], abort: AbortSignal): Promise<Map<string, ImageBitmap>> {
     const loaded = new Map<string, ImageBitmap>();
     const queue = [...urls];
     let failed = false;
@@ -69,6 +76,41 @@ export class AssetStore {
   adoptStatic(next: Map<string, ImageBitmap>): void {
     closeAll(this.staticImages().values());
     this.staticImages.set(next);
+  }
+
+  /**
+   * Editor use: make sure every URL of `config` is decoded, keeping what is already loaded and
+   * releasing images the configuration no longer references. Failed URLs are reported, not thrown,
+   * so one broken asset cannot blank the whole editor.
+   */
+  async syncStatic(config: ProductConfig, abort: AbortSignal): Promise<string[]> {
+    const wanted = new Set(staticAssetUrls(config));
+    const current = this.staticImages();
+    const missing = [...wanted].filter((url) => !current.has(url));
+    const failed: string[] = [];
+    const loaded = new Map<string, ImageBitmap>();
+    await Promise.all(
+      missing.map(async (url) => {
+        try {
+          loaded.set(url, await this.images.fetchBitmap(url, abort));
+        } catch (error) {
+          if (abort.aborted) throw error;
+          failed.push(url);
+        }
+      }),
+    );
+    if (abort.aborted) {
+      closeAll(loaded.values());
+      abort.throwIfAborted();
+    }
+    const next = new Map<string, ImageBitmap>();
+    for (const [url, bitmap] of this.staticImages()) {
+      if (wanted.has(url)) next.set(url, bitmap);
+      else bitmap.close();
+    }
+    for (const [url, bitmap] of loaded) next.set(url, bitmap);
+    this.staticImages.set(next);
+    return failed;
   }
 
   addLocal(asset: LocalAsset): void {

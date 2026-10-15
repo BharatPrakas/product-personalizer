@@ -9,7 +9,6 @@
     "src/**/*.ts"
   ],
   "exclude": [
-    "src/**/*.spec.ts",
-    "src/app/app.routes.ts"
+    "src/**/*.spec.ts"
   ]
 }

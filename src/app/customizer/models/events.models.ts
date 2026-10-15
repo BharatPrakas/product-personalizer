@@ -1,4 +1,10 @@
-import type { Customization, FieldError, SavedAsset } from './draft.models';
+import type {
+  Customization,
+  FieldError,
+  SavedAreaArtwork,
+  SavedAsset,
+  SavedPreview,
+} from './draft.models';
 
 export type CustomizerErrorCode =
   | 'invalid-config'
@@ -21,8 +27,12 @@ export interface SaveResult {
 
 export interface CustomizerReadyDetail {
   productId: string;
+  /** Configuration id (`templateId` in schema version 1). */
   templateId: string;
+  /** Configuration version (`templateVersion` in schema version 1). */
   templateVersion: number;
+  /** Present for schema-version-2 configurations only (version-1 detail is unchanged). */
+  schemaVersion?: 2;
 }
 
 export interface CustomizerChangeDetail {
@@ -36,10 +46,14 @@ export interface CustomizerSaveDetail {
   /** Unique per newly frozen draft; reused unchanged when the shopper retries after a timeout. */
   requestId: string;
   customization: Customization;
-  /** Mockup + artwork, longest edge at most 1200px. */
+  /** Mockup + artwork of the first active mockup, longest edge at most 1200px. */
   previewBlob: Blob;
-  /** Artwork only, at the configured canvas pixel size. */
+  /** Artwork of the first active printable area, at its configured canvas pixel size. */
   artworkBlob: Blob;
+  /** Schema v2: one production artwork per active printable area, each from its own canvas. */
+  artworks: SavedAreaArtwork[];
+  /** Schema v2: a composite preview per active mockup. */
+  previews: SavedPreview[];
   /** Canonical uploaded images referenced by `customization`. */
   assets: SavedAsset[];
 }

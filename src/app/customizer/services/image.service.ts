@@ -1,7 +1,16 @@
-import { Service } from '@angular/core';
-import { LIMITS } from '../models/config.models';
+import { Service, inject } from '@angular/core';
+import { AcceptedImageType, LIMITS } from '../models/config.models';
 import { sniffImage } from '../util/image-sniff';
+import { isLocalAssetUrl } from '../util/url-policy';
 import { CustomizerError, UploadError, describeUrl } from './errors';
+import { LocalAssetLibrary } from './local-asset-library.service';
+
+export interface UploadConstraints {
+  /** Accepted formats; default PNG and JPEG. */
+  accept?: readonly AcceptedImageType[];
+  /** Maximum file size in bytes; never above `LIMITS.maxImageBytes`. */
+  maxBytes?: number;
+}
 
 export interface CanonicalImage {
   blob: Blob;
@@ -17,6 +26,8 @@ const CANONICAL_JPEG_QUALITY = 0.92;
 /** Stateless image helpers: fetching config assets, validating and normalising uploads. */
 @Service()
 export class ImageService {
+  private readonly library = inject(LocalAssetLibrary);
+
   /** Fetch a configuration asset with CORS and decode it. Aborts with `signal`. */
   async fetchBitmap(url: string, signal?: AbortSignal): Promise<ImageBitmap> {
     const blob = await this.fetchBlob(url, signal);
@@ -42,6 +53,16 @@ export class ImageService {
   }
 
   async fetchBlob(url: string, signal?: AbortSignal): Promise<Blob> {
+    if (isLocalAssetUrl(url)) {
+      const stored = await this.library.get(url);
+      if (!stored) {
+        throw new CustomizerError(
+          'asset-load-failed',
+          'An image saved in this browser is missing. Upload it again in the editor.',
+        );
+      }
+      return stored;
+    }
     let response: Response;
     try {
       response = await fetch(url, { mode: 'cors', credentials: 'same-origin', signal });
@@ -91,11 +112,12 @@ export class ImageService {
    * type/size/animation/dimensions are checked from the bytes, EXIF orientation is applied,
    * and the pixels are re-encoded (PNG stays PNG, JPEG stays JPEG at quality 0.92).
    */
-  async processUpload(file: Blob): Promise<CanonicalImage> {
+  async processUpload(file: Blob, constraints: UploadConstraints = {}): Promise<CanonicalImage> {
     if (file.size === 0) throw new UploadError('That file is empty. Choose a PNG or JPEG photo.');
-    if (file.size > LIMITS.maxImageBytes) {
+    const maxBytes = Math.min(constraints.maxBytes ?? LIMITS.maxImageBytes, LIMITS.maxImageBytes);
+    if (file.size > maxBytes) {
       throw new UploadError(
-        `That file is ${(file.size / MIB).toFixed(1)} MB. Photos can be at most ${LIMITS.maxImageBytes / MIB} MB.`,
+        `That file is ${(file.size / MIB).toFixed(1)} MB. Photos can be at most ${(maxBytes / MIB).toFixed(maxBytes % MIB ? 1 : 0)} MB.`,
       );
     }
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -105,6 +127,14 @@ export class ImageService {
         sniffed.reason === 'unsupported-type'
           ? 'Only PNG and JPEG photos can be used. Choose a different file.'
           : 'That image looks damaged and cannot be read. Choose a different file.',
+      );
+    }
+    if (constraints.accept && !constraints.accept.includes(sniffed.mimeType)) {
+      const names = constraints.accept
+        .map((t) => t.replace('image/', '').toUpperCase())
+        .join(' or ');
+      throw new UploadError(
+        `This photo slot accepts ${names} files only. Choose a different file.`,
       );
     }
     if (sniffed.animated) {

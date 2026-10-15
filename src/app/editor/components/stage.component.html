@@ -1,0 +1,113 @@
+<div class="stage" #host>
+  <canvas #canvas class="stage-canvas" aria-hidden="true"></canvas>
+  <svg
+    #overlay
+    class="stage-overlay"
+    tabindex="0"
+    role="application"
+    [attr.aria-label]="ariaLabel()"
+    [style.cursor]="cursor()"
+    (pointerdown)="onDown($event)"
+    (pointermove)="onMove($event)"
+    (pointerup)="onUp($event)"
+    (pointercancel)="onUp($event)"
+    (keydown)="onKey($event)"
+  >
+    @for (shape of outlines(); track shape.id) {
+      <g [attr.transform]="shape.transform" [class.outline-selected]="shape.selected">
+        @switch (shape.kind) {
+          @case ('ellipse') {
+            <ellipse
+              class="outline"
+              [attr.rx]="shape.w / 2"
+              [attr.ry]="shape.h / 2"
+              [attr.stroke]="shape.stroke"
+              [attr.stroke-opacity]="shape.opacity"
+            />
+          }
+          @case ('path') {
+            <path
+              class="outline"
+              [attr.d]="shape.d"
+              [attr.transform]="shape.pathTransform"
+              [attr.stroke]="shape.stroke"
+              [attr.stroke-opacity]="shape.opacity"
+            />
+          }
+          @default {
+            <rect
+              class="outline"
+              [attr.x]="-shape.w / 2"
+              [attr.y]="-shape.h / 2"
+              [attr.width]="shape.w"
+              [attr.height]="shape.h"
+              [attr.rx]="shape.rx"
+              [attr.stroke]="shape.stroke"
+              [attr.stroke-opacity]="shape.opacity"
+            />
+          }
+        }
+      </g>
+      @if (shape.polygon) {
+        <polygon
+          class="outline"
+          [attr.points]="shape.polygon"
+          [attr.stroke]="shape.stroke"
+          [attr.stroke-opacity]="shape.opacity"
+          [class.outline-selected]="shape.selected"
+        />
+      }
+    }
+
+    @for (guide of guides(); track $index) {
+      <line
+        class="guide"
+        [attr.x1]="guide.x1"
+        [attr.y1]="guide.y1"
+        [attr.x2]="guide.x2"
+        [attr.y2]="guide.y2"
+      />
+    }
+
+    @if (frame(); as f) {
+      <polygon class="selection-frame" [attr.points]="f.points" />
+      @if (f.rotateLine) {
+        <line
+          class="selection-frame"
+          [attr.x1]="f.rotateLine.x1"
+          [attr.y1]="f.rotateLine.y1"
+          [attr.x2]="f.rotateLine.x2"
+          [attr.y2]="f.rotateLine.y2"
+        />
+      }
+      @for (h of f.handles; track h.id) {
+        @if (h.id === 'rotate') {
+          <circle class="handle handle-rotate" [attr.cx]="h.x" [attr.cy]="h.y" r="7" />
+        } @else {
+          <rect class="handle" [attr.x]="h.x - 5" [attr.y]="h.y - 5" width="10" height="10" />
+        }
+      }
+    }
+
+    @if (draft(); as d) {
+      <g [attr.transform]="d.transform">
+        @if (d.shape === 'ellipse') {
+          <ellipse class="draft" [attr.rx]="d.w / 2" [attr.ry]="d.h / 2" />
+        } @else {
+          <rect
+            class="draft"
+            [attr.x]="-d.w / 2"
+            [attr.y]="-d.h / 2"
+            [attr.width]="d.w"
+            [attr.height]="d.h"
+          />
+        }
+      </g>
+    }
+  </svg>
+
+  @if (message(); as text) {
+    <p class="stage-message" role="status">{{ text }}</p>
+  }
+  <p class="stage-zoom" aria-live="off">{{ zoomLabel() }}</p>
+</div>

@@ -98,6 +98,10 @@
         tote: { label: 'Tote: name + photo', url: '../data/tote-photo.json' },
         tshirt: { label: 'T-shirt: text only', url: '../data/tshirt-text.json' },
         poster: { label: 'Poster: text + artwork', url: '../data/poster-artwork.json' },
+        // Schema version 2: several printable areas, mockups and variants in one configuration.
+        clock: { label: 'v2 Heart clock (3 areas)', url: '../data/products/heart-clock.json' },
+        tshirt2: { label: 'v2 T-shirt (front + back)', url: '../data/products/tshirt.json' },
+        bottle: { label: 'v2 Bottle (label, back, cap)', url: '../data/products/bottle.json' },
       };
       const logEl = document.getElementById('log');
       let counter = 0;
@@ -198,8 +202,8 @@
         </label>
         <label><input type="checkbox" data-role="disabled"> Disabled</label>
         <button type="button" data-role="json" disabled>Download JSON</button>
-        <button type="button" data-role="artwork" disabled>Artwork PNG</button>
-        <button type="button" data-role="preview" disabled>Preview PNG</button>
+        <button type="button" data-role="artwork" disabled>Artwork PNG(s)</button>
+        <button type="button" data-role="preview" disabled>Preview PNG(s)</button>
         <button type="button" data-role="restore" disabled>Restore last save in a fresh element</button>
         <button type="button" data-role="remove">Remove</button>
       </div>
@@ -232,11 +236,12 @@
             }),
           ),
         );
+        // One production PNG per printable area, and one composite preview per mockup.
         $('artwork').addEventListener('click', () =>
-          download('artwork.png', instance.last.artworkBlob),
+          instance.last.artworks.forEach((a) => download(`${a.printableAreaId}-artwork.png`, a.blob)),
         );
         $('preview').addEventListener('click', () =>
-          download('preview.png', instance.last.previewBlob),
+          instance.last.previews.forEach((p) => download(`${p.mockupId}-preview.png`, p.blob)),
         );
         $('restore').addEventListener('click', () => {
           const { customization, assets } = instance.last;

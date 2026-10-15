@@ -1,9 +1,10 @@
-import { Component, ElementRef, effect, input, output, viewChild } from '@angular/core';
+import { Component, ElementRef, computed, effect, input, output, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ImageFieldSpec } from '../models/config.models';
-import { FieldError } from '../models/draft.models';
+import { FieldError, ImageFitMode } from '../models/draft.models';
 import { MAX_ZOOM, MIN_ZOOM, cropToPixels } from '../util/crop-math';
+import { drawImageRegion } from '../util/draw';
 import { PhotoView } from '../services/state.service';
 
 const CROP_CANVAS_EDGE = 480;
@@ -52,19 +53,26 @@ export interface PanEvent {
           ></canvas>
 
           <div class="crop-controls">
-            <label class="label sub" [for]="id('zoom')">Zoom</label>
-            <input
-              class="range"
-              type="range"
-              [id]="id('zoom')"
-              [min]="minZoom"
-              [max]="maxZoom"
-              step="0.01"
-              [formControl]="zoom"
-              [attr.aria-valuetext]="photo.zoom.toFixed(1) + ' times'"
-            />
+            @if (photo.fit === 'cover') {
+              <label class="label sub" [for]="id('zoom')">Zoom</label>
+              <input
+                class="range"
+                type="range"
+                [id]="id('zoom')"
+                [min]="minZoom"
+                [max]="maxZoom"
+                step="0.01"
+                [formControl]="zoom"
+                [attr.aria-valuetext]="photo.zoom.toFixed(1) + ' times'"
+              />
+            }
 
-            <div class="dpad" role="group" aria-label="Move photo">
+            <div
+              class="dpad"
+              role="group"
+              aria-label="Move photo"
+              [hidden]="photo.fit === 'contain'"
+            >
               <button
                 type="button"
                 class="btn icon dpad-up"
@@ -100,6 +108,17 @@ export interface PanEvent {
             </div>
 
             <div class="btn-row">
+              <button
+                type="button"
+                class="btn secondary"
+                [attr.aria-pressed]="photo.fit === 'contain'"
+                (click)="fit.emit(photo.fit === 'contain' ? 'cover' : 'contain')"
+              >
+                {{ photo.fit === 'contain' ? 'Fill the space' : 'Show whole photo' }}
+              </button>
+              <button type="button" class="btn secondary" (click)="rotate.emit()">
+                Rotate 90°
+              </button>
               <button type="button" class="btn secondary" (click)="resetCrop.emit()">
                 Reset crop
               </button>
@@ -108,7 +127,7 @@ export interface PanEvent {
                 <input
                   type="file"
                   class="file-input"
-                  accept="image/png,image/jpeg"
+                  [accept]="accept()"
                   (change)="onFile($event)"
                 />
               </label>
@@ -124,14 +143,14 @@ export interface PanEvent {
           <input
             type="file"
             class="file-input"
-            accept="image/png,image/jpeg"
+            [accept]="accept()"
             [attr.aria-describedby]="id('hint')"
             (change)="onFile($event)"
             (blur)="blurred.emit()"
           />
         </label>
         <p class="help" [id]="id('hint')">
-          PNG or JPEG, up to 10 MB. The photo stays in your browser until you save.
+          {{ formats() }}, up to {{ maxMb() }} MB. The photo stays in your browser until you save.
         </p>
       }
 
@@ -175,12 +194,26 @@ export class PhotoFieldComponent {
   readonly disabled = input(false);
 
   readonly file = output<File>();
+  readonly fit = output<ImageFitMode>();
+  readonly rotate = output<void>();
   readonly pan = output<PanEvent>();
   readonly zoomTo = output<number>();
   readonly resetCrop = output<void>();
   readonly remove = output<void>();
   readonly blurred = output<void>();
 
+  protected readonly accept = computed(() =>
+    (this.field().accept ?? ['image/png', 'image/jpeg']).join(','),
+  );
+  protected readonly formats = computed(() =>
+    (this.field().accept ?? ['image/png', 'image/jpeg'])
+      .map((type) => type.replace('image/', '').toUpperCase())
+      .join(' or '),
+  );
+  protected readonly maxMb = computed(() => {
+    const mb = (this.field().maxBytes ?? 10 * 1024 * 1024) / (1024 * 1024);
+    return Number.isInteger(mb) ? mb : mb.toFixed(1);
+  });
   protected readonly minZoom = MIN_ZOOM;
   protected readonly maxZoom = MAX_ZOOM;
   protected readonly nudge = NUDGE;
@@ -211,9 +244,29 @@ export class PhotoFieldComponent {
       }
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
-      const { sx, sy, sw, sh } = cropToPixels(view.crop, view.width, view.height);
       ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(view.bitmap, sx, sy, sw, sh, 0, 0, width, height);
+      ctx.clearRect(0, 0, width, height);
+      if (view.fit === 'contain') {
+        const scale = Math.min(width / view.width, height / view.height);
+        const w = view.width * scale;
+        const h = view.height * scale;
+        drawImageRegion(
+          ctx,
+          view.bitmap,
+          view.turns,
+          0,
+          0,
+          view.width,
+          view.height,
+          (width - w) / 2,
+          (height - h) / 2,
+          w,
+          h,
+        );
+      } else {
+        const { sx, sy, sw, sh } = cropToPixels(view.crop, view.width, view.height);
+        drawImageRegion(ctx, view.bitmap, view.turns, sx, sy, sw, sh, 0, 0, width, height);
+      }
     });
   }
 
@@ -230,6 +283,7 @@ export class PhotoFieldComponent {
   }
 
   protected dragStart(event: PointerEvent): void {
+    if (this.view()?.fit === 'contain') return;
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
     this.drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
   }

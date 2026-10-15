@@ -1,11 +1,25 @@
 import { Component, computed, effect, input, output } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
-import { FontSpec, TextFieldSpec } from '../models/config.models';
+import { FontSpec, TextAlign, TextFieldSpec } from '../models/config.models';
 import { FieldError, TextValue } from '../models/draft.models';
 import { graphemeCount, normalizeText } from '../util/text-utils';
 
-/** One configured text field: text box with live count, font picker and colour swatches. */
+/** Layer-level style the field falls back to when the customer has not chosen one. */
+export interface TextStyleDefaults {
+  bold: boolean;
+  italic: boolean;
+  underline: boolean;
+  align: TextAlign;
+}
+
+const ALIGNS: readonly { id: TextAlign; label: string }[] = [
+  { id: 'left', label: 'Align left' },
+  { id: 'center', label: 'Align centre' },
+  { id: 'right', label: 'Align right' },
+];
+
+/** One configured text field: text box with live count, font picker, colour swatches and style toggles. */
 @Component({
   selector: 'app-text-field',
   imports: [ReactiveFormsModule],
@@ -28,6 +42,7 @@ import { graphemeCount, normalizeText } from '../util/text-utils';
         autocapitalize="off"
         spellcheck="false"
         [id]="id('input')"
+        [placeholder]="field().placeholder ?? ''"
         [attr.aria-required]="field().required"
         [attr.aria-invalid]="errors().length > 0"
         [attr.aria-describedby]="describedBy()"
@@ -67,6 +82,63 @@ import { graphemeCount, normalizeText } from '../util/text-utils';
         </fieldset>
       }
 
+      @if (controls().size > 0) {
+        <div class="style-row" role="group" [attr.aria-label]="field().label + ' style'">
+          @if (controls().has('bold')) {
+            <button
+              type="button"
+              class="btn toggle"
+              aria-label="Bold"
+              [attr.aria-pressed]="effective().bold"
+              [disabled]="disabled()"
+              (click)="changed.emit({ bold: !effective().bold })"
+            >
+              <strong aria-hidden="true">B</strong>
+            </button>
+          }
+          @if (controls().has('italic')) {
+            <button
+              type="button"
+              class="btn toggle"
+              aria-label="Italic"
+              [attr.aria-pressed]="effective().italic"
+              [disabled]="disabled()"
+              (click)="changed.emit({ italic: !effective().italic })"
+            >
+              <em aria-hidden="true">I</em>
+            </button>
+          }
+          @if (controls().has('underline')) {
+            <button
+              type="button"
+              class="btn toggle"
+              aria-label="Underline"
+              [attr.aria-pressed]="effective().underline"
+              [disabled]="disabled()"
+              (click)="changed.emit({ underline: !effective().underline })"
+            >
+              <span class="underlined" aria-hidden="true">U</span>
+            </button>
+          }
+          @if (controls().has('align')) {
+            @for (align of aligns; track align.id) {
+              <button
+                type="button"
+                class="btn toggle"
+                [attr.aria-label]="align.label"
+                [attr.aria-pressed]="effective().align === align.id"
+                [disabled]="disabled()"
+                (click)="changed.emit({ align: align.id })"
+              >
+                <span aria-hidden="true">{{
+                  align.id === 'left' ? '⇤' : align.id === 'right' ? '⇥' : '↔'
+                }}</span>
+              </button>
+            }
+          }
+        </div>
+      }
+
       <div class="errors" [id]="id('errors')" aria-live="polite">
         @for (error of errors(); track error.code) {
           <p class="error">
@@ -81,6 +153,13 @@ export class TextFieldComponent {
   readonly field = input.required<TextFieldSpec>();
   readonly allFonts = input.required<readonly FontSpec[]>();
   readonly value = input.required<TextValue>();
+  /** Style of the layer this field feeds; used until the customer picks something. */
+  readonly layerStyle = input<TextStyleDefaults>({
+    bold: false,
+    italic: false,
+    underline: false,
+    align: 'center',
+  });
   /** Errors already filtered for display. */
   readonly errors = input.required<readonly FieldError[]>();
   readonly disabled = input(false);
@@ -88,6 +167,7 @@ export class TextFieldComponent {
   readonly changed = output<Partial<TextValue>>();
   readonly blurred = output<void>();
 
+  protected readonly aligns = ALIGNS;
   protected readonly form = new FormGroup({
     text: new FormControl('', { nonNullable: true }),
     fontId: new FormControl('', { nonNullable: true }),
@@ -97,6 +177,17 @@ export class TextFieldComponent {
   protected readonly fonts = computed(() => {
     const ids = this.field().fontIds;
     return this.allFonts().filter((font) => ids.includes(font.id));
+  });
+  protected readonly controls = computed(() => new Set(this.field().styleControls ?? []));
+  protected readonly effective = computed(() => {
+    const value = this.value();
+    const base = this.layerStyle();
+    return {
+      bold: value.bold ?? base.bold,
+      italic: value.italic ?? base.italic,
+      underline: value.underline ?? base.underline,
+      align: value.align ?? base.align,
+    };
   });
   protected readonly count = computed(() => graphemeCount(normalizeText(this.value().text)));
   protected readonly describedBy = computed(() =>

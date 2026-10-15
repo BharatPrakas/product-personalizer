@@ -1,16 +1,16 @@
 import { Component, input, output } from '@angular/core';
 import { By } from '@angular/platform-browser';
 import { TestBed } from '@angular/core/testing';
-import { App } from './app';
-import { Customization } from './customizer/models';
+import { ElementDemoComponent } from './element-demo.component';
+import { Customization } from '../customizer/models';
 import {
   CustomizerChangeDetail,
   CustomizerErrorDetail,
   CustomizerReadyDetail,
   CustomizerSaveDetail,
   SaveResult,
-} from './customizer/models/events.models';
-import { ProductCustomizerComponent } from './customizer/product-customizer.component';
+} from '../customizer/models/events.models';
+import { ProductCustomizerComponent } from '../customizer/product-customizer.component';
 
 /** Same public inputs/outputs as the real component, none of its canvas and network behaviour. */
 @Component({ selector: 'app-product-customizer', template: '' })
@@ -40,19 +40,21 @@ const saveDetail = (
     canvas: { width: 1, height: 1, background: 'transparent' },
   },
   previewBlob: new Blob(['p']),
+  artworks: [],
+  previews: [],
   artworkBlob: new Blob(['a']),
   assets,
 });
 
-describe('demo host (App)', () => {
+describe('demo host (ElementDemoComponent)', () => {
   const setup = async () => {
-    await TestBed.configureTestingModule({ imports: [App] })
-      .overrideComponent(App, {
+    await TestBed.configureTestingModule({ imports: [ElementDemoComponent] })
+      .overrideComponent(ElementDemoComponent, {
         remove: { imports: [ProductCustomizerComponent] },
         add: { imports: [StubCustomizer] },
       })
       .compileComponents();
-    const fixture = TestBed.createComponent(App);
+    const fixture = TestBed.createComponent(ElementDemoComponent);
     fixture.detectChanges();
     const stub = fixture.debugElement.query(By.directive(StubCustomizer))
       .componentInstance as StubCustomizer;
@@ -71,12 +73,19 @@ describe('demo host (App)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('offers the three sample templates and starts on the tote', async () => {
+  it('offers the v1 samples and the v2 products, starting on the tote', async () => {
     const { fixture, stub } = await setup();
     const labels = [...fixture.nativeElement.querySelectorAll('input[name="sample"]')].map(
       (i: HTMLInputElement) => i.parentElement!.textContent!.trim(),
     );
-    expect(labels).toEqual(['T-shirt: text only', 'Tote: name + photo', 'Poster: text + artwork']);
+    expect(labels).toEqual([
+      'T-shirt: text only',
+      'Tote: name + photo',
+      'Poster: text + artwork',
+      'v2 Heart clock (3 areas, 10 uploads)',
+      'v2 T-shirt (front + back)',
+      'v2 Bottle (label, back, cap)',
+    ]);
     expect(stub.configUrl()).toBe('data/tote-photo.json');
   });
 

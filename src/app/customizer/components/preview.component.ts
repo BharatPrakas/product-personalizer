@@ -9,13 +9,15 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { MockupPlacement } from '../models/config.models';
-import { RenderService } from '../services/render.service';
-import { Scene } from '../util/scene';
+import { AreaCanvasCache, PreviewComposite, RenderService } from '../services/render.service';
 
 const MAX_BACKING_EDGE = 2400;
 
-/** Live preview: the mockup with the shared scene drawn into its placement rectangle. */
+/**
+ * Live preview: the mockup with every active printable area composed into its placement. Each
+ * area is rendered on its own canvas and cached, so a change in one area repaints only that area's
+ * artwork (the mockup compositing itself is cheap).
+ */
 @Component({
   selector: 'app-preview',
   template: `
@@ -25,17 +27,16 @@ const MAX_BACKING_EDGE = 2400;
         class="preview-canvas"
         role="img"
         [attr.aria-label]="label()"
-        [style.aspect-ratio]="mockup().width + ' / ' + mockup().height"
+        [style.aspect-ratio]="composite().bitmap.width + ' / ' + composite().bitmap.height"
       ></canvas>
     </div>
   `,
 })
 export class PreviewComponent {
   private readonly render = inject(RenderService);
+  private readonly cache = new AreaCanvasCache();
 
-  readonly mockup = input.required<ImageBitmap>();
-  readonly placement = input.required<MockupPlacement>();
-  readonly scene = input.required<Scene>();
+  readonly composite = input.required<PreviewComposite>();
   readonly label = input.required<string>();
 
   private readonly canvas = viewChild.required<ElementRef<HTMLCanvasElement>>('canvas');
@@ -44,6 +45,7 @@ export class PreviewComponent {
 
   constructor() {
     const destroyRef = inject(DestroyRef);
+    destroyRef.onDestroy(() => this.cache.dispose());
     afterNextRender(() => {
       const frame = this.frame().nativeElement;
       this.cssWidth.set(frame.clientWidth);
@@ -57,20 +59,21 @@ export class PreviewComponent {
 
     effect(() => {
       const cssWidth = this.cssWidth();
-      const mockup = this.mockup();
-      const scene = this.scene();
-      const placement = this.placement();
+      const composite = this.composite();
       if (cssWidth <= 0) return;
       // Device pixel ratio only affects sharpness of this display canvas, never exported pixels.
       const ratio = Math.min(window.devicePixelRatio || 1, 3);
       const width = Math.min(MAX_BACKING_EDGE, Math.max(1, Math.round(cssWidth * ratio)));
-      const height = Math.max(1, Math.round((width * mockup.height) / mockup.width));
+      const height = Math.max(
+        1,
+        Math.round((width * composite.bitmap.height) / composite.bitmap.width),
+      );
       const canvas = this.canvas().nativeElement;
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;
         canvas.height = height;
       }
-      this.render.paintDisplay(canvas, mockup, placement, scene);
+      this.render.paintDisplay(canvas, composite, this.cache);
     });
   }
 }

@@ -6,6 +6,8 @@
  * is an absolute http(s) URL.
  */
 
+import type { Condition } from './product.models';
+
 export const SCHEMA_VERSION = 1;
 
 /** Deliberate v1 limits. Enforced by the validator and the image pipeline. */
@@ -71,17 +73,33 @@ export interface FontSpec {
   label?: string;
 }
 
-interface FieldBase {
+export interface FieldBase {
   id: string;
   label: string;
   helpText?: string;
   required: boolean;
+  /** Schema v2: hint shown in the empty input. */
+  placeholder?: string;
+  /** Schema v2: `false` keeps the field's default value but hides the input. Default true. */
+  visible?: boolean;
+  /** Schema v2: area this field belongs to (explicit scoping; omit to share across areas). */
+  printableAreaId?: string;
+  /** Schema v2: artwork this field belongs to (omit to share across artworks). */
+  artworkId?: string;
+  /** Schema v2: declarative visibility rule. */
+  showWhen?: Condition;
 }
+
+export type TextStyleControl = 'bold' | 'italic' | 'underline' | 'align';
 
 export interface TextFieldDefault {
   text?: string;
   fontId?: string;
   color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  align?: TextAlign;
 }
 
 export interface TextFieldSpec extends FieldBase {
@@ -91,10 +109,20 @@ export interface TextFieldSpec extends FieldBase {
   fontIds: string[];
   colors: string[];
   defaultValue?: TextFieldDefault;
+  /** Schema v2: which style controls the customer gets (default none). */
+  styleControls?: TextStyleControl[];
 }
+
+export type AcceptedImageType = 'image/png' | 'image/jpeg';
 
 export interface ImageFieldSpec extends FieldBase {
   type: 'image';
+  /** Schema v2: accepted formats (default PNG and JPEG). */
+  accept?: AcceptedImageType[];
+  /** Schema v2: maximum upload size in bytes (default and ceiling `LIMITS.maxImageBytes`). */
+  maxBytes?: number;
+  /** Schema v2: smallest acceptable source image, in pixels. */
+  minPixels?: { width: number; height: number };
 }
 
 export interface ArtworkChoice {

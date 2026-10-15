@@ -13,7 +13,8 @@
     "test:browser": "npm run build:element && vitest run --config tests/browser/vitest.config.mts",
     "test:browser:dev": "ng run product-personalizer:build-element:development && node scripts/finalize-element.mjs && vitest run --config tests/browser/vitest.config.mts",
     "test:types": "npm run build:element && tsc -p tests/types/tsconfig.json",
-    "generate:fixtures": "node scripts/generate-fixtures.mjs"
+    "generate:fixtures": "node scripts/generate-fixtures.mjs",
+    "generate:demo-assets": "node scripts/generate-demo-assets.mjs"
   },
   "private": true,
   "packageManager": "npm@11.19.0",
@@ -24,6 +25,7 @@
     "@angular/elements": "~22.2.2",
     "@angular/forms": "^22.2.0",
     "@angular/platform-browser": "^22.2.0",
+    "@angular/router": "~22.2.2",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0"
   },

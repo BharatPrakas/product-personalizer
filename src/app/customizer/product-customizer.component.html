@@ -34,15 +34,15 @@
         <div class="layout">
           <div class="preview-col">
             <h2 class="product-name">{{ config.product.name }}</h2>
-            @if (state.mockup(); as mockup) {
-              @if (state.evaluation(); as evaluation) {
-                <app-preview
-                  [mockup]="mockup"
-                  [placement]="config.mockup.placement"
-                  [scene]="evaluation.scene"
-                  [label]="previewLabel()"
-                />
-              }
+            @if (state.composite(); as composite) {
+              <app-preview [composite]="composite" [label]="previewLabel()" />
+            }
+            @if (state.composites().length > 1) {
+              <app-view-picker
+                [views]="state.composites()"
+                [selected]="state.mockup()?.id ?? null"
+                (picked)="state.setMockup($event)"
+              />
             }
           </div>
 
@@ -58,46 +58,78 @@
               </p>
             }
 
-            @for (field of config.fields; track field.id) {
-              @switch (field.type) {
-                @case ('text') {
-                  <app-text-field
-                    [field]="asText(field)"
-                    [allFonts]="config.fonts"
-                    [value]="textValue(field)"
-                    [errors]="errorsFor(field.id)"
+            @if (config.variants.length > 1) {
+              <app-choice-group
+                legend="Options"
+                name="variant"
+                [choices]="variantChoices()"
+                [selected]="state.variantId()"
+                [disabled]="editingLocked()"
+                (picked)="state.setVariant($event)"
+              />
+            }
+
+            @for (group of state.groups(); track group.areaId) {
+              <section class="area-group" [attr.aria-label]="group.areaName">
+                @if (state.groups().length > 1) {
+                  <h3 class="group-title">{{ group.areaName }}</h3>
+                }
+                @if (group.options.length > 1) {
+                  <app-choice-group
+                    legend="Design"
+                    [name]="'art-' + group.areaId"
+                    [choices]="optionChoices(group.options)"
+                    [selected]="group.artwork?.id ?? null"
                     [disabled]="editingLocked()"
-                    (changed)="state.setText(field.id, $event)"
-                    (blurred)="state.touch(field.id)"
+                    (picked)="state.setAreaArtwork(group.areaId, $event)"
                   />
                 }
-                @case ('image') {
-                  <app-photo-field
-                    [field]="field"
-                    [view]="state.photoViews()[field.id] ?? null"
-                    [busy]="isBusy(field.id)"
-                    [uploadError]="uploadErrorFor(field.id)"
-                    [errors]="errorsFor(field.id)"
-                    [warnings]="warningsFor(field.id)"
-                    [disabled]="editingLocked()"
-                    (file)="state.uploadImage(field.id, $event)"
-                    (pan)="state.panImage(field.id, $event.dx, $event.dy)"
-                    (zoomTo)="state.zoomImage(field.id, $event)"
-                    (resetCrop)="state.resetCrop(field.id)"
-                    (remove)="state.removeImage(field.id)"
-                    (blurred)="state.touch(field.id)"
-                  />
+                @for (entry of group.fields; track entry.field.id) {
+                  @let field = entry.field;
+                  @switch (field.type) {
+                    @case ('text') {
+                      <app-text-field
+                        [field]="asText(field)"
+                        [allFonts]="config.fonts"
+                        [value]="textValue(field)"
+                        [layerStyle]="layerStyle(entry)"
+                        [errors]="errorsFor(field.id)"
+                        [disabled]="editingLocked()"
+                        (changed)="state.setText(field.id, $event)"
+                        (blurred)="state.touch(field.id)"
+                      />
+                    }
+                    @case ('image') {
+                      <app-photo-field
+                        [field]="field"
+                        [view]="state.photoViews()[field.id] ?? null"
+                        [busy]="isBusy(field.id)"
+                        [uploadError]="uploadErrorFor(field.id)"
+                        [errors]="errorsFor(field.id)"
+                        [warnings]="warningsFor(field.id)"
+                        [disabled]="editingLocked()"
+                        (file)="state.uploadImage(field.id, $event)"
+                        (pan)="state.panImage(field.id, $event.dx, $event.dy)"
+                        (zoomTo)="state.zoomImage(field.id, $event)"
+                        (resetCrop)="state.resetCrop(field.id)"
+                        (fit)="state.setImageFit(field.id, $event)"
+                        (rotate)="state.rotateImage(field.id)"
+                        (remove)="state.removeImage(field.id)"
+                        (blurred)="state.touch(field.id)"
+                      />
+                    }
+                    @case ('artwork') {
+                      <app-artwork-field
+                        [field]="asArtwork(field)"
+                        [value]="artworkValue(field)"
+                        [errors]="errorsFor(field.id)"
+                        [disabled]="editingLocked()"
+                        (changed)="state.setArtwork(field.id, $event); state.touch(field.id)"
+                      />
+                    }
+                  }
                 }
-                @case ('artwork') {
-                  <app-artwork-field
-                    [field]="asArtwork(field)"
-                    [value]="artworkValue(field)"
-                    [errors]="errorsFor(field.id)"
-                    [disabled]="editingLocked()"
-                    (changed)="state.setArtwork(field.id, $event); state.touch(field.id)"
-                  />
-                }
-              }
+              </section>
             }
 
             <app-action-bar

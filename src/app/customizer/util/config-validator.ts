@@ -8,11 +8,13 @@
  */
 
 import {
+  AcceptedImageType,
   ArtworkChoice,
   CanvasSpec,
   ConfigIssue,
   CustomizerConfig,
   DisplayPriceSpec,
+  FieldBase,
   FieldSpec,
   FontSpec,
   LIMITS,
@@ -22,7 +24,10 @@ import {
   ProductSpec,
   SCHEMA_VERSION,
   TextAlign,
+  TextFieldDefault,
+  TextStyleControl,
 } from '../models/config.models';
+import type { Condition } from '../models/product.models';
 import { ASPECT_TOLERANCE } from './crop-math';
 import { graphemeCount, normalizeText } from './text-utils';
 import { AssetPolicy, ResolvedBase, checkAssetSrc, resolveAssetDir } from './url-policy';
@@ -35,16 +40,16 @@ export interface ValidateOptions {
   policy: AssetPolicy;
 }
 
-const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+export const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+export const COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
 const FONT_FAMILY_PATTERN = /^[A-Za-z][A-Za-z0-9 _-]{0,63}$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 const MAX_ISSUES = 100;
-const GEOMETRY_SLACK = 1e-6;
+export const GEOMETRY_SLACK = 1e-6;
 
-type Obj = Record<string, unknown>;
+export type Obj = Record<string, unknown>;
 
-class Collector {
+export class Collector {
   readonly issues: ConfigIssue[] = [];
 
   add(path: string, code: string, message: string): void {
@@ -240,9 +245,9 @@ export function validateConfig(raw: unknown, options: ValidateOptions): Validati
   return { ok: true, config };
 }
 
-type SrcResolver = (value: unknown, path: string) => string | null;
+export type SrcResolver = (value: unknown, path: string) => string | null;
 
-function validateProduct(value: unknown, c: Collector): ProductSpec | null {
+export function validateProduct(value: unknown, c: Collector): ProductSpec | null {
   const o = c.object(value, 'product', ['id', 'variantId', 'name']);
   if (!o) return null;
   const id = c.id(o['id'], 'product.id');
@@ -253,49 +258,50 @@ function validateProduct(value: unknown, c: Collector): ProductSpec | null {
   return { id, ...(variantId ? { variantId } : {}), name };
 }
 
-function validateCanvas(value: unknown, c: Collector): CanvasSpec | null {
-  const o = c.object(value, 'canvas', ['width', 'height', 'background']);
+export function validateCanvas(value: unknown, c: Collector, path = 'canvas'): CanvasSpec | null {
+  const o = c.object(value, path, ['width', 'height', 'background']);
   if (!o) return null;
-  const width = c.number(o['width'], 'canvas.width', 1, LIMITS.maxOutputEdge, true);
-  const height = c.number(o['height'], 'canvas.height', 1, LIMITS.maxOutputEdge, true);
+  const width = c.number(o['width'], `${path}.width`, 1, LIMITS.maxOutputEdge, true);
+  const height = c.number(o['height'], `${path}.height`, 1, LIMITS.maxOutputEdge, true);
   let background = 'transparent';
   if (o['background'] !== undefined && o['background'] !== 'transparent') {
-    background = c.color(o['background'], 'canvas.background') ?? 'transparent';
+    background = c.color(o['background'], `${path}.background`) ?? 'transparent';
   }
   if (width === null || height === null) return null;
   if (width * height > LIMITS.maxOutputMegapixels * 1_000_000) {
-    c.add('canvas', 'too-large', `must be at most ${LIMITS.maxOutputMegapixels} megapixels`);
+    c.add(path, 'too-large', `must be at most ${LIMITS.maxOutputMegapixels} megapixels`);
     return null;
   }
   return { width, height, background };
 }
 
-function validatePrint(
+export function validatePrint(
   value: unknown,
   canvas: CanvasSpec | null,
   c: Collector,
+  path = 'print',
 ): PrintSpec | undefined {
-  const o = c.object(value, 'print', ['widthMm', 'heightMm', 'warnDpi', 'minDpi']);
+  const o = c.object(value, path, ['widthMm', 'heightMm', 'warnDpi', 'minDpi']);
   if (!o) return undefined;
-  const widthMm = c.number(o['widthMm'], 'print.widthMm', 1, 100_000);
-  const heightMm = c.number(o['heightMm'], 'print.heightMm', 1, 100_000);
+  const widthMm = c.number(o['widthMm'], `${path}.widthMm`, 1, 100_000);
+  const heightMm = c.number(o['heightMm'], `${path}.heightMm`, 1, 100_000);
   const warnDpi =
     o['warnDpi'] === undefined
       ? undefined
-      : c.number(o['warnDpi'], 'print.warnDpi', LIMITS.warnDpiFloor, 10_000);
+      : c.number(o['warnDpi'], `${path}.warnDpi`, LIMITS.warnDpiFloor, 10_000);
   const minDpi =
     o['minDpi'] === undefined
       ? undefined
-      : c.number(o['minDpi'], 'print.minDpi', LIMITS.minDpiFloor, 10_000);
+      : c.number(o['minDpi'], `${path}.minDpi`, LIMITS.minDpiFloor, 10_000);
   if (warnDpi != null && minDpi != null && minDpi > warnDpi) {
-    c.add('print.minDpi', 'range', 'must not exceed print.warnDpi');
+    c.add(`${path}.minDpi`, 'range', `must not exceed ${path}.warnDpi`);
   }
   if (widthMm === null || heightMm === null) return undefined;
   if (canvas) {
     const canvasAspect = canvas.width / canvas.height;
     if (Math.abs(widthMm / heightMm - canvasAspect) / canvasAspect > ASPECT_TOLERANCE) {
       c.add(
-        'print',
+        path,
         'aspect-mismatch',
         'print aspect ratio (widthMm / heightMm) must match the canvas aspect ratio',
       );
@@ -355,8 +361,13 @@ export function checkMockupGeometry(
   return null;
 }
 
-function validateFonts(value: unknown, resolveSrc: SrcResolver, c: Collector): FontSpec[] {
-  const list = c.array(value, 'fonts', 1, LIMITS.maxFonts) ?? [];
+export function validateFonts(
+  value: unknown,
+  resolveSrc: SrcResolver,
+  c: Collector,
+  maxFonts: number = LIMITS.maxFonts,
+): FontSpec[] {
+  const list = c.array(value, 'fonts', 1, maxFonts) ?? [];
   const fonts: (FontSpec | null)[] = list.map((item, index) => {
     const path = `fonts[${index}]`;
     const o = c.object(item, path, ['id', 'family', 'src', 'label']);
@@ -383,14 +394,31 @@ function validateFonts(value: unknown, resolveSrc: SrcResolver, c: Collector): F
   return fonts.filter((f): f is FontSpec => f !== null);
 }
 
-function validateFields(
+export interface FieldValidationOptions {
+  /** Schema version 2: accept the extended field properties. */
+  extended: boolean;
+  maxFields: number;
+  maxFonts: number;
+  /** Upper bound for a text field's `maxLength` (graphemes). */
+  maxTextLength: number;
+}
+
+const V1_FIELD_OPTIONS: FieldValidationOptions = {
+  extended: false,
+  maxFields: LIMITS.maxFields,
+  maxFonts: LIMITS.maxFonts,
+  maxTextLength: LIMITS.maxTextGraphemes,
+};
+
+export function validateFields(
   value: unknown,
   fonts: FontSpec[],
   resolveSrc: SrcResolver,
   fieldTypes: Map<string, FieldSpec['type']>,
   c: Collector,
+  opts: FieldValidationOptions = V1_FIELD_OPTIONS,
 ): FieldSpec[] {
-  const list = c.array(value, 'fields', 1, LIMITS.maxFields) ?? [];
+  const list = c.array(value, 'fields', 1, opts.maxFields) ?? [];
   const fontIds = new Set(fonts.map((f) => f.id));
   const fields: (FieldSpec | null)[] = list.map((item, index) => {
     const path = `fields[${index}]`;
@@ -401,11 +429,11 @@ function validateFields(
     const type = (item as Obj)['type'];
     switch (type) {
       case 'text':
-        return validateTextField(item, path, fontIds, c);
+        return validateTextField(item, path, fontIds, c, opts);
       case 'image':
-        return validateImageField(item, path, c);
+        return validateImageField(item, path, c, opts);
       case 'artwork':
-        return validateArtworkField(item, path, resolveSrc, c);
+        return validateArtworkField(item, path, resolveSrc, c, opts);
       default:
         c.add(
           `${path}.type`,
@@ -423,13 +451,117 @@ function validateFields(
   return fields.filter((f): f is FieldSpec => f !== null);
 }
 
-function commonField(o: Obj, path: string, c: Collector) {
+const EXTENDED_FIELD_KEYS = ['placeholder', 'visible', 'printableAreaId', 'artworkId', 'showWhen'];
+
+function commonField(o: Obj, path: string, c: Collector, opts: FieldValidationOptions) {
   const id = c.id(o['id'], `${path}.id`);
   const label = c.string(o['label'], `${path}.label`, 1, 80);
   const helpText =
     o['helpText'] === undefined ? undefined : c.string(o['helpText'], `${path}.helpText`, 1, 240);
   const required = c.boolean(o['required'], `${path}.required`);
-  return { id, label, helpText, required };
+  const extra: Partial<FieldBase> = {};
+  if (opts.extended) {
+    if (o['placeholder'] !== undefined) {
+      const placeholder = c.string(o['placeholder'], `${path}.placeholder`, 1, 80);
+      if (placeholder !== null) extra.placeholder = placeholder;
+    }
+    if (o['visible'] !== undefined) {
+      const visible = c.boolean(o['visible'], `${path}.visible`);
+      if (visible !== null) extra.visible = visible;
+    }
+    for (const key of ['printableAreaId', 'artworkId'] as const) {
+      if (o[key] !== undefined) {
+        const ref = c.id(o[key], `${path}.${key}`);
+        if (ref !== null) extra[key] = ref;
+      }
+    }
+    if (o['showWhen'] !== undefined) {
+      const condition = validateCondition(o['showWhen'], `${path}.showWhen`, c, 0);
+      if (condition) extra.showWhen = condition;
+    }
+  }
+  return { id, label, helpText, required, extra };
+}
+
+const CONDITION_OPS = ['artwork', 'variant', 'field-equals', 'field-filled', 'all', 'any', 'not'];
+
+/** Structure only; references are checked once the whole configuration is known. */
+export function validateCondition(
+  value: unknown,
+  path: string,
+  c: Collector,
+  depth: number,
+): Condition | null {
+  if (depth > 4) {
+    c.add(path, 'depth', 'conditions may be nested at most 4 levels deep');
+    return null;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    c.add(path, 'type', 'must be an object');
+    return null;
+  }
+  const op = (value as Obj)['op'];
+  if (typeof op !== 'string' || !CONDITION_OPS.includes(op)) {
+    c.add(`${path}.op`, 'enum', `must be one of ${CONDITION_OPS.join(', ')}`);
+    return null;
+  }
+  switch (op) {
+    case 'artwork': {
+      const o = c.object(value, path, ['op', 'artworkId', 'printableAreaId']);
+      if (!o) return null;
+      const artworkId = c.id(o['artworkId'], `${path}.artworkId`);
+      const areaId =
+        o['printableAreaId'] === undefined
+          ? undefined
+          : c.id(o['printableAreaId'], `${path}.printableAreaId`);
+      return artworkId && areaId !== null
+        ? { op, artworkId, ...(areaId ? { printableAreaId: areaId } : {}) }
+        : null;
+    }
+    case 'variant': {
+      const o = c.object(value, path, ['op', 'variantIds']);
+      if (!o) return null;
+      const list = c.array(o['variantIds'], `${path}.variantIds`, 1, 40) ?? [];
+      const ids = list
+        .map((id, i) => c.id(id, `${path}.variantIds[${i}]`))
+        .filter((id): id is string => id !== null);
+      return ids.length > 0 ? { op, variantIds: ids } : null;
+    }
+    case 'field-equals': {
+      const o = c.object(value, path, ['op', 'fieldId', 'value']);
+      if (!o) return null;
+      const fieldId = c.id(o['fieldId'], `${path}.fieldId`);
+      const v = o['value'];
+      if (typeof v !== 'string' && typeof v !== 'boolean') {
+        c.add(`${path}.value`, 'type', 'must be a string or boolean');
+        return null;
+      }
+      return fieldId ? { op, fieldId, value: v } : null;
+    }
+    case 'field-filled': {
+      const o = c.object(value, path, ['op', 'fieldId']);
+      if (!o) return null;
+      const fieldId = c.id(o['fieldId'], `${path}.fieldId`);
+      return fieldId ? { op, fieldId } : null;
+    }
+    case 'not': {
+      const o = c.object(value, path, ['op', 'condition']);
+      if (!o) return null;
+      const inner = validateCondition(o['condition'], `${path}.condition`, c, depth + 1);
+      return inner ? { op, condition: inner } : null;
+    }
+    default: {
+      const o = c.object(value, path, ['op', 'conditions']);
+      if (!o) return null;
+      const list = c.array(o['conditions'], `${path}.conditions`, 1, 8) ?? [];
+      const inner = list
+        .map((entry, i) => validateCondition(entry, `${path}.conditions[${i}]`, c, depth + 1))
+        .filter((entry): entry is Condition => entry !== null);
+      return inner.length === list.length && inner.length > 0
+        ? { op: op as 'all' | 'any', conditions: inner }
+        : null;
+    }
+  }
 }
 
 function validateTextField(
@@ -437,6 +569,7 @@ function validateTextField(
   path: string,
   fontIds: Set<string>,
   c: Collector,
+  opts: FieldValidationOptions,
 ): FieldSpec | null {
   const o = c.object(item, path, [
     'id',
@@ -448,12 +581,13 @@ function validateTextField(
     'fontIds',
     'colors',
     'defaultValue',
+    ...(opts.extended ? [...EXTENDED_FIELD_KEYS, 'styleControls'] : []),
   ]);
   if (!o) return null;
-  const base = commonField(o, path, c);
-  const maxLength = c.number(o['maxLength'], `${path}.maxLength`, 1, LIMITS.maxTextGraphemes, true);
+  const base = commonField(o, path, c, opts);
+  const maxLength = c.number(o['maxLength'], `${path}.maxLength`, 1, opts.maxTextLength, true);
 
-  const fontList = c.array(o['fontIds'], `${path}.fontIds`, 1, LIMITS.maxFonts) ?? [];
+  const fontList = c.array(o['fontIds'], `${path}.fontIds`, 1, opts.maxFonts) ?? [];
   const fonts = fontList.filter((id): id is string => {
     const ok = typeof id === 'string' && fontIds.has(id);
     if (!ok)
@@ -474,9 +608,14 @@ function validateTextField(
   if (new Set(colors).size !== colors.length)
     c.add(`${path}.colors`, 'duplicate-id', 'must not repeat a colour');
 
-  let defaultValue: { text?: string; fontId?: string; color?: string } | undefined;
+  let defaultValue: TextFieldDefault | undefined;
   if (o['defaultValue'] !== undefined) {
-    const d = c.object(o['defaultValue'], `${path}.defaultValue`, ['text', 'fontId', 'color']);
+    const d = c.object(o['defaultValue'], `${path}.defaultValue`, [
+      'text',
+      'fontId',
+      'color',
+      ...(opts.extended ? ['bold', 'italic', 'underline', 'align'] : []),
+    ]);
     if (d) {
       defaultValue = {};
       if (d['text'] !== undefined) {
@@ -513,7 +652,28 @@ function validateTextField(
             "must be one of the field's colors",
           );
       }
+      for (const key of ['bold', 'italic', 'underline'] as const) {
+        if (d[key] === undefined) continue;
+        const flag = c.boolean(d[key], `${path}.defaultValue.${key}`);
+        if (flag !== null) defaultValue[key] = flag;
+      }
+      if (d['align'] !== undefined) {
+        if (d['align'] === 'left' || d['align'] === 'center' || d['align'] === 'right')
+          defaultValue.align = d['align'];
+        else c.add(`${path}.defaultValue.align`, 'enum', 'must be "left", "center" or "right"');
+      }
     }
+  }
+  let styleControls: TextStyleControl[] | undefined;
+  if (opts.extended && o['styleControls'] !== undefined) {
+    const list = c.array(o['styleControls'], `${path}.styleControls`, 0, 4) ?? [];
+    styleControls = list.filter((entry): entry is TextStyleControl => {
+      const ok =
+        entry === 'bold' || entry === 'italic' || entry === 'underline' || entry === 'align';
+      if (!ok)
+        c.add(`${path}.styleControls`, 'enum', 'entries must be bold, italic, underline or align');
+      return ok;
+    });
   }
   if (
     !base.id ||
@@ -529,17 +689,56 @@ function validateTextField(
     label: base.label,
     ...(base.helpText ? { helpText: base.helpText } : {}),
     required: base.required,
+    ...base.extra,
     maxLength,
     fontIds: fonts,
     colors,
     ...(defaultValue ? { defaultValue } : {}),
+    ...(styleControls ? { styleControls } : {}),
   };
 }
 
-function validateImageField(item: unknown, path: string, c: Collector): FieldSpec | null {
-  const o = c.object(item, path, ['id', 'type', 'label', 'helpText', 'required']);
+function validateImageField(
+  item: unknown,
+  path: string,
+  c: Collector,
+  opts: FieldValidationOptions,
+): FieldSpec | null {
+  const o = c.object(item, path, [
+    'id',
+    'type',
+    'label',
+    'helpText',
+    'required',
+    ...(opts.extended ? [...EXTENDED_FIELD_KEYS, 'accept', 'maxBytes', 'minPixels'] : []),
+  ]);
   if (!o) return null;
-  const base = commonField(o, path, c);
+  const base = commonField(o, path, c, opts);
+  let accept: AcceptedImageType[] | undefined;
+  let maxBytes: number | undefined;
+  let minPixels: { width: number; height: number } | undefined;
+  if (opts.extended) {
+    if (o['accept'] !== undefined) {
+      const list = c.array(o['accept'], `${path}.accept`, 1, 2) ?? [];
+      accept = list.filter((t): t is AcceptedImageType => {
+        const ok = t === 'image/png' || t === 'image/jpeg';
+        if (!ok) c.add(`${path}.accept`, 'enum', 'entries must be image/png or image/jpeg');
+        return ok;
+      });
+    }
+    if (o['maxBytes'] !== undefined) {
+      maxBytes =
+        c.number(o['maxBytes'], `${path}.maxBytes`, 1024, LIMITS.maxImageBytes, true) ?? undefined;
+    }
+    if (o['minPixels'] !== undefined) {
+      const m = c.object(o['minPixels'], `${path}.minPixels`, ['width', 'height']);
+      if (m) {
+        const width = c.number(m['width'], `${path}.minPixels.width`, 1, 20_000, true);
+        const height = c.number(m['height'], `${path}.minPixels.height`, 1, 20_000, true);
+        if (width !== null && height !== null) minPixels = { width, height };
+      }
+    }
+  }
   if (!base.id || !base.label || base.required === null || base.helpText === null) return null;
   return {
     id: base.id,
@@ -547,6 +746,10 @@ function validateImageField(item: unknown, path: string, c: Collector): FieldSpe
     label: base.label,
     ...(base.helpText ? { helpText: base.helpText } : {}),
     required: base.required,
+    ...base.extra,
+    ...(accept ? { accept } : {}),
+    ...(maxBytes ? { maxBytes } : {}),
+    ...(minPixels ? { minPixels } : {}),
   };
 }
 
@@ -555,6 +758,7 @@ function validateArtworkField(
   path: string,
   resolveSrc: SrcResolver,
   c: Collector,
+  opts: FieldValidationOptions,
 ): FieldSpec | null {
   const o = c.object(item, path, [
     'id',
@@ -564,9 +768,10 @@ function validateArtworkField(
     'required',
     'choices',
     'defaultChoiceId',
+    ...(opts.extended ? EXTENDED_FIELD_KEYS : []),
   ]);
   if (!o) return null;
-  const base = commonField(o, path, c);
+  const base = commonField(o, path, c, opts);
   const list = c.array(o['choices'], `${path}.choices`, 1, LIMITS.maxChoicesPerField) ?? [];
   const choices: (ArtworkChoice | null)[] = list.map((entry, index) => {
     const cp = `${path}.choices[${index}]`;
@@ -605,6 +810,7 @@ function validateArtworkField(
     label: base.label,
     ...(base.helpText ? { helpText: base.helpText } : {}),
     required: base.required,
+    ...base.extra,
     choices: valid,
     ...(defaultChoiceId ? { defaultChoiceId } : {}),
   };
@@ -743,7 +949,7 @@ function validateGeometry(o: Obj, path: string, canvas: CanvasSpec | null, c: Co
   return { id, x, y, width, height };
 }
 
-function validateDisplayPrice(value: unknown, c: Collector): DisplayPriceSpec | undefined {
+export function validateDisplayPrice(value: unknown, c: Collector): DisplayPriceSpec | undefined {
   const o = c.object(value, 'displayPrice', [
     'currency',
     'exponent',

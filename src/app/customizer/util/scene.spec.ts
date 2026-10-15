@@ -1,13 +1,15 @@
 import toteJson from '../../../../public/data/tote-photo.json';
 import tshirtJson from '../../../../public/data/tshirt-text.json';
-import { CustomizerConfig } from '../models/config.models';
+import { ProductConfig } from '../models/product.models';
 import { validateConfig } from './config-validator';
 import { DraftValues, defaultValues } from './draft-utils';
-import { EvaluationEnv, LocalAsset, evaluateDraft } from './scene';
+import { upgradeV1 } from './config-upgrade';
+import { resolveProduct } from './resolve';
+import { EvaluationEnv, LocalAsset, evaluateProduct } from './scene';
 import { InkBox } from './text-fit';
 import { resolveBase } from './url-policy';
 
-function load(json: unknown): CustomizerConfig {
+function load(json: unknown): ProductConfig {
   const result = validateConfig(JSON.parse(JSON.stringify(json)), {
     resolvedBase: resolveBase({
       configUrl: 'https://shop.example/c/data/x.json',
@@ -17,7 +19,7 @@ function load(json: unknown): CustomizerConfig {
     policy: { pageOrigin: 'https://shop.example', allowedOrigins: [] },
   });
   if (!result.ok) throw new Error(JSON.stringify(result.issues));
-  return result.config;
+  return upgradeV1(result.config);
 }
 
 const bitmap = (width: number, height: number) =>
@@ -38,19 +40,31 @@ const measure = (font: string, _align: string, text: string): InkBox => {
   return { left: width / 2, right: width / 2, ascent: 0.75 * size, descent: 0.2 * size };
 };
 
-function env(config: CustomizerConfig, extra: Partial<EvaluationEnv> = {}): EvaluationEnv {
+/** The version-1 evaluation entry point, expressed through the version-2 engine (one area, one scene). */
+function evaluateDraft(e: EvaluationEnv, values: DraftValues) {
+  const result = evaluateProduct(e, resolveProduct(e.config, null), values, {
+    placeholders: false,
+  });
+  return { ...result, scene: result.areas[0] };
+}
+
+function env(config: ProductConfig, extra: Partial<EvaluationEnv> = {}): EvaluationEnv {
   const staticImages = new Map<string, ImageBitmap>();
   for (const field of config.fields)
     if (field.type === 'artwork')
       field.choices.forEach((c) => staticImages.set(c.src, bitmap(256, 256)));
-  for (const layer of config.layers)
-    if (layer.type === 'fixed-image') staticImages.set(layer.src, bitmap(256, 256));
+  for (const artwork of config.artworks)
+    for (const layer of artwork.layers)
+      if (layer.type === 'fixed-image') staticImages.set(layer.src, bitmap(256, 256));
   return {
     config,
     fontFamilies: new Map(config.fonts.map((f) => [f.id, `zb-${f.id}`])),
     staticImages,
     localAssets: new Map(),
-    measure,
+    measurer: {
+      ink: measure,
+      width: (font, text) => measure(font, 'left', text).right * 2,
+    },
     missingGlyphs: () => [],
     ...extra,
   };
@@ -64,7 +78,7 @@ const withName = (text: string, base: DraftValues = defaultValues(tote)): DraftV
   name: { text, fontId: 'sans', color: '#296FD7' },
 });
 
-const codes = (config: CustomizerConfig, values: DraftValues, extra: Partial<EvaluationEnv> = {}) =>
+const codes = (config: ProductConfig, values: DraftValues, extra: Partial<EvaluationEnv> = {}) =>
   evaluateDraft(env(config, extra), values).errors.map((e) => `${e.fieldId}:${e.code}`);
 
 describe('evaluateDraft: text (F02, F03)', () => {
@@ -88,15 +102,15 @@ describe('evaluateDraft: text (F02, F03)', () => {
     const op = result.scene.ops.find((o) => o.kind === 'text');
     expect(op).toMatchObject({
       kind: 'text',
-      text: 'Alex',
+      lines: [{ text: 'Alex' }],
       color: '#296FD7',
       align: 'center',
       font: '90px "zb-sans"',
     });
     if (op?.kind !== 'text') return;
     // layer box x 100..1100, y 940..1080 -> centre (600, 1010). Fake ink: 90px -> ascent 67.5, descent 18.
-    expect(op.x).toBeCloseTo(600);
-    expect(op.y).toBeCloseTo(1010 + (67.5 - 18) / 2);
+    expect(op.lines[0].x).toBeCloseTo(600);
+    expect(op.lines[0].y).toBeCloseTo(1010 + (67.5 - 18) / 2);
   });
 
   it('shrinks long text and records the chosen size', () => {
@@ -113,10 +127,13 @@ describe('evaluateDraft: text (F02, F03)', () => {
       ascent: 10,
       descent: 2,
     });
-    const result = evaluateDraft(env(tote, { measure: wide }), withName('A'.repeat(24)));
+    const result = evaluateDraft(
+      env(tote, { measurer: { ink: wide, width: (_f, t) => t.length * 100 } }),
+      withName('A'.repeat(24)),
+    );
     expect(result.errors.map((e) => e.code)).toContain('text-overflow');
     const op = result.scene.ops.find((o) => o.kind === 'text');
-    expect(op?.kind === 'text' && op.text).toBe('A'.repeat(24)); // shown as typed, never truncated
+    expect(op?.kind === 'text' && op.lines[0].text).toBe('A'.repeat(24)); // shown as typed, never truncated
   });
 
   it('flags text over the character limit', () => {
@@ -167,8 +184,11 @@ describe('evaluateDraft: text (F02, F03)', () => {
   });
 
   it('skips fitting and drawing for absurdly long input but still reports the error', () => {
-    const measure = vi.fn(env(tote).measure);
-    const result = evaluateDraft(env(tote, { measure }), withName('x'.repeat(24 * 8 + 1)));
+    const measure = vi.fn(env(tote).measurer.ink);
+    const result = evaluateDraft(
+      env(tote, { measurer: { ink: measure, width: () => 0 } }),
+      withName('x'.repeat(24 * 8 + 1)),
+    );
     expect(result.errors.map((e) => `${e.fieldId}:${e.code}`)).toEqual([
       'name:too-long',
       'photo:required',
@@ -261,7 +281,11 @@ describe('evaluateDraft: photos (F04-F06)', () => {
 
   it('honours higher configured thresholds', () => {
     const strict = structuredClone(tote);
-    strict.print = { ...strict.print!, warnDpi: 300, minDpi: 200 };
+    strict.printableAreas[0].print = {
+      ...strict.printableAreas[0].print!,
+      warnDpi: 300,
+      minDpi: 200,
+    };
     const a = asset('local-1', 1000, 1000); // 187 dpi
     const result = evaluateDraft(
       env(strict, { localAssets: new Map([[a.assetId, a]]) }),
@@ -272,7 +296,7 @@ describe('evaluateDraft: photos (F04-F06)', () => {
 
   it('makes no DPI claims without physical print dimensions', () => {
     const noPrint = structuredClone(tote);
-    delete noPrint.print;
+    delete noPrint.printableAreas[0].print;
     const a = asset('local-1', 100, 100);
     const result = evaluateDraft(
       env(noPrint, { localAssets: new Map([[a.assetId, a]]) }),
@@ -286,13 +310,13 @@ describe('evaluateDraft: photos (F04-F06)', () => {
     expect(codes(tote, values('durable-42', [0, 0, 1, 1]))).toEqual(['photo:missing-asset']);
   });
 
-  it('rejects a crop with the wrong aspect ratio and falls back to the default crop', () => {
+  it('falls back to the default crop (without blocking) when a stored crop no longer fits the slot', () => {
     const a = asset('local-1', 1800, 1200);
     const result = evaluateDraft(
       env(tote, { localAssets: new Map([[a.assetId, a]]) }),
       values('local-1', [0, 0, 1, 0.5]),
     );
-    expect(result.errors.map((e) => e.code)).toEqual(['invalid-crop']);
+    expect(result.errors).toEqual([]);
     expect(result.scene.ops.find((o) => o.kind === 'image')).toMatchObject({ sw: 1200, sh: 1200 });
   });
 });

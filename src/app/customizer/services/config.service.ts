@@ -1,7 +1,10 @@
 import { Service } from '@angular/core';
-import { ConfigIssue, CustomizerConfig, LIMITS } from '../models/config.models';
+import { ConfigIssue } from '../models/config.models';
+import { PRODUCT_LIMITS, ProductConfig, SourceSchemaVersion } from '../models/product.models';
 import { validateConfig } from '../util/config-validator';
-import { resolveBase } from '../util/url-policy';
+import { upgradeV1 } from '../util/config-upgrade';
+import { validateProductConfig } from '../util/product-validator';
+import { AssetPolicy, resolveBase } from '../util/url-policy';
 import { CustomizerError, isAbortError } from './errors';
 
 export interface ConfigInput {
@@ -10,6 +13,8 @@ export interface ConfigInput {
   configUrl: string | null;
   baseUrl: string | null;
   allowedOrigins: readonly string[] | null;
+  /** Standalone authoring app: accept `idb:` and inline `data:image/` sources. */
+  allowLocalAssets?: boolean;
   documentBase: string;
   pageOrigin: string;
 }
@@ -18,7 +23,7 @@ export type ConfigOutcome =
   | { kind: 'awaiting' }
   | { kind: 'conflict' }
   | { kind: 'invalid'; issues: ConfigIssue[] }
-  | { kind: 'ready'; config: CustomizerConfig };
+  | { kind: 'ready'; config: ProductConfig; sourceVersion: SourceSchemaVersion };
 
 const supplied = (value: unknown) => value !== null && value !== undefined && value !== '';
 
@@ -72,12 +77,25 @@ export class ConfigService {
       };
     }
 
-    const result = validateConfig(raw, {
-      resolvedBase: resolved,
-      policy: { pageOrigin: input.pageOrigin, allowedOrigins: input.allowedOrigins ?? [] },
-    });
+    const policy: AssetPolicy = {
+      pageOrigin: input.pageOrigin,
+      allowedOrigins: input.allowedOrigins ?? [],
+      allowLocalAssets: input.allowLocalAssets === true,
+    };
+    const version =
+      typeof raw === 'object' && raw !== null
+        ? (raw as Record<string, unknown>)['schemaVersion']
+        : undefined;
+    if (version === 2) {
+      const result = validateProductConfig(raw, { resolvedBase: resolved, policy });
+      return result.ok
+        ? { kind: 'ready', config: result.config, sourceVersion: 2 }
+        : { kind: 'invalid', issues: result.issues };
+    }
+    // Version 1 (and anything unrecognised, which the v1 validator reports) takes the compatibility path.
+    const result = validateConfig(raw, { resolvedBase: resolved, policy });
     return result.ok
-      ? { kind: 'ready', config: result.config }
+      ? { kind: 'ready', config: upgradeV1(result.config), sourceVersion: 1 }
       : { kind: 'invalid', issues: result.issues };
   }
 
@@ -97,7 +115,7 @@ export class ConfigService {
         );
       }
       const text = await response.text();
-      if (text.length > LIMITS.maxConfigBytes) {
+      if (text.length > PRODUCT_LIMITS.maxConfigBytes) {
         throw new CustomizerError(
           'config-load-failed',
           'The configuration file is too large.',

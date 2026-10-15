@@ -12,9 +12,11 @@ import {
 } from '@angular/core';
 import { ActionBarComponent, PriceView } from './components/action-bar.component';
 import { ArtworkFieldComponent } from './components/artwork-field.component';
+import { Choice, ChoiceGroupComponent } from './components/choice-group.component';
 import { PhotoFieldComponent } from './components/photo-field.component';
 import { PreviewComponent } from './components/preview.component';
-import { TextFieldComponent } from './components/text-field.component';
+import { TextFieldComponent, TextStyleDefaults } from './components/text-field.component';
+import { ViewPickerComponent } from './components/view-picker.component';
 import { ArtworkFieldSpec, ConfigIssue, FieldSpec, TextFieldSpec } from './models/config.models';
 import { ArtworkValue, FieldError, TextValue } from './models/draft.models';
 import {
@@ -32,6 +34,7 @@ import { SaveCoordinator } from './services/save-coordinator.service';
 import { StateService } from './services/state.service';
 import { stableKey } from './util/draft-utils';
 import { formatMinor } from './util/price';
+import { ActiveField } from './util/resolve';
 
 /** Debounce for `customizer-change` while the shopper is typing. */
 export const CHANGE_DEBOUNCE_MS = 150;
@@ -65,6 +68,8 @@ function isSaveResult(value: unknown): value is SaveResult {
   selector: 'app-product-customizer',
   imports: [
     PreviewComponent,
+    ViewPickerComponent,
+    ChoiceGroupComponent,
     TextFieldComponent,
     PhotoFieldComponent,
     ArtworkFieldComponent,
@@ -87,6 +92,8 @@ export class ProductCustomizerComponent {
   readonly initialCustomization = input<unknown>(null);
   readonly assetMap = input<LoadRequest['assetMap']>(null);
   readonly allowedAssetOrigins = input<readonly string[] | null>(null);
+  /** Standalone authoring app only: accept `idb:` and inline `data:image/` asset sources. */
+  readonly allowLocalAssets = input<boolean, unknown>(false, { transform: coerceDisabled });
   readonly disabled = input<boolean, unknown>(false, { transform: coerceDisabled });
   readonly saveResult = input<unknown>(null);
 
@@ -152,8 +159,9 @@ export class ProductCustomizerComponent {
   protected readonly previewLabel = computed(() => {
     const config = this.state.config();
     if (!config) return '';
-    const texts = config.fields
-      .map((field) => {
+    const texts = this.state
+      .activeFields()
+      .map(({ field }) => {
         const value = this.state.values()[field.id];
         return field.type === 'text' && value && 'text' in value && value.text.trim()
           ? `${field.label}: ${value.text}`
@@ -162,6 +170,14 @@ export class ProductCustomizerComponent {
       .filter(Boolean);
     return `Live preview of ${config.product.name}${texts.length ? `. ${texts.join('. ')}` : ''}`;
   });
+
+  protected readonly variantChoices = computed<Choice[]>(() =>
+    (this.state.config()?.variants ?? []).map((v) => ({
+      id: v.id,
+      label: v.label,
+      swatch: v.swatch,
+    })),
+  );
 
   protected readonly saveDisabled = computed(() => {
     const state = this.save.state();
@@ -186,6 +202,7 @@ export class ProductCustomizerComponent {
         configUrl: this.configUrl(),
         baseUrl: this.baseUrl(),
         allowedOrigins: this.allowedAssetOrigins(),
+        allowLocalAssets: this.allowLocalAssets(),
         initialCustomization: this.initialCustomization(),
         assetMap: this.assetMap(),
       };
@@ -231,6 +248,21 @@ export class ProductCustomizerComponent {
     return this.state.values()[field.id] as ArtworkValue;
   }
 
+  protected optionChoices(options: readonly { id: string; name: string }[]): Choice[] {
+    return options.map((o) => ({ id: o.id, label: o.name }));
+  }
+
+  /** The style of the first text layer a field feeds: what the customer sees before choosing. */
+  protected layerStyle(entry: ActiveField): TextStyleDefaults {
+    const layer = entry.bindings.map((b) => b.layer).find((l) => l.type === 'text');
+    return {
+      bold: layer?.type === 'text' ? (layer.bold ?? false) : false,
+      italic: layer?.type === 'text' ? (layer.italic ?? false) : false,
+      underline: layer?.type === 'text' ? (layer.underline ?? false) : false,
+      align: layer?.type === 'text' ? layer.align : 'center',
+    };
+  }
+
   protected asText(field: FieldSpec): TextFieldSpec {
     return field as TextFieldSpec;
   }
@@ -262,21 +294,19 @@ export class ProductCustomizerComponent {
       if (!this.saveDisabled()) this.save.retry((detail) => this.emitSave(detail));
       return;
     }
-    const config = this.state.config();
     const evaluation = this.state.evaluation();
     const customization = this.state.customization();
-    const mockup = this.state.mockup();
-    if (this.saveDisabled() || !config || !evaluation || !customization || !mockup) return;
+    const composites = this.state.composites();
+    if (this.saveDisabled() || !evaluation || !customization || composites.length === 0) return;
 
-    const valuesKey = stableKey(this.state.values());
+    const valuesKey = this.state.currentKey();
     const localAssets = this.state.assets.localAssets();
     try {
       await this.save.start(
         () =>
           this.exporter.export({
-            config,
-            scene: evaluation.scene,
-            mockup,
+            scenes: evaluation.areas,
+            composites,
             customization,
             localAssets,
           }),
@@ -355,8 +385,10 @@ export class ProductCustomizerComponent {
         for (const notice of outcome.notices) this.emitError(notice);
         this.emitReady({
           productId: outcome.config.product.id,
-          templateId: outcome.config.templateId,
-          templateVersion: outcome.config.templateVersion,
+          templateId: outcome.config.id,
+          templateVersion: outcome.config.version,
+          // The original version-1 event detail is kept exactly as hosts know it.
+          ...(outcome.sourceVersion === 2 ? { schemaVersion: 2 as const } : {}),
         });
         break;
     }

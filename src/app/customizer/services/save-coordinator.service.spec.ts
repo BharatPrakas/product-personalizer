@@ -6,6 +6,8 @@ import { ACK_TIMEOUT_MS, SaveCoordinator } from './save-coordinator.service';
 const payload = (): SavePayload => ({
   customization: { values: {} } as SavePayload['customization'],
   previewBlob: new Blob(['p']),
+  artworks: [],
+  previews: [],
   artworkBlob: new Blob(['a']),
   assets: [],
 });

@@ -1,8 +1,9 @@
 import { Service, inject } from '@angular/core';
-import { ConfigIssue, CustomizerConfig } from '../models/config.models';
+import { ConfigIssue } from '../models/config.models';
 import { AssetMapInput } from '../models/draft.models';
 import { CustomizerErrorDetail } from '../models/events.models';
-import { checkMockupGeometry } from '../util/config-validator';
+import { ProductConfig, SourceSchemaVersion } from '../models/product.models';
+import { checkLegacyGeometry } from '../util/config-upgrade';
 import { DraftValues, defaultValues, isImageValue, parseCustomization } from '../util/draft-utils';
 import { LocalAsset } from '../util/scene';
 import { checkHostAssetUrl } from '../util/url-policy';
@@ -17,6 +18,7 @@ export interface LoadRequest {
   configUrl: string | null;
   baseUrl: string | null;
   allowedOrigins: readonly string[] | null;
+  allowLocalAssets?: boolean;
   initialCustomization: unknown;
   assetMap: AssetMapInput | null;
 }
@@ -31,10 +33,13 @@ export type LoadOutcome =
     }
   | {
       kind: 'ready';
-      config: CustomizerConfig;
+      config: ProductConfig;
+      sourceVersion: SourceSchemaVersion;
       fontFamilies: Map<string, string>;
       staticImages: Map<string, ImageBitmap>;
       values: DraftValues;
+      variantId: string;
+      artworkSelection: Record<string, string>;
       localAssets: LocalAsset[];
       /** Non-fatal problems found while restoring a draft. */
       notices: CustomizerErrorDetail[];
@@ -55,7 +60,7 @@ export class LoadPipeline {
   async run(request: LoadRequest, abort: AbortSignal): Promise<LoadOutcome> {
     const loaded = await this.loadConfig(request, abort);
     if (loaded.kind !== 'config') return loaded;
-    const { config } = loaded;
+    const { config, sourceVersion } = loaded;
 
     let fontFamilies: Map<string, string>;
     try {
@@ -79,8 +84,11 @@ export class LoadPipeline {
     const restoredAssets: LocalAsset[] = [];
     try {
       abort.throwIfAborted();
-      const mockup = staticImages.get(config.mockup.src);
-      const geometry = mockup ? checkMockupGeometry(config, mockup.width, mockup.height) : null;
+      const mockup = staticImages.get(config.mockups[0].src);
+      const geometry =
+        mockup && sourceVersion === 1
+          ? checkLegacyGeometry(config, mockup.width, mockup.height)
+          : null;
       if (geometry) {
         closeAll(staticImages.values());
         return {
@@ -97,10 +105,14 @@ export class LoadPipeline {
 
       const notices: CustomizerErrorDetail[] = [];
       let values = defaultValues(config);
+      let variantId = config.variants[0].id;
+      let artworkSelection: Record<string, string> = {};
       if (request.initialCustomization !== null && request.initialCustomization !== undefined) {
-        const parsed = parseCustomization(request.initialCustomization, config);
+        const parsed = parseCustomization(request.initialCustomization, config, sourceVersion);
         if (parsed.ok) {
           values = parsed.values;
+          variantId = parsed.variantId ?? variantId;
+          artworkSelection = parsed.artworkSelection;
           await this.restoreAssets(
             config,
             values,
@@ -117,9 +129,12 @@ export class LoadPipeline {
       return {
         kind: 'ready',
         config,
+        sourceVersion,
         fontFamilies,
         staticImages,
         values,
+        variantId,
+        artworkSelection,
         localAssets: restoredAssets,
         notices,
       };
@@ -138,6 +153,7 @@ export class LoadPipeline {
           configUrl: request.configUrl,
           baseUrl: request.baseUrl,
           allowedOrigins: request.allowedOrigins,
+          allowLocalAssets: request.allowLocalAssets,
           documentBase: document.baseURI,
           pageOrigin: location.origin,
         },
@@ -165,7 +181,11 @@ export class LoadPipeline {
           );
         }
         case 'ready':
-          return { kind: 'config' as const, config: outcome.config };
+          return {
+            kind: 'config' as const,
+            config: outcome.config,
+            sourceVersion: outcome.sourceVersion,
+          };
       }
     } catch (error) {
       if (isAbortError(error) || abort.aborted) throw error;
@@ -177,7 +197,7 @@ export class LoadPipeline {
   }
 
   private async restoreAssets(
-    config: CustomizerConfig,
+    config: ProductConfig,
     values: DraftValues,
     assetMap: AssetMapInput | null,
     into: LocalAsset[],

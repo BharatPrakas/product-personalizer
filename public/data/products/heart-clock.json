@@ -1,0 +1,663 @@
+{
+  "schemaVersion": 2,
+  "id": "heart-clock-personalization",
+  "version": 1,
+  "status": "published",
+  "product": {
+    "id": "heart-clock",
+    "name": "Custom Heart Shape Photo Clock"
+  },
+  "assetBaseUrl": "../../assets/",
+  "variants": [
+    {
+      "id": "clock-12",
+      "label": "12 x 12 in",
+      "mockupIds": ["clock-front", "clock-lifestyle"],
+      "printableAreaIds": ["clock-face", "photo-strip"]
+    },
+    {
+      "id": "clock-16",
+      "label": "16 x 16 in",
+      "mockupIds": ["clock-front-large", "clock-lifestyle"],
+      "printableAreaIds": ["clock-face", "photo-strip", "name-plaque"]
+    }
+  ],
+  "mockups": [
+    {
+      "id": "clock-front",
+      "name": "Front view",
+      "src": "mockups/clock-front.jpg",
+      "placements": [
+        {
+          "printableAreaId": "clock-face",
+          "type": "rect",
+          "x": 0.3125,
+          "y": 0.1,
+          "width": 0.375,
+          "height": 0.5
+        },
+        {
+          "printableAreaId": "photo-strip",
+          "type": "rect",
+          "x": 0.25,
+          "y": 0.72,
+          "width": 0.5,
+          "height": 0.166667
+        }
+      ],
+      "overlays": [
+        {
+          "id": "hands",
+          "src": "mockups/clock-hands-12.png"
+        }
+      ]
+    },
+    {
+      "id": "clock-front-large",
+      "name": "Front view (16 in)",
+      "src": "mockups/clock-front-large.jpg",
+      "placements": [
+        {
+          "printableAreaId": "clock-face",
+          "type": "rect",
+          "x": 0.275,
+          "y": 0.0416667,
+          "width": 0.45,
+          "height": 0.6
+        },
+        {
+          "printableAreaId": "photo-strip",
+          "type": "rect",
+          "x": 0.275,
+          "y": 0.666667,
+          "width": 0.45,
+          "height": 0.15
+        },
+        {
+          "printableAreaId": "name-plaque",
+          "type": "rect",
+          "x": 0.35,
+          "y": 0.833333,
+          "width": 0.3,
+          "height": 0.075
+        }
+      ],
+      "overlays": [
+        {
+          "id": "hands",
+          "src": "mockups/clock-hands-16.png"
+        }
+      ]
+    },
+    {
+      "id": "clock-lifestyle",
+      "name": "Lifestyle",
+      "src": "mockups/clock-lifestyle.jpg",
+      "placements": [
+        {
+          "printableAreaId": "clock-face",
+          "type": "rect",
+          "x": 0.35,
+          "y": 0.2,
+          "width": 0.3,
+          "height": 0.4
+        },
+        {
+          "printableAreaId": "photo-strip",
+          "type": "quad",
+          "x": 0.25625,
+          "y": 0.658333,
+          "width": 0.4875,
+          "height": 0.129167,
+          "corners": [
+            [0.26875, 0.666667],
+            [0.73125, 0.658333],
+            [0.74375, 0.775],
+            [0.25625, 0.7875]
+          ]
+        }
+      ],
+      "overlays": [
+        {
+          "id": "hands",
+          "src": "mockups/clock-hands-life.png"
+        }
+      ]
+    }
+  ],
+  "printableAreas": [
+    {
+      "id": "clock-face",
+      "name": "Clock face (heart)",
+      "enabled": true,
+      "canvas": {
+        "width": 2000,
+        "height": 2000,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "path",
+        "viewBox": [100, 100],
+        "d": "M50 92 C 20 68 2 50 2 30 C 2 14 14 4 28 4 C 38 4 46 9 50 18 C 54 9 62 4 72 4 C 86 4 98 14 98 30 C 98 50 80 68 50 92 Z"
+      },
+      "artworkId": "face-classic",
+      "artworkIds": ["face-classic", "face-collage"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 305,
+        "heightMm": 305,
+        "warnDpi": 150
+      }
+    },
+    {
+      "id": "photo-strip",
+      "name": "Decorative photo strip",
+      "enabled": true,
+      "canvas": {
+        "width": 3200,
+        "height": 800,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect"
+      },
+      "artworkId": "strip-art",
+      "artworkIds": ["strip-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 305,
+        "heightMm": 76.25,
+        "warnDpi": 150
+      }
+    },
+    {
+      "id": "name-plaque",
+      "name": "Name plaque",
+      "enabled": true,
+      "canvas": {
+        "width": 1600,
+        "height": 300,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect",
+        "cornerRadius": 0.1
+      },
+      "artworkId": "plaque-art",
+      "artworkIds": ["plaque-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 160,
+        "heightMm": 30,
+        "warnDpi": 150
+      }
+    }
+  ],
+  "artworks": [
+    {
+      "id": "face-classic",
+      "name": "Classic portrait",
+      "printableAreaId": "clock-face",
+      "background": "#fff3ee",
+      "layers": [
+        {
+          "id": "center-photo-layer",
+          "type": "image-placeholder",
+          "fieldId": "center-photo",
+          "x": 380,
+          "y": 330,
+          "width": 1240,
+          "height": 1000,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.08
+          },
+          "name": "Main photo"
+        },
+        {
+          "id": "classic-border",
+          "type": "shape",
+          "shape": {
+            "type": "rect",
+            "cornerRadius": 0.08
+          },
+          "x": 380,
+          "y": 330,
+          "width": 1240,
+          "height": 1000,
+          "fill": "transparent",
+          "stroke": "#c2185b",
+          "strokeWidth": 12,
+          "name": "Photo border"
+        },
+        {
+          "id": "center-name-layer",
+          "type": "text",
+          "fieldId": "customer-name",
+          "x": 520,
+          "y": 1340,
+          "width": 960,
+          "height": 170,
+          "fontSize": 150,
+          "minFontSize": 60,
+          "align": "center",
+          "name": "Name"
+        },
+        {
+          "id": "classic-tagline",
+          "type": "text",
+          "text": "Forever",
+          "fontId": "serif",
+          "color": "#c2185b",
+          "x": 700,
+          "y": 1530,
+          "width": 600,
+          "height": 120,
+          "fontSize": 90,
+          "minFontSize": 40,
+          "align": "center",
+          "name": "Tagline"
+        }
+      ]
+    },
+    {
+      "id": "face-collage",
+      "name": "Photo collage",
+      "printableAreaId": "clock-face",
+      "background": "#fff3ee",
+      "layers": [
+        {
+          "id": "collage-big",
+          "type": "image-placeholder",
+          "fieldId": "collage-photo-1",
+          "x": 330,
+          "y": 330,
+          "width": 760,
+          "height": 980,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.08
+          },
+          "name": "Big photo"
+        },
+        {
+          "id": "collage-small-1",
+          "type": "image-placeholder",
+          "fieldId": "collage-photo-2",
+          "x": 1130,
+          "y": 330,
+          "width": 470,
+          "height": 470,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.08
+          },
+          "name": "Small photo 1"
+        },
+        {
+          "id": "collage-small-2",
+          "type": "image-placeholder",
+          "fieldId": "collage-photo-3",
+          "x": 1130,
+          "y": 840,
+          "width": 470,
+          "height": 470,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.08
+          },
+          "name": "Small photo 2"
+        },
+        {
+          "id": "collage-name",
+          "type": "text",
+          "fieldId": "customer-name",
+          "x": 520,
+          "y": 1350,
+          "width": 960,
+          "height": 160,
+          "fontSize": 140,
+          "minFontSize": 60,
+          "align": "center",
+          "name": "Name"
+        },
+        {
+          "id": "collage-date",
+          "type": "text",
+          "fieldId": "anniversary-date",
+          "x": 640,
+          "y": 1520,
+          "width": 720,
+          "height": 110,
+          "fontSize": 70,
+          "minFontSize": 36,
+          "align": "center",
+          "name": "Date"
+        }
+      ]
+    },
+    {
+      "id": "strip-art",
+      "name": "Four photos",
+      "printableAreaId": "photo-strip",
+      "background": "#fbf8f3",
+      "layers": [
+        {
+          "id": "strip-slot-1",
+          "type": "image-placeholder",
+          "fieldId": "photo-1",
+          "x": 100,
+          "y": 50,
+          "width": 700,
+          "height": 700,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.1
+          },
+          "name": "Strip photo 1"
+        },
+        {
+          "id": "strip-slot-2",
+          "type": "image-placeholder",
+          "fieldId": "photo-2",
+          "x": 900,
+          "y": 50,
+          "width": 700,
+          "height": 700,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.1
+          },
+          "name": "Strip photo 2"
+        },
+        {
+          "id": "strip-slot-3",
+          "type": "image-placeholder",
+          "fieldId": "photo-3",
+          "x": 1700,
+          "y": 50,
+          "width": 700,
+          "height": 700,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.1
+          },
+          "name": "Strip photo 3"
+        },
+        {
+          "id": "strip-slot-4",
+          "type": "image-placeholder",
+          "fieldId": "photo-4",
+          "x": 2500,
+          "y": 50,
+          "width": 700,
+          "height": 700,
+          "fit": "cover",
+          "clip": {
+            "type": "rect",
+            "cornerRadius": 0.1
+          },
+          "name": "Strip photo 4"
+        }
+      ]
+    },
+    {
+      "id": "plaque-art",
+      "name": "Plaque text",
+      "printableAreaId": "name-plaque",
+      "background": "#fbf8f3",
+      "layers": [
+        {
+          "id": "plaque-border",
+          "type": "shape",
+          "shape": {
+            "type": "rect",
+            "cornerRadius": 0.1
+          },
+          "x": 12,
+          "y": 12,
+          "width": 1576,
+          "height": 276,
+          "fill": "transparent",
+          "stroke": "#b08d57",
+          "strokeWidth": 8,
+          "name": "Border"
+        },
+        {
+          "id": "plaque-text-layer",
+          "type": "text",
+          "fieldId": "plaque-text",
+          "x": 80,
+          "y": 40,
+          "width": 1440,
+          "height": 220,
+          "fontSize": 200,
+          "minFontSize": 50,
+          "align": "center",
+          "name": "Plaque message"
+        }
+      ]
+    }
+  ],
+  "fonts": [
+    {
+      "id": "sans",
+      "family": "CustomizerSans",
+      "label": "Sans",
+      "src": "fonts/sans-regular.woff2"
+    },
+    {
+      "id": "sans-bold",
+      "family": "CustomizerSansBold",
+      "label": "Sans bold",
+      "src": "fonts/sans-bold.woff2"
+    },
+    {
+      "id": "serif",
+      "family": "CustomizerSerif",
+      "label": "Serif bold",
+      "src": "fonts/serif-bold.woff2"
+    },
+    {
+      "id": "mono",
+      "family": "CustomizerMono",
+      "label": "Mono bold",
+      "src": "fonts/mono-bold.woff2"
+    }
+  ],
+  "fields": [
+    {
+      "id": "center-photo",
+      "type": "image",
+      "label": "Main photo",
+      "required": true,
+      "printableAreaId": "clock-face",
+      "artworkId": "face-classic",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      },
+      "helpText": "This photo fills the heart."
+    },
+    {
+      "id": "collage-photo-1",
+      "type": "image",
+      "label": "Big photo",
+      "required": true,
+      "printableAreaId": "clock-face",
+      "artworkId": "face-collage",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "collage-photo-2",
+      "type": "image",
+      "label": "Small photo 1",
+      "required": false,
+      "printableAreaId": "clock-face",
+      "artworkId": "face-collage",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "collage-photo-3",
+      "type": "image",
+      "label": "Small photo 2",
+      "required": false,
+      "printableAreaId": "clock-face",
+      "artworkId": "face-collage",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "customer-name",
+      "type": "text",
+      "label": "Name or message",
+      "required": false,
+      "maxLength": 24,
+      "fontIds": ["serif", "sans-bold", "sans", "mono"],
+      "colors": ["#c2185b", "#7b1fa2", "#1f2937", "#b08d57"],
+      "printableAreaId": "clock-face",
+      "defaultValue": {
+        "text": "",
+        "fontId": "serif",
+        "color": "#c2185b"
+      },
+      "placeholder": "e.g. Anna & Ben",
+      "styleControls": ["italic"],
+      "helpText": "Printed on the heart."
+    },
+    {
+      "id": "anniversary-date",
+      "type": "text",
+      "label": "Date (optional)",
+      "required": false,
+      "maxLength": 16,
+      "fontIds": ["sans", "serif"],
+      "colors": ["#1f2937", "#c2185b"],
+      "printableAreaId": "clock-face",
+      "artworkId": "face-collage",
+      "defaultValue": {
+        "text": "",
+        "fontId": "sans",
+        "color": "#1f2937"
+      },
+      "placeholder": "e.g. 14.02.2026",
+      "showWhen": {
+        "op": "field-filled",
+        "fieldId": "customer-name"
+      },
+      "helpText": "Appears once you enter a name."
+    },
+    {
+      "id": "photo-1",
+      "type": "image",
+      "label": "Strip photo 1",
+      "required": true,
+      "printableAreaId": "photo-strip",
+      "artworkId": "strip-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      },
+      "helpText": "Four photos run along the strip below the clock."
+    },
+    {
+      "id": "photo-2",
+      "type": "image",
+      "label": "Strip photo 2",
+      "required": false,
+      "printableAreaId": "photo-strip",
+      "artworkId": "strip-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "photo-3",
+      "type": "image",
+      "label": "Strip photo 3",
+      "required": false,
+      "printableAreaId": "photo-strip",
+      "artworkId": "strip-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "photo-4",
+      "type": "image",
+      "label": "Strip photo 4",
+      "required": false,
+      "printableAreaId": "photo-strip",
+      "artworkId": "strip-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    },
+    {
+      "id": "plaque-text",
+      "type": "text",
+      "label": "Plaque message",
+      "required": false,
+      "maxLength": 28,
+      "fontIds": ["serif", "sans-bold"],
+      "colors": ["#5b4630", "#1f2937"],
+      "printableAreaId": "name-plaque",
+      "artworkId": "plaque-art",
+      "defaultValue": {
+        "text": "Our Family",
+        "fontId": "serif",
+        "color": "#5b4630"
+      },
+      "placeholder": "e.g. The Millers",
+      "helpText": "Only on the 16 in clock."
+    }
+  ],
+  "preview": {
+    "defaultMockupId": "clock-front",
+    "background": "#e8e0d4"
+  },
+  "displayPrice": {
+    "currency": "INR",
+    "exponent": 2,
+    "baseMinor": 199900,
+    "customizationFeeMinor": 30000
+  }
+}

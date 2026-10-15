@@ -1,7 +1,8 @@
 import { Injector, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import toteJson from '../../../../public/data/tote-photo.json';
-import { CustomizerConfig } from '../models/config.models';
+import { ProductConfig } from '../models/product.models';
+import { upgradeV1 } from '../util/config-upgrade';
 import { TextValue } from '../models/draft.models';
 import { validateConfig } from '../util/config-validator';
 import { defaultValues, stableKey } from '../util/draft-utils';
@@ -14,7 +15,7 @@ import { LoadOutcome } from './load-pipeline.service';
 import { SaveCoordinator } from './save-coordinator.service';
 import { StateService } from './state.service';
 
-function load(): CustomizerConfig {
+function load(): ProductConfig {
   const result = validateConfig(JSON.parse(JSON.stringify(toteJson)), {
     resolvedBase: resolveBase({
       configUrl: 'https://shop.example/c/data/x.json',
@@ -24,15 +25,18 @@ function load(): CustomizerConfig {
     policy: { pageOrigin: 'https://shop.example', allowedOrigins: [] },
   });
   if (!result.ok) throw new Error('fixture invalid');
-  return result.config;
+  return upgradeV1(result.config);
 }
 
 const ready = (
-  config: CustomizerConfig,
+  config: ProductConfig,
   values = defaultValues(config),
 ): Extract<LoadOutcome, { kind: 'ready' }> => ({
   kind: 'ready',
   config,
+  sourceVersion: 1,
+  variantId: config.variants[0].id,
+  artworkSelection: {},
   fontFamilies: new Map(config.fonts.map((f) => [f.id, `zb-${f.id}`])),
   staticImages: new Map(
     config.fields.flatMap((f) =>
@@ -54,12 +58,15 @@ const ready = (
 
 /** jsdom has no canvas: text measurement and glyph probing are stubbed (their real behaviour is covered in the browser tests). */
 const fakeRender = {
-  measure: (_font: string, _align: string, text: string) => ({
-    left: text.length * 5,
-    right: text.length * 5,
-    ascent: 10,
-    descent: 2,
-  }),
+  measurer: {
+    ink: (_font: string, _align: string, text: string) => ({
+      left: text.length * 5,
+      right: text.length * 5,
+      ascent: 10,
+      descent: 2,
+    }),
+    width: (_font: string, text: string) => text.length * 10,
+  },
 };
 const fakeFonts = { missingGlyphs: () => [] as string[] };
 
@@ -193,7 +200,7 @@ describe('StateService edits', () => {
     const state = setup();
     state.setText('name', { text: 'Alex' });
     expect(state.dirty()).toBe(true);
-    state.markSaved(stableKey(state.values()));
+    state.markSaved(state.currentKey());
     expect(state.dirty()).toBe(false);
     state.setText('name', { text: 'Alexa' });
     expect(state.dirty()).toBe(true);

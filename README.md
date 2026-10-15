@@ -1,18 +1,78 @@
-# Product Customizer (`<zb-product-customizer>`)
+# Product Personalizer (merchant editor + `<zb-product-customizer>`)
 
-A product personalization widget built with Angular and packaged as a framework-independent custom
-element. A host page gives it a JSON configuration; the shopper enters text, uploads and crops a photo
-or picks artwork, and sees a live preview. On **Save** the element hands the host a serialisable JSON
-snapshot plus generated PNG files. It has no backend, no checkout and no admin UI: persistence, pricing
-and the cart stay with the host.
+A standalone proof of concept for a TeeInBlue-style personalization platform, built on Angular 22.
+A **merchant** configures a product (several mockups, several independent printable areas, artworks made of
+layers) in a three-panel editor without writing JSON. The **storefront** generates its customer inputs
+from that configuration: add an image placeholder to an artwork and the matching upload field appears, with no
+code change. Everything runs in the browser (local mock data, IndexedDB, canvas rendering); ZenBasket integration
+is intentionally left for later, and the rendering engine and the `<zb-product-customizer>` custom element are the
+same code the editor uses.
 
-This repository contains
+## Demo in five minutes
 
-- the **element** (`src/app/customizer`, built by `npm run build:element` into `dist/element/`),
-- a standalone **Angular demo app** that plays the host (`src/app`, `npm start`),
-- a **plain HTML integration demo** with no framework (`integration-demo/index.html`),
-- three **sample templates** (text-only T-shirt, name + photo tote, text + artwork poster) with original assets,
-- a **JSON Schema**, public **TypeScript declarations**, and automated tests.
+```bash
+npm install
+npm start                    # http://localhost:4200
+```
+
+1. **Products** (`/`): three sample products: a heart-shaped photo clock (2 variants, 3 mockups, 3 printable areas,
+   2 face designs), a T-shirt (front + back, white/navy) and a bottle (front label, back label, cap).
+2. **Edit** the clock. *Mockup view* shows the product photo with every printable area composed onto it (the red
+   dashed outlines are editing aids, never exported). Click the photo strip, drag it, resize it, rotate it, or type
+   exact numbers in the properties panel. *Draw rectangle / Draw ellipse* creates a new area by dragging on the mockup.
+3. Switch to *Artwork view* and pick the **Decorative photo strip** area: its own 3200 × 800 production canvas.
+   In the left panel choose **+ Photo slot**: a fifth photo placeholder appears with its own customer field.
+4. **Preview as customer**: the storefront now shows six upload fields (main photo + five strip photos). Upload
+   some of the files in `public/assets/samples/`, type a name, switch **12 × 12 in / 16 × 16 in** (the 16 in clock
+   adds a name-plaque area), switch **Classic / Photo collage** (different artwork, different fields; the collage
+   date field only appears once a name is typed), and switch views (Front / Lifestyle; the lifestyle strip uses a
+   four-corner perspective mapping).
+5. **Save** the customer design, then use the downloads in the host panel: one **production PNG per printable area**
+   (own canvas size, transparent outside the area mask, no mockup, no placeholders or outlines) and one **combined
+   preview PNG per mockup**. Reload the page: *Reopen last saved design* restores it from IndexedDB.
+6. Back in the editor choose **Save**, reload, and reopen the product: structure, uploads and version are kept.
+   **Export → Configuration JSON** / **Import JSON** on the product list round-trip a configuration (browser-stored
+   images are embedded as data URLs). **More → Reset demo** restores the shipped samples.
+
+The original v1 widget still works: *Custom element demo* in the header loads the three v1 sample templates and the
+three v2 products by `configUrl` through the same `<zb-product-customizer>` contract (the plain HTML host lives in
+`integration-demo/`).
+
+## What was built
+
+| Area | Implementation |
+|---|---|
+| Schema v2 | `models/product.models.ts`, `public/schema/product-config.schema.json`, runtime validator `util/product-validator.ts`. Variants map to mockups and printable areas; mockups hold normalised placements (rect or four-corner `quad`), overlays and ordering; areas have their own canvas, mask (rect / ellipse / SVG path), print size and DPI thresholds, and one or more compatible artworks; artworks are ordered layers; fields are bound to layers **only** through `layer.fieldId`. |
+| v1 compatibility | `util/config-upgrade.ts` turns a v1 configuration into a one-variant, one-mockup, one-area v2 configuration at load time. v1 hosts keep the v1 `Customization` snapshot, event details and error messages; the original unit and browser suites pass against the new engine. |
+| Resolution | `util/resolve.ts`: variant → mockups → enabled areas → artwork per area → visible layers → active fields (declarative `showWhen` conditions; values of inactive fields are kept but never rendered, validated or saved). |
+| Rendering | `util/scene.ts` evaluates one independent scene per area; `util/draw.ts` draws scenes (masks, rotation, opacity, clipping, vector shapes, wrapped / auto-fitted text) and composes them onto a mockup (blend modes, overlays, perspective via a homography mesh). `AreaCanvasCache` re-renders only the area whose scene changed. |
+| Exports | `ExportService`: production PNG per area from its own canvas; composite preview PNG per mockup. Warnings for low effective DPI; no claim of universal print-readiness. |
+| Editor | `src/app/editor`: store with undo/redo, stage (zoom, pan, drag, resize, rotate, draw, snapping, keyboard), structure and properties panels, product list, storefront host. Edit operations are immutable functions in `editor/util/config-edit.ts`. |
+| Persistence | IndexedDB (configs, uploaded images as blobs referenced as `idb:<id>`, last customer design); memory fallback with a visible note. |
+
+Key audit findings that shaped the work: the original code was a hardened single-canvas widget (one mockup
+rectangle, flat layers, one layer per field, ≤10 fields). Its font cache, image canonicalisation, crop/DPI math, text
+fit, URL policy, save protocol and element wrapper were kept; its configuration model, validator, scene, preview,
+state and export were rebuilt around areas.
+
+### Known limitations and deferred work
+
+- No backend, authentication, catalog/cart/checkout, cloud upload, AI artwork or 3D (out of scope by design).
+- Physical print size is per printable area, not per variant (a 12 in and a 16 in clock share one DPI estimate).
+- `idb:` / `data:` asset sources are accepted only by the standalone app (`allowLocalAssets`); hosted configurations
+  use `http(s)` assets, as before.
+- Perspective placements are mapped with a 14 × 14 triangle mesh (visually exact for mockup-sized quads, not a GPU warp).
+- Customer photo rotation is in 90° steps; merchant layers rotate freely.
+- Text is single-style per layer (no inline styling); wrapping is word-based with character breaks for long words.
+- `showWhen` supports artwork / variant / field-filled / field-equals with `all` / `any` / `not`; the editor's rule
+  builder edits a single condition (advanced rules are preserved, not editable).
+- Undo/redo covers configuration edits; it does not cover uploads already written to IndexedDB.
+- The conditional "advanced rule builder", a template library and complex typography are deferred.
+- Tested in Chrome only (headless Chrome 154); no Safari/Firefox runs.
+- `Customization` is now a union (`CustomizationV1 | CustomizationV2`); TypeScript hosts narrow on `schemaVersion`
+  (v1 hosts receive exactly the v1 shape as before).
+- The editor's property panels are direct-binding inspectors rather than Signal Forms (they edit an immutable store, not a
+  submit-able form); the customer-facing fields keep the original Reactive Forms.
 
 ## Quick start
 
@@ -26,14 +86,15 @@ npm run serve:element        # serves dist/element at http://localhost:4300
 
 | Script | What it does |
 |---|---|
-| `npm start` | Dev server for the Angular demo app |
-| `npm run build` | Production build of the demo app (`dist/product-personalizer`) |
+| `npm start` | Dev server for the standalone app (product list, merchant editor, storefront, element demo) |
+| `npm run build` | Production build of the standalone app (`dist/product-personalizer`) |
 | `npm run build:element` | Production element build, then `scripts/finalize-element.mjs` (stable entry, `.d.ts`, demo page, `MANIFEST.json`) |
 | `npm test` | Unit tests (Vitest through `ng test`; `npm run test:ci` runs once without watch) |
 | `npm run test:browser` | Builds the element, then runs the browser suite against it in headless Chrome |
 | `npm run test:browser:dev` | Same suite against the **development** build (surfaces Angular dev-mode assertions) |
 | `npm run test:types` | Compiles a consumer file against the shipped `.d.ts` files |
-| `npm run generate:fixtures` | Regenerates the demo mockups, clipart and sample photos (needs Chrome) |
+| `npm run generate:fixtures` | Regenerates the v1 demo mockups, clipart and sample photos (needs Chrome) |
+| `npm run generate:demo-assets` | Regenerates the v2 demo mockups, clock-hand overlays and sample customer photos (needs Chrome) |
 
 Browser tests use `puppeteer-core` with the system Chrome (`/usr/bin/google-chrome`, or set `CHROME_PATH`).
 
@@ -60,7 +121,8 @@ It installs no global error listeners and adds **no CSS to the host document**.
 Extra dev dependencies and why: `puppeteer-core` (browser tests, fixture generation), `axe-core` (accessibility
 audit in tests), `ajv` (checks the sample configs against the JSON Schema in tests only; it is **not** in the
 bundle, because it compiles code and would need `unsafe-eval`; runtime validation is hand-written),
-`@types/node` (test tooling). `@angular/router` from the scaffold was removed; it is not needed.
+`@types/node` (test tooling). `@angular/router` provides the lazy-loaded routes of the standalone app only; it is
+not part of the element bundle.
 
 ## Using the element
 
@@ -113,9 +175,9 @@ Plain `CustomEvent`s dispatched on the element. They do **not** bubble; listen o
 
 | Event | `event.detail` |
 |---|---|
-| `customizer-ready` | `{productId, templateId, templateVersion}`, once per successful load, after fonts and images are ready |
+| `customizer-ready` | `{productId, templateId, templateVersion}` (+ `schemaVersion: 2` for v2 configurations; `templateId`/`templateVersion` carry the configuration id/version), once per successful load, after fonts and images are ready |
 | `customizer-change` | `{draft, valid, dirty, errors}`; text edits debounced by 150 ms, other edits immediate; contains no image bytes |
-| `customizer-save` | `{requestId, customization, previewBlob, artworkBlob, assets}` |
+| `customizer-save` | `{requestId, customization, previewBlob, artworkBlob, assets, artworks, previews}`; `artworks` has one production PNG per active printable area (`artworkBlob` is the first), `previews` one composite per active mockup (`previewBlob` is the first) |
 | `customizer-error` | `{code, message, fieldId?, recoverable}`; sanitised (never contains shopper text or photo content) |
 
 Error codes: `invalid-config`, `config-conflict`, `config-load-failed`, `font-load-failed`, `asset-load-failed`,
@@ -140,8 +202,11 @@ the host should durably store
 
 1. `customization`: plain JSON, no image bytes, no `blob:` URLs;
 2. each `assets[i].blob` (canonical, metadata-free PNG/JPEG the shopper uploaded), keyed by `assetId`;
-3. `artworkBlob` (transparent PNG at the configured pixel size; production artwork, no mockup) and
-   `previewBlob` (mockup + artwork, longest edge ≤ 1200 px).
+3. `artworks[i].blob`: one transparent PNG per active printable area, each at that area's own canvas size and
+   masked to its shape (production artwork: no mockup, placeholders or outlines), and `previews[i].blob`: one
+   composite per active mockup (mockup + artwork, longest edge ≤ 1200 px). `artworkBlob` / `previewBlob` are the
+   first of each, kept for v1 hosts. A v2 `customization` also records the variant, the chosen artwork per area and
+   only the fields that were active.
 
 Then replace local ids (`local-…`) with durable references of your own, and answer with `saveResult`.
 
@@ -162,7 +227,13 @@ Then replace local ids (`local-…`) with durable references of your own, and an
 
 ## Configuration
 
-`public/schema/customizer-config.schema.json` is the JSON Schema; `src/app/customizer/models/` has the matching
+**Schema version 2** (`public/schema/product-config.schema.json`, types in `models/product.models.ts`, examples in
+`public/data/products/*.json`) is what the editor produces. Coordinates: layers use the area's canvas pixels, mockup
+placements are 0..1 fractions of the mockup photograph (so editor size never changes saved coordinates), z-order is
+array order. Layer ids are unique across the configuration; fields are bound by `layer.fieldId` and may be scoped to
+an area/artwork (omit the scope to share one field across artworks). Version 1 files are upgraded at load time.
+
+The rest of this section documents **schema version 1**. `public/schema/customizer-config.schema.json` is the JSON Schema; `src/app/customizer/models/` has the matching
 TypeScript types; `public/data/*.json` are three working examples. The runtime validator additionally enforces
 what a schema can't: unique ids, field/font references, one layer per field, geometry inside the canvas,
 print/canvas aspect equality, **mockup placement aspect equality (checked after the mockup loads; mismatches are
@@ -222,23 +293,27 @@ Verified with a strict host policy (`default-src 'none'`):
 
 ```
 src/main.ts                     demo app bootstrap          src/main.element.ts   element registration
-src/app/app.*                   demo host (simulated save / failure / no response, downloads, restore)
+src/app/app.*                   shell + lazy routes (/, /editor/:id, /storefront/:id, /element-demo)
+src/app/pages/                  element-demo: v1/v2 configs by URL through the element contract
+src/app/editor/                 merchant editor: pages, components (stage, panels, forms), services (store, repository), util (edit ops, box math)
 src/app/customizer/
   product-customizer.component.*  the element (inputs/outputs = public contract; all styles live in its shadow root)
   components/                   preview, text, photo+crop, artwork, action bar
   models/                       config / draft / events types + element contract (compiled to dist/element/types)
   services/                     config, font (shared cache), image, asset-store, state, render, export,
                                 save-coordinator (request-id protocol), load-pipeline
-  util/                         pure logic: validator, URL policy, crop + DPI math, text fit, scene evaluation, drawing
+  util/                         pure logic: v1/v2 validators, v1→v2 upgrade, resolution, URL policy, crop + DPI math,
+                                text layout, scene evaluation, drawing, geometry/shapes
 public/data, public/assets, public/schema      samples, fixtures, JSON Schema
 integration-demo/index.html     framework-free host page (copied into dist/element/integration-demo/)
 scripts/                        finalize-element, serve-static, generate-fixtures
 tests/browser, tests/types      browser suite and declaration consumer test (unit specs sit beside their sources)
 ```
 
-Architecture in one paragraph: a pure function (`evaluateDraft`) turns configuration + draft + loaded assets into a list
-of draw operations and every validation result. The on-screen preview, the artwork PNG and the preview PNG all draw that
-same scene with the same `drawScene` code (only the target canvas size differs). Mutable state (`StateService`,
+Architecture in one paragraph: a pure function (`evaluateProduct`) turns configuration + resolved variant + draft +
+loaded assets into one scene (list of draw operations) per active printable area plus every validation result. The
+on-screen preview, the merchant canvas, every area's production PNG and the preview PNGs all draw those same scenes
+with the same `drawAreaScene` / `drawComposite` code (only the target canvas size differs). Mutable state (`StateService`,
 `AssetStore`, `SaveCoordinator`) is provided on each component instance, so two elements never share a draft; only the
 immutable font cache is application-wide.
 
@@ -272,11 +347,20 @@ mutation-checked: removing their fix makes them fail.
 
 | Check | Result |
 |---|---|
-| `npm test`: 13 unit spec files | 227 passed |
-| `npm run test:browser`: production bundle, headless Chrome 154 | 104 passed |
-| `npm run test:browser:dev`: same suite on the dev build | 104 passed |
-| `npm run test:types` | consumer compiles; five negative cases still error |
-| `npm run build`, `npm run build:element` | succeed within budgets (element bundle ≈ 294 kB raw; Angular estimates ~80 kB transferred, plain gzip gives ~91 kB) |
+| `npm test`: 13 unit spec files (v1 specs now run through the v1→v2 upgrade path) | 227 passed |
+| `npm run test:browser`: production element bundle, headless Chrome 154 | 104 passed (the pre-existing v1 contract suite) |
+| `npm run test:types` | consumer compiles against the shipped `.d.ts` (now including `product.models.d.ts`) |
+| `npm run build`, `npm run build:element` | succeed within budgets (element bundle ≈ 350 kB raw / ≈ 95 kB transferred; app initial ≈ 265 kB, editor lazy chunk ≈ 114 kB) |
+| Manual end-to-end run of the v2 workflows (scripted with puppeteer, scratch scripts not committed) | see below |
+
+Manual v2 run (Chrome): sample products open; select / drag / resize placements; draw a new area; edit canvas size numerically;
+add a photo slot and see the new upload field in the storefront; upload five independent photos and replace one
+(only that field's asset changed); typing changes the preview; 12 → 16 in switches mockups and enables the plaque
+area and its field; Classic ↔ Collage swaps the fields and keeps the main photo; the exports are 2000 × 2000 (heart
+mask, transparent outside), 3200 × 800 and 1600 × 300 PNGs plus 1200 × 900 previews; low-resolution warning; fit and
+rotate; conditional date field; save → reload → reopen for both the merchant configuration and a customer design;
+configuration JSON export; SVG mask upload; perspective toggle; undo/redo. axe-core (WCAG 2 A/AA, 2.1, 2.2 AA) reported
+no violations on the product list, the editor (two views) and the storefront.
 
 The browser suite covers acceptance criteria A01–A20 (details in `tests/browser/*.spec.ts`), including pixel-level
 checks that the exported artwork matches the crop/zoom/pan and orientation, that artwork excludes the mockup and the

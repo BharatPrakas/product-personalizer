@@ -1,0 +1,508 @@
+{
+  "schemaVersion": 2,
+  "id": "bottle-personalization",
+  "version": 1,
+  "status": "published",
+  "product": {
+    "id": "bottle-001",
+    "name": "Personalized Bottle (front, back & cap)"
+  },
+  "assetBaseUrl": "../../assets/",
+  "variants": [
+    {
+      "id": "ml-500",
+      "label": "500 ml",
+      "mockupIds": ["bottle-500-front", "bottle-500-back"],
+      "printableAreaIds": ["front-label", "back-label", "cap"]
+    },
+    {
+      "id": "ml-750",
+      "label": "750 ml",
+      "mockupIds": ["bottle-750-front", "bottle-750-back"],
+      "printableAreaIds": ["front-label", "back-label", "cap"]
+    }
+  ],
+  "mockups": [
+    {
+      "id": "bottle-500-front",
+      "name": "Front",
+      "src": "mockups/bottle-500-front.jpg",
+      "placements": [
+        {
+          "printableAreaId": "front-label",
+          "type": "rect",
+          "x": 0.275,
+          "y": 0.475,
+          "width": 0.45,
+          "height": 0.3375
+        },
+        {
+          "printableAreaId": "cap",
+          "type": "rect",
+          "x": 0.741667,
+          "y": 0.075,
+          "width": 0.183333,
+          "height": 0.1375
+        }
+      ]
+    },
+    {
+      "id": "bottle-500-back",
+      "name": "Back",
+      "src": "mockups/bottle-500-back.jpg",
+      "placements": [
+        {
+          "printableAreaId": "back-label",
+          "type": "rect",
+          "x": 0.3,
+          "y": 0.45,
+          "width": 0.4,
+          "height": 0.375
+        },
+        {
+          "printableAreaId": "cap",
+          "type": "rect",
+          "x": 0.741667,
+          "y": 0.075,
+          "width": 0.183333,
+          "height": 0.1375
+        }
+      ]
+    },
+    {
+      "id": "bottle-750-front",
+      "name": "Front",
+      "src": "mockups/bottle-750-front.jpg",
+      "placements": [
+        {
+          "printableAreaId": "front-label",
+          "type": "rect",
+          "x": 0.275,
+          "y": 0.5,
+          "width": 0.45,
+          "height": 0.3375
+        },
+        {
+          "printableAreaId": "cap",
+          "type": "rect",
+          "x": 0.741667,
+          "y": 0.075,
+          "width": 0.183333,
+          "height": 0.1375
+        }
+      ]
+    },
+    {
+      "id": "bottle-750-back",
+      "name": "Back",
+      "src": "mockups/bottle-750-back.jpg",
+      "placements": [
+        {
+          "printableAreaId": "back-label",
+          "type": "rect",
+          "x": 0.3,
+          "y": 0.5,
+          "width": 0.4,
+          "height": 0.375
+        },
+        {
+          "printableAreaId": "cap",
+          "type": "rect",
+          "x": 0.741667,
+          "y": 0.075,
+          "width": 0.183333,
+          "height": 0.1375
+        }
+      ]
+    }
+  ],
+  "printableAreas": [
+    {
+      "id": "front-label",
+      "name": "Front label",
+      "enabled": true,
+      "canvas": {
+        "width": 2000,
+        "height": 2000,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect"
+      },
+      "artworkId": "front-label-art",
+      "artworkIds": ["front-label-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 100,
+        "heightMm": 100,
+        "warnDpi": 150
+      }
+    },
+    {
+      "id": "back-label",
+      "name": "Back label",
+      "enabled": true,
+      "canvas": {
+        "width": 1600,
+        "height": 2000,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect"
+      },
+      "artworkId": "back-label-art",
+      "artworkIds": ["back-label-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 80,
+        "heightMm": 100,
+        "warnDpi": 150
+      }
+    },
+    {
+      "id": "cap",
+      "name": "Cap",
+      "enabled": true,
+      "canvas": {
+        "width": 1000,
+        "height": 1000,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "ellipse"
+      },
+      "artworkId": "cap-art",
+      "artworkIds": ["cap-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 30,
+        "heightMm": 30,
+        "warnDpi": 150
+      }
+    }
+  ],
+  "artworks": [
+    {
+      "id": "front-label-art",
+      "name": "Front label",
+      "printableAreaId": "front-label",
+      "background": "#fbf7ee",
+      "layers": [
+        {
+          "id": "front-band",
+          "type": "shape",
+          "shape": {
+            "type": "rect"
+          },
+          "x": 0,
+          "y": 0,
+          "width": 2000,
+          "height": 440,
+          "fill": "#1f4d3a",
+          "name": "Header band"
+        },
+        {
+          "id": "label-title-layer",
+          "type": "text",
+          "fieldId": "bottle-title",
+          "x": 100,
+          "y": 60,
+          "width": 1800,
+          "height": 320,
+          "fontSize": 260,
+          "minFontSize": 90,
+          "align": "center",
+          "name": "Title"
+        },
+        {
+          "id": "label-photo-layer",
+          "type": "image-placeholder",
+          "fieldId": "label-photo",
+          "x": 550,
+          "y": 520,
+          "width": 900,
+          "height": 900,
+          "fit": "cover",
+          "clip": {
+            "type": "ellipse"
+          },
+          "name": "Label photo"
+        },
+        {
+          "id": "label-subtitle-layer",
+          "type": "text",
+          "fieldId": "bottle-subtitle",
+          "x": 150,
+          "y": 1480,
+          "width": 1700,
+          "height": 200,
+          "fontSize": 130,
+          "minFontSize": 50,
+          "align": "center",
+          "name": "Subtitle"
+        },
+        {
+          "id": "label-handcrafted",
+          "type": "text",
+          "text": "HANDCRAFTED",
+          "fontId": "serif",
+          "color": "#1f4d3a",
+          "x": 300,
+          "y": 1740,
+          "width": 1400,
+          "height": 150,
+          "fontSize": 90,
+          "minFontSize": 40,
+          "align": "center",
+          "name": "Handcrafted"
+        }
+      ]
+    },
+    {
+      "id": "back-label-art",
+      "name": "Back label",
+      "printableAreaId": "back-label",
+      "background": "#fbf7ee",
+      "layers": [
+        {
+          "id": "back-heading",
+          "type": "text",
+          "text": "Our story",
+          "fontId": "serif",
+          "color": "#1f4d3a",
+          "x": 100,
+          "y": 90,
+          "width": 1400,
+          "height": 230,
+          "fontSize": 190,
+          "minFontSize": 70,
+          "align": "center",
+          "name": "Heading"
+        },
+        {
+          "id": "back-story-layer",
+          "type": "text",
+          "fieldId": "bottle-story",
+          "x": 140,
+          "y": 360,
+          "width": 1320,
+          "height": 980,
+          "fontSize": 100,
+          "minFontSize": 44,
+          "align": "left",
+          "wrap": true,
+          "lineHeight": 1.25,
+          "verticalAlign": "top",
+          "name": "Story"
+        },
+        {
+          "id": "back-logo-layer",
+          "type": "image-placeholder",
+          "fieldId": "back-logo",
+          "x": 560,
+          "y": 1430,
+          "width": 480,
+          "height": 400,
+          "fit": "contain",
+          "name": "Logo"
+        },
+        {
+          "id": "back-footer",
+          "type": "text",
+          "text": "Bottled with care",
+          "fontId": "sans",
+          "color": "#4b5563",
+          "x": 100,
+          "y": 1860,
+          "width": 1400,
+          "height": 100,
+          "fontSize": 70,
+          "minFontSize": 36,
+          "align": "center",
+          "name": "Footer"
+        }
+      ]
+    },
+    {
+      "id": "cap-art",
+      "name": "Cap",
+      "printableAreaId": "cap",
+      "background": "#111827",
+      "layers": [
+        {
+          "id": "cap-ring",
+          "type": "shape",
+          "shape": {
+            "type": "ellipse"
+          },
+          "x": 50,
+          "y": 50,
+          "width": 900,
+          "height": 900,
+          "fill": "transparent",
+          "stroke": "#f4b400",
+          "strokeWidth": 24,
+          "name": "Ring"
+        },
+        {
+          "id": "cap-initials-layer",
+          "type": "text",
+          "fieldId": "cap-initials",
+          "x": 160,
+          "y": 260,
+          "width": 680,
+          "height": 480,
+          "fontSize": 480,
+          "minFontSize": 160,
+          "align": "center",
+          "name": "Initials"
+        }
+      ]
+    }
+  ],
+  "fonts": [
+    {
+      "id": "sans",
+      "family": "CustomizerSans",
+      "label": "Sans",
+      "src": "fonts/sans-regular.woff2"
+    },
+    {
+      "id": "sans-bold",
+      "family": "CustomizerSansBold",
+      "label": "Sans bold",
+      "src": "fonts/sans-bold.woff2"
+    },
+    {
+      "id": "serif",
+      "family": "CustomizerSerif",
+      "label": "Serif bold",
+      "src": "fonts/serif-bold.woff2"
+    },
+    {
+      "id": "mono",
+      "family": "CustomizerMono",
+      "label": "Mono bold",
+      "src": "fonts/mono-bold.woff2"
+    }
+  ],
+  "fields": [
+    {
+      "id": "bottle-title",
+      "type": "text",
+      "label": "Bottle name",
+      "required": true,
+      "maxLength": 14,
+      "fontIds": ["serif", "sans-bold"],
+      "colors": ["#ffffff", "#f4b400", "#111827", "#1f4d3a"],
+      "printableAreaId": "front-label",
+      "artworkId": "front-label-art",
+      "defaultValue": {
+        "text": "Green Valley",
+        "fontId": "serif",
+        "color": "#ffffff"
+      },
+      "placeholder": "e.g. Green Valley"
+    },
+    {
+      "id": "label-photo",
+      "type": "image",
+      "label": "Label photo",
+      "required": false,
+      "printableAreaId": "front-label",
+      "artworkId": "front-label-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      },
+      "helpText": "Shown in a circle on the front label."
+    },
+    {
+      "id": "bottle-subtitle",
+      "type": "text",
+      "label": "Tagline",
+      "required": false,
+      "maxLength": 26,
+      "fontIds": ["sans", "serif"],
+      "colors": ["#111827", "#1f4d3a", "#c2185b"],
+      "printableAreaId": "front-label",
+      "artworkId": "front-label-art",
+      "defaultValue": {
+        "text": "Cold-pressed with love",
+        "fontId": "sans",
+        "color": "#1f4d3a"
+      },
+      "placeholder": "e.g. Small batch"
+    },
+    {
+      "id": "bottle-story",
+      "type": "text",
+      "label": "Story (back label)",
+      "required": false,
+      "maxLength": 220,
+      "fontIds": ["sans", "serif"],
+      "colors": ["#111827", "#1f4d3a"],
+      "printableAreaId": "back-label",
+      "artworkId": "back-label-art",
+      "defaultValue": {
+        "text": "Every bottle starts with a story. Add yours here and it will be printed on the back label.",
+        "fontId": "sans",
+        "color": "#111827"
+      },
+      "helpText": "Wraps and shrinks to fit."
+    },
+    {
+      "id": "back-logo",
+      "type": "image",
+      "label": "Logo (back label)",
+      "required": false,
+      "printableAreaId": "back-label",
+      "artworkId": "back-label-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      },
+      "helpText": "PNG with a transparent background works best."
+    },
+    {
+      "id": "cap-initials",
+      "type": "text",
+      "label": "Cap initials",
+      "required": false,
+      "maxLength": 3,
+      "fontIds": ["sans-bold", "serif", "mono"],
+      "colors": ["#f4b400", "#ffffff"],
+      "printableAreaId": "cap",
+      "artworkId": "cap-art",
+      "defaultValue": {
+        "text": "GV",
+        "fontId": "sans-bold",
+        "color": "#f4b400"
+      },
+      "placeholder": "GV"
+    }
+  ],
+  "preview": {
+    "defaultMockupId": "bottle-500-front"
+  },
+  "displayPrice": {
+    "currency": "INR",
+    "exponent": 2,
+    "baseMinor": 79900,
+    "customizationFeeMinor": 20000
+  }
+}

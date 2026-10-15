@@ -13,6 +13,11 @@ export interface AssetPolicy {
   pageOrigin: string;
   /** Extra origins the host allows. Empty means "any http(s) origin". */
   allowedOrigins: readonly string[];
+  /**
+   * Standalone authoring app only: also accept `idb:<id>` (browser-stored upload) and inline
+   * `data:image/` sources. Hosted configurations never need this and the element leaves it off.
+   */
+  allowLocalAssets?: boolean;
 }
 
 export type UrlCheck = { ok: true; url: string } | { ok: false; code: string; message: string };
@@ -23,6 +28,16 @@ const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f\\]/;
 const MAX_URL_LENGTH = 2048;
 
 const fail = (code: string, message: string): UrlCheck => ({ ok: false, code, message });
+
+/** A browser-stored upload (`idb:<id>`), resolved from IndexedDB by the image service. */
+export const LOCAL_ASSET_SCHEME = 'idb:';
+const LOCAL_ASSET = /^idb:[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const DATA_IMAGE = /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+const MAX_DATA_URL_LENGTH = 12 * 1024 * 1024;
+
+export function isLocalAssetUrl(url: string): boolean {
+  return LOCAL_ASSET.test(url);
+}
 
 /** `https://CDN.example.com/` -> `https://cdn.example.com`, so host-supplied entries match `URL.origin`. */
 function normaliseOrigin(origin: string): string {
@@ -50,6 +65,10 @@ export function checkAssetSrc(
   policy: AssetPolicy,
   options: { allowParentSegments?: boolean } = {},
 ): UrlCheck {
+  if (policy.allowLocalAssets && typeof src === 'string') {
+    if (LOCAL_ASSET.test(src)) return { ok: true, url: src };
+    if (src.length <= MAX_DATA_URL_LENGTH && DATA_IMAGE.test(src)) return { ok: true, url: src };
+  }
   if (typeof src !== 'string' || src.length === 0 || src.length > MAX_URL_LENGTH) {
     return fail('invalid-url', `must be a non-empty URL of at most ${MAX_URL_LENGTH} characters`);
   }

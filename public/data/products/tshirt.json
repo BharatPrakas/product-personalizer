@@ -1,0 +1,462 @@
+{
+  "schemaVersion": 2,
+  "id": "tshirt-personalization",
+  "version": 1,
+  "status": "published",
+  "product": {
+    "id": "tshirt-001",
+    "name": "Personalized T-Shirt (front & back)"
+  },
+  "assetBaseUrl": "../../assets/",
+  "variants": [
+    {
+      "id": "white",
+      "label": "White",
+      "swatch": "#fbfbfa",
+      "mockupIds": ["white-front", "white-back"],
+      "printableAreaIds": ["tshirt-front", "tshirt-back"]
+    },
+    {
+      "id": "navy",
+      "label": "Navy",
+      "swatch": "#1e2a4a",
+      "mockupIds": ["navy-front", "navy-back"],
+      "printableAreaIds": ["tshirt-front", "tshirt-back"]
+    }
+  ],
+  "mockups": [
+    {
+      "id": "white-front",
+      "name": "Front",
+      "src": "mockups/tshirt-white.jpg",
+      "placements": [
+        {
+          "printableAreaId": "tshirt-front",
+          "type": "rect",
+          "x": 0.32,
+          "y": 0.3,
+          "width": 0.36,
+          "height": 0.42,
+          "blendMode": "multiply",
+          "opacity": 0.95
+        }
+      ]
+    },
+    {
+      "id": "white-back",
+      "name": "Back",
+      "src": "mockups/tshirt-white-back.jpg",
+      "placements": [
+        {
+          "printableAreaId": "tshirt-back",
+          "type": "rect",
+          "x": 0.31,
+          "y": 0.235,
+          "width": 0.38,
+          "height": 0.443333,
+          "blendMode": "multiply",
+          "opacity": 0.95
+        }
+      ]
+    },
+    {
+      "id": "navy-front",
+      "name": "Front",
+      "src": "mockups/tshirt-navy-front.jpg",
+      "placements": [
+        {
+          "printableAreaId": "tshirt-front",
+          "type": "rect",
+          "x": 0.32,
+          "y": 0.3,
+          "width": 0.36,
+          "height": 0.42
+        }
+      ]
+    },
+    {
+      "id": "navy-back",
+      "name": "Back",
+      "src": "mockups/tshirt-navy-back.jpg",
+      "placements": [
+        {
+          "printableAreaId": "tshirt-back",
+          "type": "rect",
+          "x": 0.31,
+          "y": 0.235,
+          "width": 0.38,
+          "height": 0.443333
+        }
+      ]
+    }
+  ],
+  "printableAreas": [
+    {
+      "id": "tshirt-front",
+      "name": "Front print",
+      "enabled": true,
+      "canvas": {
+        "width": 2400,
+        "height": 2800,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect"
+      },
+      "artworkId": "front-photo-art",
+      "artworkIds": ["front-photo-art", "front-text-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 280,
+        "heightMm": 326.7,
+        "warnDpi": 150
+      }
+    },
+    {
+      "id": "tshirt-back",
+      "name": "Back print",
+      "enabled": true,
+      "canvas": {
+        "width": 3000,
+        "height": 3500,
+        "background": "transparent"
+      },
+      "shape": {
+        "type": "rect"
+      },
+      "artworkId": "back-art",
+      "artworkIds": ["back-art"],
+      "boundary": {
+        "visible": true,
+        "color": "#e11d48",
+        "opacity": 0.85
+      },
+      "print": {
+        "widthMm": 330,
+        "heightMm": 385,
+        "warnDpi": 150
+      }
+    }
+  ],
+  "artworks": [
+    {
+      "id": "front-photo-art",
+      "name": "Photo print",
+      "printableAreaId": "tshirt-front",
+      "layers": [
+        {
+          "id": "front-photo-layer",
+          "type": "image-placeholder",
+          "fieldId": "front-photo",
+          "x": 300,
+          "y": 200,
+          "width": 1800,
+          "height": 1800,
+          "fit": "cover",
+          "clip": {
+            "type": "ellipse"
+          },
+          "name": "Photo"
+        },
+        {
+          "id": "front-photo-ring",
+          "type": "shape",
+          "shape": {
+            "type": "ellipse"
+          },
+          "x": 300,
+          "y": 200,
+          "width": 1800,
+          "height": 1800,
+          "fill": "transparent",
+          "stroke": "#c2185b",
+          "strokeWidth": 24,
+          "name": "Photo ring"
+        },
+        {
+          "id": "front-caption-layer",
+          "type": "text",
+          "fieldId": "front-caption",
+          "x": 200,
+          "y": 2150,
+          "width": 2000,
+          "height": 400,
+          "fontSize": 260,
+          "minFontSize": 80,
+          "align": "center",
+          "name": "Caption"
+        }
+      ]
+    },
+    {
+      "id": "front-text-art",
+      "name": "Big text + motif",
+      "printableAreaId": "tshirt-front",
+      "layers": [
+        {
+          "id": "front-motif-layer",
+          "type": "artwork",
+          "fieldId": "front-motif",
+          "x": 700,
+          "y": 150,
+          "width": 1000,
+          "height": 1000,
+          "name": "Motif"
+        },
+        {
+          "id": "front-headline-layer",
+          "type": "text",
+          "fieldId": "front-headline",
+          "x": 150,
+          "y": 1250,
+          "width": 2100,
+          "height": 1300,
+          "fontSize": 420,
+          "minFontSize": 120,
+          "align": "center",
+          "wrap": true,
+          "lineHeight": 1.1,
+          "bold": true,
+          "name": "Headline"
+        }
+      ]
+    },
+    {
+      "id": "back-art",
+      "name": "Name & number",
+      "printableAreaId": "tshirt-back",
+      "layers": [
+        {
+          "id": "back-badge-layer",
+          "type": "image-placeholder",
+          "fieldId": "back-photo",
+          "x": 1100,
+          "y": 150,
+          "width": 800,
+          "height": 800,
+          "fit": "cover",
+          "clip": {
+            "type": "ellipse"
+          },
+          "name": "Badge photo"
+        },
+        {
+          "id": "back-name-layer",
+          "type": "text",
+          "fieldId": "back-name",
+          "x": 200,
+          "y": 1050,
+          "width": 2600,
+          "height": 650,
+          "fontSize": 520,
+          "minFontSize": 140,
+          "align": "center",
+          "name": "Name"
+        },
+        {
+          "id": "back-number-layer",
+          "type": "text",
+          "fieldId": "back-number",
+          "x": 600,
+          "y": 1700,
+          "width": 1800,
+          "height": 1500,
+          "fontSize": 1300,
+          "minFontSize": 500,
+          "align": "center",
+          "name": "Number"
+        },
+        {
+          "id": "back-logo-layer",
+          "type": "fixed-image",
+          "src": "clipart/logo-mark.png",
+          "x": 1350,
+          "y": 3200,
+          "width": 300,
+          "height": 300,
+          "fit": "contain",
+          "name": "Logo"
+        }
+      ]
+    }
+  ],
+  "fonts": [
+    {
+      "id": "sans",
+      "family": "CustomizerSans",
+      "label": "Sans",
+      "src": "fonts/sans-regular.woff2"
+    },
+    {
+      "id": "sans-bold",
+      "family": "CustomizerSansBold",
+      "label": "Sans bold",
+      "src": "fonts/sans-bold.woff2"
+    },
+    {
+      "id": "serif",
+      "family": "CustomizerSerif",
+      "label": "Serif bold",
+      "src": "fonts/serif-bold.woff2"
+    },
+    {
+      "id": "mono",
+      "family": "CustomizerMono",
+      "label": "Mono bold",
+      "src": "fonts/mono-bold.woff2"
+    }
+  ],
+  "fields": [
+    {
+      "id": "front-photo",
+      "type": "image",
+      "label": "Front photo",
+      "required": true,
+      "printableAreaId": "tshirt-front",
+      "artworkId": "front-photo-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      },
+      "helpText": "Shown in a circle on the chest."
+    },
+    {
+      "id": "front-caption",
+      "type": "text",
+      "label": "Caption",
+      "required": false,
+      "maxLength": 20,
+      "fontIds": ["sans-bold", "serif", "mono"],
+      "colors": ["#111827", "#c2185b", "#ffffff", "#f4b400"],
+      "printableAreaId": "tshirt-front",
+      "artworkId": "front-photo-art",
+      "defaultValue": {
+        "text": "",
+        "fontId": "sans-bold",
+        "color": "#c2185b"
+      },
+      "placeholder": "e.g. Team Johnson",
+      "styleControls": ["bold", "italic", "underline"]
+    },
+    {
+      "id": "front-headline",
+      "type": "text",
+      "label": "Headline",
+      "required": true,
+      "maxLength": 28,
+      "fontIds": ["sans-bold", "serif", "mono"],
+      "colors": ["#111827", "#c2185b", "#ffffff", "#f4b400"],
+      "printableAreaId": "tshirt-front",
+      "artworkId": "front-text-art",
+      "defaultValue": {
+        "text": "Best Day Ever",
+        "fontId": "sans-bold",
+        "color": "#111827"
+      },
+      "styleControls": ["bold", "italic", "underline", "align"],
+      "helpText": "Wraps onto several lines."
+    },
+    {
+      "id": "front-motif",
+      "type": "artwork",
+      "label": "Motif",
+      "required": false,
+      "printableAreaId": "tshirt-front",
+      "artworkId": "front-text-art",
+      "choices": [
+        {
+          "id": "star",
+          "label": "Star",
+          "src": "clipart/star.png"
+        },
+        {
+          "id": "heart",
+          "label": "Heart",
+          "src": "clipart/heart.png"
+        },
+        {
+          "id": "moon",
+          "label": "Moon",
+          "src": "clipart/moon.png"
+        },
+        {
+          "id": "sun",
+          "label": "Sun",
+          "src": "clipart/sun.png"
+        },
+        {
+          "id": "leaf",
+          "label": "Leaf",
+          "src": "clipart/leaf.png"
+        },
+        {
+          "id": "paw",
+          "label": "Paw",
+          "src": "clipart/paw.png"
+        }
+      ],
+      "defaultChoiceId": "star"
+    },
+    {
+      "id": "back-name",
+      "type": "text",
+      "label": "Name on back",
+      "required": false,
+      "maxLength": 14,
+      "fontIds": ["sans-bold", "serif", "mono"],
+      "colors": ["#111827", "#c2185b", "#ffffff", "#f4b400"],
+      "printableAreaId": "tshirt-back",
+      "artworkId": "back-art",
+      "defaultValue": {
+        "text": "JOHNSON",
+        "fontId": "sans-bold",
+        "color": "#111827"
+      },
+      "placeholder": "Surname"
+    },
+    {
+      "id": "back-number",
+      "type": "text",
+      "label": "Number",
+      "required": false,
+      "maxLength": 2,
+      "fontIds": ["sans-bold", "mono"],
+      "colors": ["#111827", "#c2185b", "#ffffff", "#f4b400"],
+      "printableAreaId": "tshirt-back",
+      "artworkId": "back-art",
+      "defaultValue": {
+        "text": "10",
+        "fontId": "sans-bold",
+        "color": "#111827"
+      },
+      "placeholder": "10"
+    },
+    {
+      "id": "back-photo",
+      "type": "image",
+      "label": "Back badge photo (optional)",
+      "required": false,
+      "printableAreaId": "tshirt-back",
+      "artworkId": "back-art",
+      "accept": ["image/png", "image/jpeg"],
+      "minPixels": {
+        "width": 400,
+        "height": 400
+      }
+    }
+  ],
+  "preview": {
+    "defaultMockupId": "white-front"
+  },
+  "displayPrice": {
+    "currency": "INR",
+    "exponent": 2,
+    "baseMinor": 59900,
+    "customizationFeeMinor": 15000
+  }
+}
