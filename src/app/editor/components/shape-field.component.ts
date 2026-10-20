@@ -11,7 +11,7 @@ import { CONTROLS, Option } from './controls.component';
   selector: 'app-shape-field',
   imports: [CONTROLS],
   template: `
-    <div class="ed-group">
+    <div class="panel-section">
       <app-select
         [label]="label()"
         [options]="options()"
@@ -35,7 +35,7 @@ import { CONTROLS, Option } from './controls.component';
             [value]="s.d"
             (changed)="setPath($event, s.viewBox)"
           />
-          <div class="ed-row">
+          <div class="row row--end">
             <app-num
               label="View box width"
               [value]="s.viewBox[0]"
@@ -49,18 +49,18 @@ import { CONTROLS, Option } from './controls.component';
               (changed)="setPath(s.d, [s.viewBox[0], $event])"
             />
           </div>
-          <div class="ed-row">
+          <div class="row row--end">
             <app-file
               label="Upload SVG mask"
               accept="image/svg+xml,.svg"
               (chosen)="readSvg($event)"
             />
-            <button type="button" class="ed-btn" (click)="changed.emit(heart)">Use heart</button>
+            <button type="button" class="btn" (click)="changed.emit(heart)">Use heart</button>
           </div>
         }
       }
       @if (problem(); as text) {
-        <p class="ed-error" role="alert">{{ text }}</p>
+        <p class="field-error" role="alert">{{ text }}</p>
       }
     </div>
   `,

@@ -12,14 +12,24 @@ import { AssetStore } from '../../customizer/services/asset-store.service';
 import { ExportService } from '../../customizer/services/export.service';
 import { FontService } from '../../customizer/services/font.service';
 import { ImageService } from '../../customizer/services/image.service';
-import { LocalAssetLibrary } from '../../customizer/services/local-asset-library.service';
 import { PreviewComposite, RenderService } from '../../customizer/services/render.service';
 import { DraftValues, defaultValues } from '../../customizer/util/draft-utils';
 import { ResolvedProduct, resolveProduct } from '../../customizer/util/resolve';
 import { Evaluation, LocalAsset, evaluateProduct } from '../../customizer/util/scene';
+import { ToastService } from '../../ui/toast.service';
+import {
+  ConfigurationConflictError,
+  ConfigurationInvalidError,
+  ConfigurationRepository,
+  StorageError,
+} from '../../workspace/configuration-repository';
+import { ConfigurationRecord, hasUnpublishedChanges } from '../../workspace/configuration.models';
+import { ConfigurationTransferService } from '../../workspace/configuration-transfer.service';
+import { SetupStep, canPublish, setupSteps } from '../../workspace/publish-readiness';
+import { ImageUploadService } from '../../workspace/image-upload.service';
+import { validateConfiguration } from '../../workspace/validation';
 import * as edit from '../util/config-edit';
 import { downloadBlob, safeFilename } from '../util/download';
-import { ConfigRepository, validateLocal } from './config-repository.service';
 
 export type StageView = 'mockup' | 'artwork';
 
@@ -31,7 +41,12 @@ export type Selection =
   | { kind: 'artwork'; id: string }
   | { kind: 'layer'; id: string };
 
-export type Tool = { kind: 'select' } | { kind: 'draw'; shape: ShapeSpec['type'] };
+/** `draw` creates a printable area of the given shape by dragging on the mockup. */
+export type Tool = { kind: 'select' } | { kind: 'pan' } | { kind: 'draw'; shape: ShapeSpec };
+
+export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers';
+
+export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 const SAMPLE_PHOTOS = ['photo-1', 'photo-2', 'photo-3', 'photo-4', 'photo-5', 'photo-6'];
 const HISTORY_LIMIT = 100;
@@ -44,8 +59,10 @@ const COALESCE_MS = 800;
  */
 @Service({ autoProvided: false })
 export class EditorStore {
-  private readonly repo = inject(ConfigRepository);
-  private readonly library = inject(LocalAssetLibrary);
+  private readonly repo = inject(ConfigurationRepository);
+  private readonly transfer = inject(ConfigurationTransferService);
+  private readonly toasts = inject(ToastService);
+  private readonly uploads = inject(ImageUploadService);
   private readonly images = inject(ImageService);
   private readonly fonts = inject(FontService);
   private readonly render = inject(RenderService);
@@ -56,7 +73,18 @@ export class EditorStore {
 
   readonly config = signal<ProductConfig | null>(null);
   private readonly saved = signal<ProductConfig | null>(null);
-  readonly sample = signal<string | undefined>(undefined);
+  /** The stored record (draft + published snapshot) this editor session was opened from. */
+  readonly record = signal<ConfigurationRecord | null>(null);
+  readonly saveState = signal<SaveState>('idle');
+  /** Where saves go, in words the merchant can trust (never overstates persistence). */
+  readonly storageLabel = computed(() => this.repo.storage().label);
+  /** Set when saves cannot survive a reload (browser storage unavailable). */
+  readonly storageWarning = computed(() => {
+    const info = this.repo.storage();
+    return info.persistent ? null : info.label;
+  });
+  readonly saveError = signal<string | null>(null);
+  readonly publishing = signal(false);
   private past: ProductConfig[] = [];
   private future: ProductConfig[] = [];
   private readonly historyTick = signal(0);
@@ -65,13 +93,38 @@ export class EditorStore {
   readonly canUndo = computed(() => (this.historyTick(), this.past.length > 0));
   readonly canRedo = computed(() => (this.historyTick(), this.future.length > 0));
   readonly dirty = computed(() => this.config() !== this.saved());
-  readonly notice = signal<{ kind: 'info' | 'error'; text: string } | null>(null);
+
+  /** Published once, and the working draft has moved on since. */
+  readonly unpublishedChanges = computed(() => {
+    const record = this.record();
+    const config = this.config();
+    return !!record && !!config && hasUnpublishedChanges({ ...record, draft: config });
+  });
+  readonly published = computed(() => this.record()?.published ?? null);
 
   // ---- validation + the copy the renderer uses ----------------------------------------------------
 
+  /** Drafts may be incomplete; structural problems still block saving. */
   readonly validation = computed(() => {
     const config = this.config();
-    return config ? validateLocal(config) : null;
+    return config ? validateConfiguration(config, { allowIncomplete: true }) : null;
+  });
+  private readonly strictIssues = computed<ConfigIssue[]>(() => {
+    const config = this.config();
+    if (!config) return [];
+    const strict = validateConfiguration(config, { allowIncomplete: false });
+    return strict.ok ? [] : strict.issues;
+  });
+  /** The guided setup, which doubles as the publish checklist. */
+  readonly steps = computed<SetupStep[]>(() => {
+    const config = this.config();
+    return config ? setupSteps(config, this.strictIssues()) : [];
+  });
+  readonly publishable = computed(() => canPublish(this.steps()));
+  /** The customer preview needs a configuration the storefront accepts. */
+  readonly previewable = computed(() => {
+    const config = this.config();
+    return !!config && config.mockups.length > 0 && this.strictIssues().length === 0;
   });
   readonly issues = computed<ConfigIssue[]>(() => {
     const v = this.validation();
@@ -93,7 +146,11 @@ export class EditorStore {
   private readonly areaIdState = signal('');
   readonly selection = signal<Selection>({ kind: 'product' });
   readonly tool = signal<Tool>({ kind: 'select' });
-  readonly sampleContent = signal(true);
+  readonly sidebarTab = signal<SidebarTab>('mockups');
+  /** Opens the "Add printable area" dialog (the sidebar and the empty states both offer it). */
+  readonly addAreaDialogOpen = signal(false);
+  /** Optional: fill customer slots with bundled sample photos to judge a design. Off by default. */
+  readonly sampleContent = signal(false);
   readonly showBoundaries = signal(true);
   /** Artwork shown per area on the stage (the area's default until the merchant picks another). */
   readonly artworkChoice = signal<Readonly<Record<string, string>>>({});
@@ -187,64 +244,115 @@ export class EditorStore {
       const config = this.resolvedConfig();
       if (config) untracked(() => void this.syncAssets(config));
     });
-    void this.loadSamples();
+  }
+
+  setSampleContent(on: boolean): void {
+    this.sampleContent.set(on);
+    if (on && this.samples().length === 0) void this.loadSamples();
   }
 
   // ---- loading and saving ----------------------------------------------------------------------------
 
   async open(id: string): Promise<boolean> {
-    const stored = await this.repo.get(id);
-    if (!stored) return false;
-    this.config.set(stored.config);
-    this.saved.set(stored.config);
-    this.sample.set(stored.sample);
+    let record: ConfigurationRecord | null;
+    try {
+      record = await this.repo.get(id);
+    } catch (error) {
+      this.toasts.error(
+        error instanceof StorageError ? error.message : 'The configuration could not be opened.',
+      );
+      return false;
+    }
+    if (!record) return false;
+    const draft = record.draft;
+    this.record.set(record);
+    this.config.set(draft);
+    this.saved.set(draft);
+    this.saveState.set('idle');
+    this.saveError.set(null);
     this.past = [];
     this.future = [];
     this.historyTick.update((n) => n + 1);
-    this.mockupIdState.set(stored.config.mockups[0].id);
-    this.areaIdState.set(stored.config.printableAreas[0].id);
+    this.mockupIdState.set(draft.mockups[0]?.id ?? '');
+    this.areaIdState.set(draft.printableAreas[0]?.id ?? '');
     this.artworkChoice.set({});
     this.selection.set({ kind: 'product' });
     this.view.set('mockup');
     return true;
   }
 
-  async save(): Promise<void> {
+  /** Store the working draft. Resolves true only after the repository confirmed the write. */
+  async saveDraft(): Promise<boolean> {
     const config = this.config();
-    if (!config) return;
-    const issues = this.issues();
-    if (issues.length > 0) {
-      this.notify('error', `Fix ${issues.length} configuration problem(s) before saving.`);
-      return;
+    const record = this.record();
+    if (!config || !record || this.saveState() === 'saving') return false;
+    if (this.issues().length > 0) {
+      const message = `Fix ${this.issues().length} configuration problem(s) before saving.`;
+      this.saveState.set('error');
+      this.saveError.set(message);
+      this.toasts.error(message);
+      return false;
     }
-    // Published configurations get a new version on every save so older customer drafts are not restored onto them.
-    const toSave =
-      config.status === 'published' && this.dirty()
-        ? { ...config, version: config.version + 1 }
-        : config;
-    const record = await this.repo.save(toSave, this.sample());
-    this.config.set(record.config);
-    this.saved.set(record.config);
-    this.notify(
-      'info',
-      `Saved (version ${record.config.version}). Reopen it from the product list at any time.`,
-    );
+    this.saveState.set('saving');
+    this.saveError.set(null);
+    try {
+      const next = await this.repo.saveDraft(record.id, config, record.updatedAt);
+      this.record.set(next);
+      // The baseline is the object that was stored; edits made while saving stay unsaved.
+      this.saved.set(config);
+      this.saveState.set('saved');
+      return true;
+    } catch (error) {
+      const message = this.describeFailure(error);
+      this.saveState.set('error');
+      this.saveError.set(message);
+      this.toasts.error(message);
+      return false;
+    }
   }
 
-  async restoreSample(): Promise<void> {
-    const config = this.config();
-    if (!config) return;
-    const restored = await this.repo.restoreSample(config.id);
-    if (!restored) {
-      this.notify('error', 'This configuration was not created from a sample.');
-      return;
+  /** Save the draft (if needed), then publish it as the next version. */
+  async publish(): Promise<boolean> {
+    const record = this.record();
+    if (!record || this.publishing()) return false;
+    this.publishing.set(true);
+    try {
+      if (this.dirty() && !(await this.saveDraft())) return false;
+      const next = await this.repo.publish(record.id);
+      this.record.set(next);
+      // The draft carries on as the next version.
+      this.config.set(next.draft);
+      this.saved.set(next.draft);
+      this.past = [];
+      this.future = [];
+      this.historyTick.update((n) => n + 1);
+      this.saveState.set('saved');
+      this.toasts.success('Published. The draft stays open for further edits.');
+      return true;
+    } catch (error) {
+      this.toasts.error(this.describeFailure(error));
+      return false;
+    } finally {
+      this.publishing.set(false);
     }
-    await this.open(config.id);
-    this.notify('info', 'Sample configuration restored.');
+  }
+
+  private describeFailure(error: unknown): string {
+    if (error instanceof ConfigurationConflictError) {
+      return 'This configuration was changed in another tab or session. Reload it to get the latest version before saving.';
+    }
+    if (error instanceof ConfigurationInvalidError) {
+      return error.issues.length > 0
+        ? `The configuration is not ready: ${error.issues[0].message}`
+        : 'The configuration is incomplete. Finish the setup steps first.';
+    }
+    if (error instanceof StorageError) return error.message;
+    return 'Something went wrong while saving. Your changes are still in the editor.';
   }
 
   notify(kind: 'info' | 'error', text: string): void {
-    this.notice.set({ kind, text });
+    if (kind === 'error') this.toasts.error(text);
+    else this.toasts.show('info', text);
   }
 
   // ---- editing ------------------------------------------------------------------------------------------
@@ -310,9 +418,9 @@ export class EditorStore {
       (s.kind === 'layer' && c.artworks.some((a) => a.layers.some((l) => l.id === s.id)));
     if (!exists) this.selection.set({ kind: 'product' });
     if (!c.mockups.some((m) => m.id === this.mockupIdState()))
-      this.mockupIdState.set(c.mockups[0].id);
+      this.mockupIdState.set(c.mockups[0]?.id ?? '');
     if (!c.printableAreas.some((a) => a.id === this.areaIdState()))
-      this.areaIdState.set(c.printableAreas[0].id);
+      this.areaIdState.set(c.printableAreas[0]?.id ?? '');
   }
 
   // ---- selection / navigation ------------------------------------------------------------------------------
@@ -325,9 +433,11 @@ export class EditorStore {
       case 'mockup':
         this.mockupIdState.set(selection.id);
         this.view.set('mockup');
+        this.sidebarTab.set('mockups');
         break;
       case 'area':
         this.areaIdState.set(selection.id);
+        this.sidebarTab.set('areas');
         break;
       case 'artwork': {
         const artwork = c.artworks.find((a) => a.id === selection.id);
@@ -335,6 +445,7 @@ export class EditorStore {
           this.areaIdState.set(artwork.printableAreaId);
           this.artworkChoice.update((m) => ({ ...m, [artwork.printableAreaId]: artwork.id }));
           this.view.set('artwork');
+          this.sidebarTab.set('artworks');
         }
         break;
       }
@@ -346,6 +457,8 @@ export class EditorStore {
             ...m,
             [found.artwork.printableAreaId]: found.artwork.id,
           }));
+          this.view.set('artwork');
+          this.sidebarTab.set('layers');
         }
         break;
       }
@@ -360,26 +473,19 @@ export class EditorStore {
   editArea(areaId: string): void {
     this.areaIdState.set(areaId);
     this.view.set('artwork');
+    this.sidebarTab.set('layers');
     this.selection.set({ kind: 'area', id: areaId });
   }
 
   // ---- compound operations used by the UI ------------------------------------------------------------------------
 
   async uploadImage(file: File): Promise<string | null> {
-    if (file.size > 15 * 1024 * 1024) {
-      this.notify('error', 'Images can be at most 15 MB.');
+    const stored = await this.uploads.store(file);
+    if (!stored.ok) {
+      this.toasts.error(stored.message);
       return null;
     }
-    try {
-      const bitmap = await this.images.decodeBlob(file);
-      const pixels = bitmap.width * bitmap.height;
-      bitmap.close();
-      if (pixels > 36_000_000) throw new Error('too large');
-    } catch {
-      this.notify('error', `"${file.name}" is not a readable PNG, JPEG or WebP image.`);
-      return null;
-    }
-    return this.library.put(file, file.name);
+    return stored.src;
   }
 
   addMockupFromFile(file: File): Promise<void> {
@@ -421,7 +527,8 @@ export class EditorStore {
       created = r.areaId;
       return r.config;
     });
-    if (created) this.editArea(created);
+    // Stay on the product photo so the new placement can be adjusted in context.
+    if (created) this.select({ kind: 'area', id: created });
   }
 
   addAreaDefault(shape: ShapeSpec): void {
@@ -474,7 +581,7 @@ export class EditorStore {
   async exportConfigJson(): Promise<void> {
     const config = this.config();
     if (!config) return;
-    const json = await this.repo.exportJson(config);
+    const json = await this.transfer.exportJson(config);
     downloadBlob(new Blob([json], { type: 'application/json' }), `${safeFilename(config.id)}.json`);
   }
 

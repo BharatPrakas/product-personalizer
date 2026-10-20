@@ -124,8 +124,8 @@ export function toggleVariantMockup(
     variants: config.variants.map((v) => {
       if (v.id !== variantId) return v;
       const ids = on ? [...v.mockupIds, mockupId] : v.mockupIds.filter((id) => id !== mockupId);
-      // A variant always keeps at least one mockup, or it could not be previewed.
-      return ids.length === 0 ? v : { ...v, mockupIds: orderedByMockups(config, ids) };
+      // A variant with no mockup is allowed while drafting; publishing requires one.
+      return { ...v, mockupIds: orderedByMockups(config, ids) };
     }),
   };
 }
@@ -144,7 +144,6 @@ export function toggleVariantArea(
       const ids = on
         ? [...new Set([...v.printableAreaIds, areaId])]
         : v.printableAreaIds.filter((id) => id !== areaId);
-      if (ids.length === 0) return v;
       return {
         ...v,
         printableAreaIds: ids.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0)),
@@ -184,9 +183,7 @@ export function updateMockup(
 }
 
 export function removeMockup(config: ProductConfig, id: string): ProductConfig {
-  if (config.mockups.length <= 1) return config;
   const mockups = config.mockups.filter((m) => m.id !== id);
-  const fallback = mockups[0].id;
   const preview =
     config.preview?.defaultMockupId === id
       ? merge(config.preview, { defaultMockupId: undefined })
@@ -195,8 +192,7 @@ export function removeMockup(config: ProductConfig, id: string): ProductConfig {
     ...config,
     mockups,
     variants: config.variants.map((v) => {
-      const ids = v.mockupIds.filter((m) => m !== id);
-      return { ...v, mockupIds: ids.length > 0 ? ids : [fallback] };
+      return { ...v, mockupIds: v.mockupIds.filter((m) => m !== id) };
     }),
     ...(preview ? { preview } : {}),
   };
@@ -405,7 +401,6 @@ export function updateArea(
 }
 
 export function removeArea(config: ProductConfig, id: string): ProductConfig {
-  if (config.printableAreas.length <= 1) return config;
   const dropped = new Set(config.artworks.filter((a) => a.printableAreaId === id).map((a) => a.id));
   return pruneConditions(
     pruneOrphanFields({
@@ -820,6 +815,25 @@ export function moveLayer(
   };
 }
 
+/** Move a layer to `toIndex` in the stack (0 = back). Used by drag-and-drop ordering. */
+export function reorderLayer(
+  config: ProductConfig,
+  layerId: string,
+  toIndex: number,
+): ProductConfig {
+  return {
+    ...config,
+    artworks: config.artworks.map((a) => {
+      const index = a.layers.findIndex((l) => l.id === layerId);
+      if (index < 0 || index === toIndex) return a;
+      const layers = [...a.layers];
+      const [layer] = layers.splice(index, 1);
+      layers.splice(Math.max(0, Math.min(layers.length, toIndex)), 0, layer);
+      return { ...a, layers };
+    }),
+  };
+}
+
 export function duplicateLayer(
   config: ProductConfig,
   layerId: string,
@@ -959,4 +973,42 @@ export function findLayer(
     if (layer) return { artwork, layer };
   }
   return null;
+}
+
+/** Copy a mockup (image, placements and overlays) into the same variants, right after the original. */
+export function duplicateMockup(
+  config: ProductConfig,
+  id: string,
+): { config: ProductConfig; id: string } | null {
+  const source = config.mockups.find((m) => m.id === id);
+  if (!source) return null;
+  const newId = uniqueId(
+    `${source.name} copy`,
+    config.mockups.map((m) => m.id),
+  );
+  const copy: ProductMockup = {
+    ...structuredClone(source),
+    id: newId,
+    name: `${source.name} copy`.slice(0, 80),
+  };
+  const index = config.mockups.findIndex((m) => m.id === id);
+  const mockups = [...config.mockups];
+  mockups.splice(index + 1, 0, copy);
+  const next: ProductConfig = {
+    ...config,
+    mockups,
+    variants: config.variants.map((v) =>
+      v.mockupIds.includes(id) ? { ...v, mockupIds: [...v.mockupIds, newId] } : v,
+    ),
+  };
+  return {
+    config: {
+      ...next,
+      variants: next.variants.map((v) => ({
+        ...v,
+        mockupIds: orderedByMockups(next, v.mockupIds),
+      })),
+    },
+    id: newId,
+  };
 }

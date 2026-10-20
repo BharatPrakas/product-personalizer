@@ -1,0 +1,107 @@
+// Design tokens. Every colour, size, radius, shadow and layer used by the application comes from
+// here; component styles reference the custom properties rather than literal values.
+
+:root {
+  // Colour: neutrals
+  --c-bg: #f5f6f8;
+  --c-surface: #ffffff;
+  --c-surface-muted: #f9fafb;
+  --c-border: #e4e7ec;
+  --c-border-strong: #c3c9d3;
+  --c-input-border: #7c8695; // 4:1 on white, so form controls stay perceivable
+  --c-text: #101828;
+  --c-text-muted: #475467;
+  --c-text-subtle: #5d6b7e;
+
+  // Colour: brand and status
+  --c-primary: #4f46e5;
+  --c-primary-hover: #4338ca;
+  --c-primary-soft: #eef2ff;
+  --c-primary-soft-border: #c7d2fe;
+  --c-primary-ink: #ffffff;
+  --c-primary-text: #3730a3;
+  --c-danger: #b42318;
+  --c-danger-soft: #fef3f2;
+  --c-success: #067647;
+  --c-success-soft: #ecfdf3;
+  --c-warning: #93370d;
+  --c-warning-soft: #fffaeb;
+
+  // Canvas workspace
+  --c-workspace: #eceef2;
+
+  // Typography
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.875rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.25rem;
+  --fs-2xl: 1.625rem;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+
+  // Spacing (4px scale)
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  // Shape
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-pill: 999px;
+
+  // Elevation
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 4px 12px rgba(16, 24, 40, 0.1);
+  --shadow-3: 0 16px 40px rgba(16, 24, 40, 0.18);
+
+  // Controls
+  --h-sm: 28px;
+  --h-md: 34px;
+  --h-lg: 40px;
+  --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.35);
+
+  // Layout
+  --header-h: 56px;
+  --panel-left-w: 296px;
+  --panel-right-w: 340px;
+
+  // Stacking
+  --z-sticky: 10;
+  --z-panel: 20;
+  --z-floating: 30;
+  --z-menu: 50;
+  --z-dialog: 60;
+  --z-toast: 80;
+
+  // Motion
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

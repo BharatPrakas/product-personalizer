@@ -4,14 +4,15 @@
   min-height: 0;
   height: 100%;
 }
+
 .stage {
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #e5e7eb;
-  border-radius: 6px;
+  background: var(--c-workspace);
 }
+
 .stage-canvas,
 .stage-overlay {
   position: absolute;
@@ -19,74 +20,75 @@
   width: 100%;
   height: 100%;
 }
+
 .stage-overlay {
   touch-action: none;
   outline: none;
 }
+
 .stage-overlay:focus-visible {
-  outline: 3px solid #1d4ed8;
-  outline-offset: -3px;
+  outline: 2px solid var(--c-primary);
+  outline-offset: -2px;
 }
+
 .outline {
   fill: none;
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   stroke-dasharray: 5 4;
 }
+
 .outline-selected .outline,
 polygon.outline-selected {
   stroke-width: 2;
   stroke-dasharray: none;
 }
+
 .selection-frame {
-  fill: rgba(37, 99, 235, 0.06);
-  stroke: #2563eb;
+  fill: rgba(79, 70, 229, 0.06);
+  stroke: var(--c-primary);
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
+
 .handle {
   fill: #fff;
-  stroke: #2563eb;
+  stroke: var(--c-primary);
   stroke-width: 1.5;
 }
+
 .handle-rotate {
-  fill: #2563eb;
+  fill: var(--c-primary);
   stroke: #fff;
 }
+
 .guide {
   stroke: #db2777;
   stroke-width: 1;
   stroke-dasharray: 4 3;
   pointer-events: none;
 }
+
 .draft {
-  fill: rgba(225, 29, 72, 0.15);
-  stroke: #e11d48;
+  fill: rgba(79, 70, 229, 0.14);
+  stroke: var(--c-primary);
   stroke-width: 2;
   stroke-dasharray: 6 4;
   vector-effect: non-scaling-stroke;
 }
+
 .stage-message {
   position: absolute;
-  inset: auto 12px 12px 12px;
+  top: var(--s-3);
+  left: 50%;
   margin: 0;
-  padding: 6px 10px;
-  font-size: 0.8125rem;
-  color: #1f2937;
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 6px;
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--fs-sm);
+  color: #ffffff;
+  background: #1d2939;
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-2);
   pointer-events: none;
-}
-.stage-zoom {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  margin: 0;
-  padding: 2px 8px;
-  font-size: 0.75rem;
-  color: #1f2937;
-  background: rgba(255, 255, 255, 0.85);
-  border-radius: 999px;
-  pointer-events: none;
+  transform: translateX(-50%);
 }

@@ -9,6 +9,7 @@ import {
 import { Condition } from '../../customizer/models/product.models';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
+import { SectionComponent } from '../../ui/section.component';
 import { CONTROLS, Option } from './controls.component';
 
 type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
@@ -19,13 +20,10 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
  */
 @Component({
   selector: 'app-field-editor',
-  imports: [CONTROLS],
+  imports: [CONTROLS, SectionComponent],
   template: `
     @if (field(); as f) {
-      <section class="ed-group" [attr.aria-label]="'Customer field ' + f.label">
-        <h4 class="ed-subtitle">
-          Customer field <code>{{ f.id }}</code>
-        </h4>
+      <app-section [title]="heading(f)">
         <app-text-in
           label="Label"
           [value]="f.label"
@@ -44,7 +42,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
           [maxlength]="80"
           (changed)="patch({ placeholder: $event || undefined })"
         />
-        <div class="ed-row">
+        <div class="row row--end">
           <app-check
             label="Required"
             [value]="f.required"
@@ -66,8 +64,8 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
               [max]="500"
               (changed)="patch({ maxLength: $event })"
             />
-            <fieldset class="ed-fieldset">
-              <legend class="ed-label">Fonts the customer can choose</legend>
+            <fieldset class="field-group">
+              <legend class="field-label">Fonts the customer can choose</legend>
               @for (font of store.config()!.fonts; track font.id) {
                 <app-check
                   [label]="font.label ?? font.family"
@@ -76,13 +74,13 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
                 />
               }
             </fieldset>
-            <fieldset class="ed-fieldset">
-              <legend class="ed-label">Colours</legend>
-              <div class="ed-swatches">
+            <fieldset class="field-group">
+              <legend class="field-label">Colours</legend>
+              <div class="swatches">
                 @for (color of text(f).colors; track color) {
                   <button
                     type="button"
-                    class="ed-swatch"
+                    class="swatch"
                     [style.background-color]="color"
                     [attr.aria-label]="'Remove colour ' + color"
                     title="Remove"
@@ -90,7 +88,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
                   ></button>
                 }
                 <input
-                  class="ed-color"
+                  class="color-input"
                   type="color"
                   aria-label="Add a colour"
                   #picker
@@ -116,8 +114,8 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
               [value]="text(f).defaultValue?.color ?? text(f).colors[0]"
               (changed)="setDefault(f.id, { color: $event })"
             />
-            <fieldset class="ed-fieldset">
-              <legend class="ed-label">Style controls for the customer</legend>
+            <fieldset class="field-group">
+              <legend class="field-label">Style controls for the customer</legend>
               @for (control of styleControls; track control) {
                 <app-check
                   [label]="control"
@@ -128,8 +126,8 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
             </fieldset>
           }
           @case ('image') {
-            <fieldset class="ed-fieldset">
-              <legend class="ed-label">Accepted formats</legend>
+            <fieldset class="field-group">
+              <legend class="field-label">Accepted formats</legend>
               @for (type of imageTypes; track type.value) {
                 <app-check
                   [label]="type.label"
@@ -146,7 +144,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
               step="0.5"
               (changed)="patch({ maxBytes: Math.round($event * 1048576) })"
             />
-            <div class="ed-row">
+            <div class="row row--end">
               <app-num
                 label="Min. width (px)"
                 [value]="image(f).minPixels?.width ?? 0"
@@ -164,11 +162,11 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
             </div>
           }
           @case ('artwork') {
-            <p class="ed-hint">Choices: {{ artworkChoices(f) }}</p>
+            <p class="field-hint">Choices: {{ artworkChoices(f) }}</p>
           }
         }
 
-        <h4 class="ed-subtitle">Show this field</h4>
+        <h4 class="panel-subtitle">Visibility</h4>
         <app-select
           label="When"
           [options]="ruleOptions"
@@ -201,10 +199,10 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
             />
           }
           @case ('advanced') {
-            <p class="ed-hint">This field uses an advanced rule (kept as saved).</p>
+            <p class="field-hint">This field uses an advanced rule (kept as saved).</p>
           }
         }
-      </section>
+      </app-section>
     }
   `,
 })
@@ -231,6 +229,14 @@ export class FieldEditorComponent {
   protected readonly field = computed<FieldSpec | null>(
     () => this.store.config()?.fields.find((f) => f.id === this.fieldId()) ?? null,
   );
+
+  protected heading(f: FieldSpec): string {
+    return f.type === 'image'
+      ? 'Customer photo upload'
+      : f.type === 'text'
+        ? 'Customer text input'
+        : 'Customer artwork choice';
+  }
 
   protected text(f: FieldSpec): TextFieldSpec {
     return f as TextFieldSpec;

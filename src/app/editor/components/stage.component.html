@@ -91,16 +91,23 @@
 
     @if (draft(); as d) {
       <g [attr.transform]="d.transform">
-        @if (d.shape === 'ellipse') {
-          <ellipse class="draft" [attr.rx]="d.w / 2" [attr.ry]="d.h / 2" />
-        } @else {
-          <rect
-            class="draft"
-            [attr.x]="-d.w / 2"
-            [attr.y]="-d.h / 2"
-            [attr.width]="d.w"
-            [attr.height]="d.h"
-          />
+        @switch (d.kind) {
+          @case ('ellipse') {
+            <ellipse class="draft" [attr.rx]="d.w / 2" [attr.ry]="d.h / 2" />
+          }
+          @case ('path') {
+            <path class="draft" [attr.d]="d.d" [attr.transform]="d.pathTransform" />
+          }
+          @default {
+            <rect
+              class="draft"
+              [attr.x]="-d.w / 2"
+              [attr.y]="-d.h / 2"
+              [attr.width]="d.w"
+              [attr.height]="d.h"
+              [attr.rx]="d.rx"
+            />
+          }
         }
       </g>
     }
@@ -109,5 +116,4 @@
   @if (message(); as text) {
     <p class="stage-message" role="status">{{ text }}</p>
   }
-  <p class="stage-zoom" aria-live="off">{{ zoomLabel() }}</p>
 </div>

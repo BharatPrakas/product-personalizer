@@ -401,6 +401,8 @@ export interface FieldValidationOptions {
   maxFonts: number;
   /** Upper bound for a text field's `maxLength` (graphemes). */
   maxTextLength: number;
+  /** Lower bound for the number of fields (0 while a draft is still being assembled). */
+  minFields?: number;
 }
 
 const V1_FIELD_OPTIONS: FieldValidationOptions = {
@@ -418,7 +420,7 @@ export function validateFields(
   c: Collector,
   opts: FieldValidationOptions = V1_FIELD_OPTIONS,
 ): FieldSpec[] {
-  const list = c.array(value, 'fields', 1, opts.maxFields) ?? [];
+  const list = c.array(value, 'fields', opts.minFields ?? 1, opts.maxFields) ?? [];
   const fontIds = new Set(fonts.map((f) => f.id));
   const fields: (FieldSpec | null)[] = list.map((item, index) => {
     const path = `fields[${index}]`;

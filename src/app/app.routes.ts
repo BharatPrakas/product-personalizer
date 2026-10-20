@@ -1,31 +1,52 @@
-import { Routes } from '@angular/router';
+import { isDevMode } from '@angular/core';
+import { CanActivateFn, CanDeactivateFn, Router, Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import type { EditorPageComponent } from './editor/pages/editor-page.component';
 
-/** Every feature is lazy loaded, so the product list does not pay for the editor's code. */
+/** Development tools (fixture loader, element contract demo) exist only in development builds. */
+const devOnly: CanActivateFn = () =>
+  isDevMode() ? true : inject(Router).createUrlTree(['/configurations']);
+
+/** Leaving the editor with unsaved changes asks first. */
+const confirmLeave: CanDeactivateFn<EditorPageComponent> = (editor) => editor.confirmLeave();
+
+/** Every area is lazy loaded, so the list does not pay for the editor's code. */
 export const routes: Routes = [
+  { path: '', pathMatch: 'full', redirectTo: 'configurations' },
   {
-    path: '',
-    pathMatch: 'full',
-    title: 'Products - Product Personalizer',
+    path: 'configurations',
+    title: 'Configurations · Product Personalizer',
     loadComponent: () =>
-      import('./editor/pages/products-page.component').then((m) => m.ProductsPageComponent),
+      import('./configurations/configurations-page.component').then(
+        (m) => m.ConfigurationsPageComponent,
+      ),
   },
   {
-    path: 'editor/:id',
-    title: 'Editor - Product Personalizer',
+    path: 'configurations/:id',
+    title: 'Editor · Product Personalizer',
+    canDeactivate: [confirmLeave],
     loadComponent: () =>
       import('./editor/pages/editor-page.component').then((m) => m.EditorPageComponent),
   },
   {
-    path: 'storefront/:id',
-    title: 'Storefront - Product Personalizer',
+    path: 'preview/:id',
+    title: 'Customer preview · Product Personalizer',
     loadComponent: () =>
-      import('./editor/pages/storefront-page.component').then((m) => m.StorefrontPageComponent),
+      import('./preview/preview-page.component').then((m) => m.PreviewPageComponent),
   },
   {
-    path: 'element-demo',
-    title: 'Custom element demo',
-    loadComponent: () =>
-      import('./pages/element-demo.component').then((m) => m.ElementDemoComponent),
+    path: 'dev',
+    title: 'Developer tools',
+    canActivate: [devOnly],
+    loadComponent: () => import('./dev/dev-tools.component').then((m) => m.DevToolsComponent),
   },
-  { path: '**', redirectTo: '' },
+  {
+    path: 'dev/element',
+    title: 'Custom element contract',
+    canActivate: [devOnly],
+    loadComponent: () => import('./dev/element-demo.component').then((m) => m.ElementDemoComponent),
+  },
+  { path: 'editor/:id', redirectTo: 'configurations/:id' },
+  { path: 'storefront/:id', redirectTo: 'preview/:id' },
+  { path: '**', redirectTo: 'configurations' },
 ];

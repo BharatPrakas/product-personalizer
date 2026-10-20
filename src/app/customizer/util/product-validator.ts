@@ -47,6 +47,12 @@ export type ProductValidationResult =
 export interface ProductValidateOptions {
   resolvedBase: ResolvedBase;
   policy: AssetPolicy;
+  /**
+   * Editor drafts may still be empty (no mockup, area, artwork or field yet). Structural rules,
+   * references and value ranges are still enforced; only the "at least one" minimums are lifted.
+   * Published configurations and everything the storefront loads are validated strictly.
+   */
+  allowIncomplete?: boolean;
 }
 
 const MAX_LAYER_EDGE = 16_384;
@@ -113,17 +119,19 @@ export function validateProductConfig(
 
   const fonts = validateFonts(root['fonts'], resolveSrc, c, PRODUCT_LIMITS.maxFonts);
   const fieldTypes = new Map<string, FieldSpec['type']>();
+  const min = options.allowIncomplete ? 0 : 1;
   const fields = validateFields(root['fields'], fonts, resolveSrc, fieldTypes, c, {
     extended: true,
     maxFields: PRODUCT_LIMITS.maxFields,
     maxFonts: PRODUCT_LIMITS.maxFonts,
     maxTextLength: PRODUCT_LIMITS.maxTextLength,
+    minFields: min,
   });
-  const areas = validateAreas(root['printableAreas'], c);
+  const areas = validateAreas(root['printableAreas'], c, min);
   const fontIds = new Set(fonts.map((f) => f.id));
-  const artworks = validateArtworks(root['artworks'], fontIds, resolveSrc, c);
-  const mockups = validateMockups(root['mockups'], resolveSrc, c);
-  const variants = validateVariants(root['variants'], c);
+  const artworks = validateArtworks(root['artworks'], fontIds, resolveSrc, c, min);
+  const mockups = validateMockups(root['mockups'], resolveSrc, c, min);
+  const variants = validateVariants(root['variants'], c, min);
   const preview = validatePreview(root['preview'], c);
   const displayPrice =
     root['displayPrice'] === undefined ? undefined : validateDisplayPrice(root['displayPrice'], c);
@@ -210,8 +218,8 @@ export function validateShape(value: unknown, path: string, c: Collector): Shape
 
 // ---- printable areas ---------------------------------------------------------------------------
 
-function validateAreas(value: unknown, c: Collector): PrintableArea[] {
-  const list = c.array(value, 'printableAreas', 1, PRODUCT_LIMITS.maxAreas) ?? [];
+function validateAreas(value: unknown, c: Collector, min: number): PrintableArea[] {
+  const list = c.array(value, 'printableAreas', min, PRODUCT_LIMITS.maxAreas) ?? [];
   const areas = list.map((item, index): PrintableArea | null => {
     const path = `printableAreas[${index}]`;
     const o = c.object(item, path, [
@@ -285,8 +293,9 @@ function validateArtworks(
   fontIds: ReadonlySet<string>,
   resolveSrc: SrcResolver,
   c: Collector,
+  min: number,
 ): Artwork[] {
-  const list = c.array(value, 'artworks', 1, PRODUCT_LIMITS.maxArtworks) ?? [];
+  const list = c.array(value, 'artworks', min, PRODUCT_LIMITS.maxArtworks) ?? [];
   const artworks = list.map((item, index): Artwork | null => {
     const path = `artworks[${index}]`;
     const o = c.object(item, path, ['id', 'name', 'printableAreaId', 'background', 'layers']);
@@ -583,8 +592,13 @@ function validateFill(value: unknown, path: string, c: Collector): string | null
 
 // ---- mockups ----------------------------------------------------------------------------------
 
-function validateMockups(value: unknown, resolveSrc: SrcResolver, c: Collector): ProductMockup[] {
-  const list = c.array(value, 'mockups', 1, PRODUCT_LIMITS.maxMockups) ?? [];
+function validateMockups(
+  value: unknown,
+  resolveSrc: SrcResolver,
+  c: Collector,
+  min: number,
+): ProductMockup[] {
+  const list = c.array(value, 'mockups', min, PRODUCT_LIMITS.maxMockups) ?? [];
   const mockups = list.map((item, index): ProductMockup | null => {
     const path = `mockups[${index}]`;
     const o = c.object(item, path, [
@@ -739,7 +753,7 @@ function validatePlacement(value: unknown, path: string, c: Collector): AreaPlac
 
 // ---- variants, preview ----------------------------------------------------------------------------
 
-function validateVariants(value: unknown, c: Collector): ProductVariant[] {
+function validateVariants(value: unknown, c: Collector, listMin: number): ProductVariant[] {
   const list = c.array(value, 'variants', 1, PRODUCT_LIMITS.maxVariants) ?? [];
   const variants = list.map((item, index): ProductVariant | null => {
     const path = `variants[${index}]`;
@@ -748,7 +762,7 @@ function validateVariants(value: unknown, c: Collector): ProductVariant[] {
     const id = c.id(o['id'], `${path}.id`);
     const label = c.string(o['label'], `${path}.label`, 1, 60);
     const ids = (key: 'mockupIds' | 'printableAreaIds') => {
-      const out = (c.array(o[key], `${path}.${key}`, 1, 40) ?? [])
+      const out = (c.array(o[key], `${path}.${key}`, listMin, 40) ?? [])
         .map((entry, i) => c.id(entry, `${path}.${key}[${i}]`))
         .filter((entry): entry is string => entry !== null);
       if (new Set(out).size !== out.length)

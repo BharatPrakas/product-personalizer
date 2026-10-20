@@ -75,7 +75,7 @@ type Drag =
       handle?: HandleId;
     }
   | { kind: 'corner'; item: StageItem; index: number; quad: Pt[] }
-  | { kind: 'draw'; shape: ShapeSpec['type']; from: Pt; to: Pt };
+  | { kind: 'draw'; shape: ShapeSpec; from: Pt; to: Pt };
 
 const PAD = 28;
 const HANDLE_PX = 9;
@@ -122,7 +122,7 @@ export class StageComponent {
   private spaceDown = false;
 
   protected readonly guides = signal<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
-  private readonly drawing = signal<{ shape: ShapeSpec['type']; from: Pt; to: Pt } | null>(null);
+  private readonly drawing = signal<{ shape: ShapeSpec; from: Pt; to: Pt } | null>(null);
   private readonly hoverHandle = signal<HandleId | null>(null);
   private readonly panning = signal(false);
 
@@ -209,19 +209,24 @@ export class StageComponent {
     return `${view}. ${selected ? `${selected.label} selected. Use the arrow keys to move it, or the properties panel for exact values.` : 'Nothing selected.'}`;
   });
 
+  /** Hint shown over the canvas while a tool needs explaining. */
   protected readonly message = computed(() => {
-    if (this.store.tool().kind === 'draw') return 'Drag on the mockup to draw the printable area.';
-    if (!this.content()) return 'Loading image…';
-    if (this.store.assetErrors().length > 0)
+    if (this.store.tool().kind === 'draw') {
+      return 'Drag on the product photo to draw the printable area. Press Esc to cancel.';
+    }
+    if (this.content() && this.store.assetErrors().length > 0) {
       return `${this.store.assetErrors().length} image(s) could not be loaded.`;
+    }
     return null;
   });
 
-  protected readonly zoomLabel = computed(() => `${Math.round(this.transform().scale * 100)}%`);
+  readonly zoomLabel = computed(() => `${Math.round(this.transform().scale * 100)}%`);
 
   protected readonly cursor = computed(() => {
     if (this.panning()) return 'grabbing';
-    if (this.store.tool().kind === 'draw') return 'crosshair';
+    const tool = this.store.tool().kind;
+    if (tool === 'draw') return 'crosshair';
+    if (tool === 'pan') return 'grab';
     const handle = this.hoverHandle();
     return handle ? CURSORS[handle] : 'default';
   });
@@ -324,10 +329,17 @@ export class StageComponent {
     const b = this.toScreen(d.to);
     const w = Math.abs(b.x - a.x);
     const h = Math.abs(b.y - a.y);
+    const shape = d.shape;
     return {
-      shape: d.shape,
+      kind: shape.type,
       w,
       h,
+      rx: shape.type === 'rect' ? (shape.cornerRadius ?? 0) * Math.min(w, h) : 0,
+      d: shape.type === 'path' ? shape.d : '',
+      pathTransform:
+        shape.type === 'path'
+          ? `translate(${-w / 2} ${-h / 2}) scale(${w / shape.viewBox[0]} ${h / shape.viewBox[1]})`
+          : '',
       transform: `translate(${Math.min(a.x, b.x) + w / 2} ${Math.min(a.y, b.y) + h / 2})`,
     };
   });
@@ -511,6 +523,13 @@ export class StageComponent {
     if (event.button !== 0) return;
 
     const tool = this.store.tool();
+    if (tool.kind === 'pan') {
+      capture();
+      this.panning.set(true);
+      const t = this.transform();
+      this.drag = { kind: 'pan', x: screen.x, y: screen.y, tx: t.tx, ty: t.ty };
+      return;
+    }
     if (tool.kind === 'draw' && this.store.view() === 'mockup') {
       capture();
       this.drag = { kind: 'draw', shape: tool.shape, from: content, to: content };
@@ -829,7 +848,7 @@ export class StageComponent {
     const h = Math.abs(drag.to.y - drag.from.y);
     this.store.tool.set({ kind: 'select' });
     if (w < 12 || h < 12) return;
-    const shape: ShapeSpec = drag.shape === 'ellipse' ? { type: 'ellipse' } : { type: 'rect' };
+    const shape: ShapeSpec = drag.shape;
     this.store.addAreaOnMockup(
       shape,
       {

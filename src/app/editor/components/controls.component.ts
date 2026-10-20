@@ -7,10 +7,10 @@ const uid = (prefix: string) => `${prefix}-${++nextId}`;
 @Component({
   selector: 'app-num',
   template: `
-    <label class="ed-field">
-      <span class="ed-label">{{ label() }}</span>
+    <label class="field">
+      <span class="field-label">{{ label() }}</span>
       <input
-        class="ed-input"
+        class="input"
         type="number"
         inputmode="decimal"
         [value]="value() ?? ''"
@@ -48,11 +48,11 @@ export class NumComponent {
 @Component({
   selector: 'app-text-in',
   template: `
-    <label class="ed-field">
-      <span class="ed-label">{{ label() }}</span>
+    <label class="field">
+      <span class="field-label">{{ label() }}</span>
       @if (multiline()) {
         <textarea
-          class="ed-input"
+          class="input"
           rows="3"
           [value]="value()"
           [attr.maxlength]="maxlength()"
@@ -62,7 +62,7 @@ export class NumComponent {
         ></textarea>
       } @else {
         <input
-          class="ed-input"
+          class="input"
           type="text"
           [value]="value()"
           [attr.maxlength]="maxlength()"
@@ -91,7 +91,7 @@ export class TextInComponent {
 @Component({
   selector: 'app-check',
   template: `
-    <label class="ed-check">
+    <label class="check">
       <input
         type="checkbox"
         [checked]="value()"
@@ -117,10 +117,10 @@ export interface Option {
 @Component({
   selector: 'app-select',
   template: `
-    <label class="ed-field">
-      <span class="ed-label">{{ label() }}</span>
+    <label class="field">
+      <span class="field-label">{{ label() }}</span>
       <select
-        class="ed-input"
+        class="input"
         [disabled]="disabled()"
         (change)="changed.emit($any($event.target).value)"
       >
@@ -145,11 +145,11 @@ export class SelectComponent {
 @Component({
   selector: 'app-color',
   template: `
-    <div class="ed-field">
-      <label class="ed-label" [for]="id">{{ label() }}</label>
-      <div class="ed-row">
+    <div class="field">
+      <label class="field-label" [for]="id">{{ label() }}</label>
+      <div class="row row--end">
         <input
-          class="ed-color"
+          class="color-input"
           type="color"
           [id]="id"
           [value]="hex()"
@@ -157,7 +157,7 @@ export class SelectComponent {
           (input)="changed.emit($any($event.target).value)"
         />
         @if (allowTransparent()) {
-          <label class="ed-check">
+          <label class="check">
             <input
               type="checkbox"
               [checked]="value() === 'transparent'"
@@ -188,10 +188,10 @@ export class ColorComponent {
 @Component({
   selector: 'app-file',
   template: `
-    <label class="ed-btn" [class.ed-btn-disabled]="disabled()">
+    <label class="btn" [class.is-disabled]="disabled()">
       <span>{{ label() }}</span>
       <input
-        class="ed-sr"
+        class="sr-only"
         type="file"
         [accept]="accept()"
         [disabled]="disabled()"

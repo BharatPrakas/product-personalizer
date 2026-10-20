@@ -2,15 +2,15 @@ import { Component, inject } from '@angular/core';
 import { EditorStore } from '../services/editor-store.service';
 import { AreaPropsComponent } from './area-props.component';
 import { ArtworkPropsComponent } from './artwork-props.component';
+import { ConfigurationInspectorComponent } from './configuration-inspector.component';
 import { LayerPropsComponent } from './layer-props.component';
 import { MockupPropsComponent } from './mockup-props.component';
-import { ProductPropsComponent } from './product-props.component';
 
-/** Right panel: shows the properties for whatever is selected. */
+/** Right sidebar: properties of whatever is selected. */
 @Component({
-  selector: 'app-properties-panel',
+  selector: 'app-inspector',
   imports: [
-    ProductPropsComponent,
+    ConfigurationInspectorComponent,
     MockupPropsComponent,
     AreaPropsComponent,
     ArtworkPropsComponent,
@@ -31,11 +31,11 @@ import { ProductPropsComponent } from './product-props.component';
         <app-mockup-props />
       }
       @default {
-        <app-product-props />
+        <app-configuration-inspector />
       }
     }
   `,
 })
-export class PropertiesPanelComponent {
+export class InspectorComponent {
   protected readonly store = inject(EditorStore);
 }

@@ -1,65 +1,69 @@
 import { Component, computed, inject } from '@angular/core';
 import { Artwork, layerFieldId } from '../../customizer/models/product.models';
+import { ConfirmService } from '../../ui/confirm.service';
+import { SectionComponent } from '../../ui/section.component';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
 import { CONTROLS } from './controls.component';
 
-/** Properties of an artwork, plus the customer inputs it generates (derived from its bound layers). */
+/** Inspector for an artwork, including the customer inputs it generates. */
 @Component({
   selector: 'app-artwork-props',
-  imports: [CONTROLS],
+  imports: [CONTROLS, SectionComponent],
   template: `
     @if (artwork(); as a) {
-      <section class="ed-group">
-        <h3 class="ed-title">Artwork</h3>
+      <header class="inspector-head">
+        <p class="inspector-kind">Artwork · {{ areaName() }}</p>
         <app-text-in label="Name" [value]="a.name" [maxlength]="80" (changed)="rename($event)" />
+      </header>
+
+      <app-section title="Appearance">
         <app-color
           label="Background"
           [allowTransparent]="true"
           [value]="a.background ?? 'transparent'"
           (changed)="setBackground($event)"
         />
-        <p class="ed-hint">
-          Layers are listed in the left panel, back to front. Their order is their z-order.
-        </p>
-      </section>
+        <p class="field-hint">Layers are listed in the Layers tab, front first.</p>
+      </app-section>
 
-      <section class="ed-group" aria-label="Generated customer inputs">
-        <h4 class="ed-subtitle">Customer inputs generated from this artwork</h4>
+      <app-section title="Customer inputs from this artwork">
         @if (inputs().length === 0) {
-          <p class="ed-hint">
-            None yet. Add an image placeholder or editable text layer and its input appears here and
-            in the storefront automatically.
+          <p class="field-hint">
+            None yet. Add a photo upload or editable text layer and its input appears here and in
+            the customer preview automatically.
           </p>
         } @else {
-          <ul class="ed-list">
-            @for (row of inputs(); track row.fieldId) {
-              <li class="ed-list-row">
+          <ul class="plain-list">
+            @for (row of inputs(); track row.layerId) {
+              <li class="list-row-simple">
                 <button
                   type="button"
-                  class="ed-link"
+                  class="link-btn"
                   (click)="store.select({ kind: 'layer', id: row.layerId })"
                 >
                   {{ row.label }}
                 </button>
-                <span class="ed-hint"
-                  >{{ row.type }}{{ row.required ? ', required' : '' }} · layer
-                  <code>{{ row.layerId }}</code></span
+                <span class="field-hint"
+                  >{{ row.type }}{{ row.required ? ' · required' : '' }}</span
                 >
               </li>
             }
           </ul>
         }
-      </section>
+      </app-section>
 
-      <div class="ed-row ed-actions">
+      <div class="panel-actions row">
+        <button type="button" class="btn btn--sm" (click)="store.sidebarTab.set('layers')">
+          Open layers
+        </button>
         <button
           type="button"
-          class="ed-btn ed-btn-danger"
+          class="btn btn--sm btn--danger"
           [disabled]="!canRemove()"
           (click)="remove(a)"
         >
-          Delete artwork
+          Delete…
         </button>
       </div>
     }
@@ -67,12 +71,17 @@ import { CONTROLS } from './controls.component';
 })
 export class ArtworkPropsComponent {
   protected readonly store = inject(EditorStore);
-  protected readonly edit = edit;
+  private readonly confirmService = inject(ConfirmService);
+
   protected readonly artwork = computed<Artwork | null>(() => {
     const s = this.store.selection();
     return s.kind === 'artwork'
       ? (this.store.config()?.artworks.find((a) => a.id === s.id) ?? null)
       : null;
+  });
+  protected readonly areaName = computed(() => {
+    const a = this.artwork();
+    return this.store.config()?.printableAreas.find((x) => x.id === a?.printableAreaId)?.name ?? '';
   });
   protected readonly inputs = computed(() => {
     const a = this.artwork();
@@ -81,17 +90,10 @@ export class ArtworkPropsComponent {
     return a.layers.flatMap((layer) => {
       const fieldId = layerFieldId(layer);
       const field = fieldId ? c.fields.find((f) => f.id === fieldId) : undefined;
-      return field
-        ? [
-            {
-              fieldId: field.id,
-              layerId: layer.id,
-              label: field.label,
-              type: field.type,
-              required: field.required,
-            },
-          ]
-        : [];
+      if (!field) return [];
+      const type =
+        field.type === 'image' ? 'Photo' : field.type === 'text' ? 'Text' : 'Artwork choice';
+      return [{ layerId: layer.id, label: field.label, type, required: field.required }];
     });
   });
   protected readonly canRemove = computed(() => {
@@ -116,7 +118,14 @@ export class ArtworkPropsComponent {
     }
   }
 
-  protected remove(a: Artwork): void {
+  protected async remove(a: Artwork): Promise<void> {
+    const ok = await this.confirmService.confirm({
+      title: `Delete “${a.name}”?`,
+      message: 'Its layers and the customer inputs only it uses are deleted. You can undo this.',
+      confirmLabel: 'Delete artwork',
+      danger: true,
+    });
+    if (!ok) return;
     this.store.edit((c) => edit.removeArtwork(c, a.id));
     this.store.select({ kind: 'area', id: a.printableAreaId });
   }
