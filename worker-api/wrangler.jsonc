@@ -27,8 +27,8 @@
     "LOG_LEVEL": "info",
     // Local / dev object storage is AWS S3. Replace the placeholders once the bucket and region exist.
     "STORAGE_DRIVER": "s3",
-    "S3_BUCKET": "REPLACE_WITH_DEV_BUCKET",
-    "S3_REGION": "REPLACE_WITH_REGION"
+    "S3_BUCKET": "zb-plugins",
+    "S3_REGION": "us-west-2"
   },
 
   // --- Hyperdrive: pooled connection to the dedicated PostgreSQL plugin database.
@@ -53,8 +53,8 @@
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "info",
         "STORAGE_DRIVER": "s3",
-        "S3_BUCKET": "REPLACE_WITH_STAGING_BUCKET",
-        "S3_REGION": "REPLACE_WITH_REGION"
+        "S3_BUCKET": "zb-plugins",
+        "S3_REGION": "us-west-2"
       },
       "hyperdrive": [
         { "binding": "HYPERDRIVE", "id": "0000000000000000000000000staging" }
