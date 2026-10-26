@@ -1,4 +1,5 @@
 import { Component, computed, input, output } from '@angular/core';
+import { TranslatePipe } from '../../admin/i18n/i18n.service';
 
 let nextId = 0;
 const uid = (prefix: string) => `${prefix}-${++nextId}`;
@@ -144,6 +145,7 @@ export class SelectComponent {
 /** Colour picker with an optional "transparent" switch. Values are `#rrggbb` or `transparent`. */
 @Component({
   selector: 'app-color',
+  imports: [TranslatePipe],
   template: `
     <div class="field">
       <label class="field-label" [for]="id">{{ label() }}</label>
@@ -164,7 +166,7 @@ export class SelectComponent {
               [disabled]="disabled()"
               (change)="changed.emit($any($event.target).checked ? 'transparent' : hex())"
             />
-            <span>None</span>
+            <span>{{ 'common.none' | t }}</span>
           </label>
         }
       </div>

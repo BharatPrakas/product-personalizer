@@ -1,3 +1,6 @@
+@if (state.status() === 'not-personalizable') {
+  <slot name="fallback"></slot>
+} @else {
 <section class="zbc" aria-label="Product customizer">
   @switch (state.status()) {
     @case ('awaiting-config') {
@@ -7,11 +10,19 @@
       <p class="notice" role="status">
         <span class="spinner" aria-hidden="true"></span> Loading customizer…
       </p>
+      <!-- Placeholder with the final layout, so the first paint is already the right shape. -->
+      <div class="skeleton" aria-hidden="true">
+        <div class="skeleton-preview"></div>
+        <div class="skeleton-lines"><span></span><span></span><span></span></div>
+      </div>
     }
     @case ('invalid-config') {
       <div class="panel" role="alert">
         <h2 class="panel-title">This product can't be customized right now</h2>
         <p>{{ failure()?.message }}</p>
+        @if (canRetry()) {
+          <button type="button" class="btn" (click)="retryResolve()">Try again</button>
+        }
         @if (failure()?.issues?.length) {
           <ul class="issues">
             @for (issue of failure()!.issues.slice(0, 8); track $index) {
@@ -148,3 +159,4 @@
     }
   }
 </section>
+}

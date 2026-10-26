@@ -16,6 +16,7 @@ import { PreviewComposite, RenderService } from '../../customizer/services/rende
 import { DraftValues, defaultValues } from '../../customizer/util/draft-utils';
 import { ResolvedProduct, resolveProduct } from '../../customizer/util/resolve';
 import { Evaluation, LocalAsset, evaluateProduct } from '../../customizer/util/scene';
+import { I18n } from '../../admin/i18n/i18n.service';
 import { ToastService } from '../../ui/toast.service';
 import {
   ConfigurationConflictError,
@@ -30,6 +31,7 @@ import { ImageUploadService } from '../../workspace/image-upload.service';
 import { validateConfiguration } from '../../workspace/validation';
 import * as edit from '../util/config-edit';
 import { downloadBlob, safeFilename } from '../util/download';
+import { assetBaseUrl } from '../../workspace/asset-base';
 
 export type StageView = 'mockup' | 'artwork';
 
@@ -44,7 +46,7 @@ export type Selection =
 /** `draw` creates a printable area of the given shape by dragging on the mockup. */
 export type Tool = { kind: 'select' } | { kind: 'pan' } | { kind: 'draw'; shape: ShapeSpec };
 
-export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers';
+export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers' | 'markups';
 
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -62,6 +64,7 @@ export class EditorStore {
   private readonly repo = inject(ConfigurationRepository);
   private readonly transfer = inject(ConfigurationTransferService);
   private readonly toasts = inject(ToastService);
+  private readonly i18n = inject(I18n);
   private readonly uploads = inject(ImageUploadService);
   private readonly images = inject(ImageService);
   private readonly fonts = inject(FontService);
@@ -77,11 +80,11 @@ export class EditorStore {
   readonly record = signal<ConfigurationRecord | null>(null);
   readonly saveState = signal<SaveState>('idle');
   /** Where saves go, in words the merchant can trust (never overstates persistence). */
-  readonly storageLabel = computed(() => this.repo.storage().label);
+  readonly storageLabel = computed(() => this.i18n.t(this.repo.storage().labelKey));
   /** Set when saves cannot survive a reload (browser storage unavailable). */
   readonly storageWarning = computed(() => {
     const info = this.repo.storage();
-    return info.persistent ? null : info.label;
+    return info.persistent ? null : this.i18n.t(info.labelKey);
   });
   readonly saveError = signal<string | null>(null);
   readonly publishing = signal(false);
@@ -259,7 +262,7 @@ export class EditorStore {
       record = await this.repo.get(id);
     } catch (error) {
       this.toasts.error(
-        error instanceof StorageError ? error.message : 'The configuration could not be opened.',
+        error instanceof StorageError ? error.message : this.i18n.t('editor.error.open'),
       );
       return false;
     }
@@ -287,7 +290,7 @@ export class EditorStore {
     const record = this.record();
     if (!config || !record || this.saveState() === 'saving') return false;
     if (this.issues().length > 0) {
-      const message = `Fix ${this.issues().length} configuration problem(s) before saving.`;
+      const message = this.i18n.t('editor.error.fix-problems', { count: this.issues().length });
       this.saveState.set('error');
       this.saveError.set(message);
       this.toasts.error(message);
@@ -327,7 +330,7 @@ export class EditorStore {
       this.future = [];
       this.historyTick.update((n) => n + 1);
       this.saveState.set('saved');
-      this.toasts.success('Published. The draft stays open for further edits.');
+      this.toasts.success(this.i18n.t('editor.toast.published'));
       return true;
     } catch (error) {
       this.toasts.error(this.describeFailure(error));
@@ -339,15 +342,15 @@ export class EditorStore {
 
   private describeFailure(error: unknown): string {
     if (error instanceof ConfigurationConflictError) {
-      return 'This configuration was changed in another tab or session. Reload it to get the latest version before saving.';
+      return this.i18n.t('editor.error.conflict');
     }
     if (error instanceof ConfigurationInvalidError) {
       return error.issues.length > 0
-        ? `The configuration is not ready: ${error.issues[0].message}`
-        : 'The configuration is incomplete. Finish the setup steps first.';
+        ? this.i18n.t('editor.error.not-ready', { message: error.issues[0].message })
+        : this.i18n.t('editor.error.incomplete');
     }
     if (error instanceof StorageError) return error.message;
-    return 'Something went wrong while saving. Your changes are still in the editor.';
+    return this.i18n.t('editor.error.save-generic');
   }
 
   notify(kind: 'info' | 'error', text: string): void {
@@ -588,7 +591,7 @@ export class EditorStore {
   async exportAreaPng(areaId: string): Promise<void> {
     const scene = this.evaluation()?.areas.find((s) => s.areaId === areaId);
     if (!scene) {
-      this.notify('error', 'That printable area is not available for export.');
+      this.notify('error', this.i18n.t('editor.error.export-area'));
       return;
     }
     downloadBlob(await this.exporter.areaPng(scene), `${safeFilename(scene.areaId)}-artwork.png`);
@@ -603,7 +606,7 @@ export class EditorStore {
   async exportPreviewPng(mockupId: string): Promise<void> {
     const composite = this.composite(mockupId);
     if (!composite) {
-      this.notify('error', 'The preview is not ready yet.');
+      this.notify('error', this.i18n.t('editor.error.export-preview'));
       return;
     }
     downloadBlob(
@@ -640,7 +643,7 @@ export class EditorStore {
     for (const name of SAMPLE_PHOTOS) {
       try {
         const blob = await this.images.fetchBlob(
-          new URL(`assets/samples/${name}.jpg`, document.baseURI).href,
+          new URL(`assets/samples/${name}.jpg`, assetBaseUrl()).href,
         );
         const bitmap = await this.images.decodeBlob(blob);
         const asset: LocalAsset = {

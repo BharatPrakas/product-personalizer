@@ -1,10 +1,11 @@
 import { Component, inject } from '@angular/core';
+import { TranslatePipe } from '../admin/i18n/i18n.service';
 import { ConfirmService } from './confirm.service';
 import { DialogComponent } from './dialog.component';
 
 @Component({
   selector: 'app-confirm-host',
-  imports: [DialogComponent],
+  imports: [DialogComponent, TranslatePipe],
   template: `
     @let request = confirm.pending();
     <app-dialog
@@ -16,7 +17,7 @@ import { DialogComponent } from './dialog.component';
       <p>{{ request?.message }}</p>
       <ng-container dialogActions>
         <button type="button" class="btn" (click)="confirm.answer(false)">
-          {{ request?.cancelLabel ?? 'Cancel' }}
+          {{ request?.cancelLabel ?? ('common.cancel' | t) }}
         </button>
         <button
           type="button"

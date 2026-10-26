@@ -1,4 +1,5 @@
 import { Component, ElementRef, effect, input, output, viewChild } from '@angular/core';
+import { TranslatePipe } from '../admin/i18n/i18n.service';
 import { IconComponent } from './icon.component';
 
 /**
@@ -7,7 +8,7 @@ import { IconComponent } from './icon.component';
  */
 @Component({
   selector: 'app-dialog',
-  imports: [IconComponent],
+  imports: [IconComponent, TranslatePipe],
   template: `
     <dialog
       #dialog
@@ -23,7 +24,7 @@ import { IconComponent } from './icon.component';
           <button
             type="button"
             class="btn btn--ghost btn--icon btn--sm"
-            aria-label="Close dialog"
+            [attr.aria-label]="'ui.close-dialog' | t"
             (click)="requestClose()"
           >
             <app-icon name="close" />

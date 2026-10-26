@@ -1,4 +1,5 @@
 import { Component, computed, inject } from '@angular/core';
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { relativeTime } from '../../configurations/relative-time';
 import { ConfirmService } from '../../ui/confirm.service';
 import { IconComponent } from '../../ui/icon.component';
@@ -10,30 +11,30 @@ import { CONTROLS } from './controls.component';
 /** What the inspector shows when nothing is selected: the configuration itself, its setup progress and variants. */
 @Component({
   selector: 'app-configuration-inspector',
-  imports: [CONTROLS, SectionComponent, IconComponent],
+  imports: [CONTROLS, SectionComponent, IconComponent, TranslatePipe],
   template: `
     @if (store.config(); as c) {
       @if (variant(); as v) {
         <header class="inspector-head">
-          <p class="inspector-kind">Variant</p>
+          <p class="inspector-kind">{{ 'inspector.variant' | t }}</p>
           <app-text-in
-            label="Name"
+            [label]="'inspector.name' | t"
             [value]="v.label"
             [maxlength]="60"
             (changed)="setLabel($event)"
           />
         </header>
-        <app-section title="Appearance">
+        <app-section [title]="'inspector.appearance' | t">
           <app-color
-            label="Colour chip shown to customers"
+            [label]="'inspector.swatch' | t"
             [allowTransparent]="true"
             [value]="v.swatch ?? 'transparent'"
             (changed)="setSwatch($event)"
           />
         </app-section>
-        <app-section title="Mockups for this variant">
+        <app-section [title]="'inspector.variant.mockups' | t">
           @if (c.mockups.length === 0) {
-            <p class="field-hint">Add a mockup first.</p>
+            <p class="field-hint">{{ 'inspector.variant.add-mockup-first' | t }}</p>
           }
           @for (m of c.mockups; track m.id) {
             <app-check
@@ -43,9 +44,9 @@ import { CONTROLS } from './controls.component';
             />
           }
         </app-section>
-        <app-section title="Printable areas for this variant">
+        <app-section [title]="'inspector.variant.areas' | t">
           @if (c.printableAreas.length === 0) {
-            <p class="field-hint">Add a printable area first.</p>
+            <p class="field-hint">{{ 'inspector.variant.add-area-first' | t }}</p>
           }
           @for (a of c.printableAreas; track a.id) {
             <app-check
@@ -57,7 +58,7 @@ import { CONTROLS } from './controls.component';
         </app-section>
         <div class="panel-actions row">
           <button type="button" class="btn btn--sm" (click)="store.select({ kind: 'product' })">
-            Back to configuration
+            {{ 'inspector.back-to-config' | t }}
           </button>
           <button
             type="button"
@@ -65,36 +66,36 @@ import { CONTROLS } from './controls.component';
             [disabled]="c.variants.length <= 1"
             (click)="removeVariant(v.id)"
           >
-            Delete variant…
+            {{ 'inspector.variant.delete' | t }}
           </button>
         </div>
       } @else {
         <header class="inspector-head">
-          <p class="inspector-kind">Configuration</p>
+          <p class="inspector-kind">{{ 'inspector.config' | t }}</p>
           <app-text-in
-            label="Name"
+            [label]="'inspector.name' | t"
             [value]="c.product.name"
             [maxlength]="120"
             (changed)="setName($event)"
           />
         </header>
 
-        <app-section [title]="store.publishable() ? 'Ready to publish' : 'Setup'">
+        <app-section [title]="(store.publishable() ? 'inspector.ready' : 'inspector.setup') | t">
           <ol class="steps">
             @for (step of store.steps(); track step.id) {
               <li class="step" [class.is-done]="step.done">
                 <app-icon [name]="step.done ? 'circle-check' : 'circle-empty'" [size]="18" />
                 <span class="step-text">
-                  <span class="step-label">{{ step.label }}</span>
+                  <span class="step-label">{{ step.labelKey | t }}</span>
                   @if (!step.done) {
-                    <span class="step-hint">{{ step.hint }}</span>
+                    <span class="step-hint">{{ step.hintKey | t }}</span>
                   }
                 </span>
               </li>
             }
           </ol>
           @if (store.issues().length > 0) {
-            <ul class="issue-list" aria-label="Problems">
+            <ul class="issue-list" [attr.aria-label]="'inspector.problems' | t">
               @for (issue of store.issues().slice(0, 6); track $index) {
                 <li>{{ issue.message }}</li>
               }
@@ -102,26 +103,25 @@ import { CONTROLS } from './controls.component';
           }
         </app-section>
 
-        <app-section title="Publishing">
+        <app-section [title]="'inspector.publishing' | t">
           @if (store.published() && store.record(); as record) {
             <p class="field-hint">
-              Published {{ publishedAgo() }}.
               {{
-                store.unpublishedChanges()
-                  ? 'The draft has changes that are not published yet.'
-                  : 'The draft matches the published configuration.'
+                (store.unpublishedChanges()
+                  ? 'inspector.published.changed'
+                  : 'inspector.published.same'
+                ) | t: { when: publishedAgo() }
               }}
             </p>
           } @else {
             <p class="field-hint">
-              Not published yet. Saving stores a draft; publishing makes the current design the
-              published configuration.
+              {{ 'inspector.not-published' | t }}
             </p>
           }
           <p class="field-hint">{{ repoLabel() }}</p>
         </app-section>
 
-        <app-section title="Variants">
+        <app-section [title]="'inspector.variants' | t">
           <ul class="plain-list">
             @for (v of c.variants; track v.id) {
               <li class="list-row-simple">
@@ -132,42 +132,44 @@ import { CONTROLS } from './controls.component';
                 >
                   {{ v.label }}
                 </button>
-                <span class="field-hint"
-                  >{{ v.mockupIds.length }} mockups · {{ v.printableAreaIds.length }} areas</span
-                >
+                <span class="field-hint">{{
+                  'inspector.variant.counts'
+                    | t: { mockups: v.mockupIds.length, areas: v.printableAreaIds.length }
+                }}</span>
               </li>
             }
           </ul>
-          <button type="button" class="btn btn--sm" (click)="addVariant()">Add variant</button>
+          <button type="button" class="btn btn--sm" (click)="addVariant()">
+            {{ 'inspector.variant.add' | t }}
+          </button>
         </app-section>
 
-        <app-section title="Editor view" [open]="false">
+        <app-section [title]="'inspector.editor-view' | t" [open]="false">
           <app-check
-            label="Show area boundaries on the product photo"
+            [label]="'inspector.show-boundaries' | t"
             [value]="store.showBoundaries()"
             (changed)="store.showBoundaries.set($event)"
           />
           <app-check
-            label="Fill customer slots with sample photos"
+            [label]="'inspector.sample-photos' | t"
             [value]="store.sampleContent()"
             (changed)="store.setSampleContent($event)"
           />
           <p class="field-hint">
-            These only affect what you see while editing, never what customers see or what is
-            exported.
+            {{ 'inspector.editor-view-note' | t }}
           </p>
         </app-section>
 
-        <app-section title="Technical details" [open]="false">
+        <app-section [title]="'inspector.technical' | t" [open]="false">
           <dl class="facts">
-            <dt>Configuration ID</dt>
+            <dt>{{ 'inspector.config-id' | t }}</dt>
             <dd>
               <code>{{ c.id }}</code>
             </dd>
-            <dt>Draft version</dt>
+            <dt>{{ 'inspector.draft-version' | t }}</dt>
             <dd>{{ c.version }}</dd>
-            <dt>Schema</dt>
-            <dd>Version {{ c.schemaVersion }}</dd>
+            <dt>{{ 'inspector.schema' | t }}</dt>
+            <dd>{{ 'inspector.schema-version' | t: { version: c.schemaVersion } }}</dd>
           </dl>
         </app-section>
       }
@@ -177,6 +179,7 @@ import { CONTROLS } from './controls.component';
 export class ConfigurationInspectorComponent {
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
+  private readonly i18n = inject(I18n);
 
   protected readonly variant = computed(() => {
     const s = this.store.selection();
@@ -187,7 +190,7 @@ export class ConfigurationInspectorComponent {
   protected readonly repoLabel = computed(() => this.store.storageLabel());
   protected readonly publishedAgo = computed(() => {
     const at = this.store.record()?.publishedAt;
-    return at ? relativeTime(at, Date.now()) : '';
+    return at ? relativeTime(at, Date.now(), this.i18n) : '';
   });
 
   protected setName(name: string): void {
@@ -232,9 +235,9 @@ export class ConfigurationInspectorComponent {
 
   protected async removeVariant(id: string): Promise<void> {
     const ok = await this.confirmService.confirm({
-      title: 'Delete this variant?',
-      message: 'Customers will no longer see it. Mockups and areas are kept. You can undo this.',
-      confirmLabel: 'Delete variant',
+      title: this.i18n.t('inspector.variant.delete.title'),
+      message: this.i18n.t('inspector.variant.delete.message'),
+      confirmLabel: this.i18n.t('inspector.variant.delete.confirm'),
       danger: true,
     });
     if (!ok) return;

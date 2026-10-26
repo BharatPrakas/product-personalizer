@@ -1,3 +1,4 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, computed, inject } from '@angular/core';
 import { ProductMockup } from '../../customizer/models/product.models';
 import { ConfirmService } from '../../ui/confirm.service';
@@ -10,41 +11,40 @@ import { PlacementFieldsComponent } from './placement-fields.component';
 /** Inspector for a mockup: the photo, which variants show it, its printable-area placements and overlays. */
 @Component({
   selector: 'app-mockup-props',
-  imports: [CONTROLS, SectionComponent, PlacementFieldsComponent],
+  imports: [CONTROLS, SectionComponent, PlacementFieldsComponent, TranslatePipe],
   template: `
     @if (mockup(); as m) {
       <header class="inspector-head">
-        <p class="inspector-kind">Mockup</p>
+        <p class="inspector-kind">{{ 'inspector.mockup' | t }}</p>
         <app-text-in
-          label="Name"
+          [label]="'inspector.name' | t"
           [value]="m.name"
           [maxlength]="80"
           (changed)="set({ name: $event || m.name }, 'name')"
         />
       </header>
 
-      <app-section title="Photo">
+      <app-section [title]="'inspector.mockup.photo' | t">
         <p class="field-hint">
-          {{ size() ? size()!.w + ' × ' + size()!.h + ' px' : 'Loading the photo…' }}. A mockup is
-          only the product photo; the artwork is designed separately for each printable area.
+          {{ 'inspector.mockup.photo-hint' | t: { size: photoSize() } }}
         </p>
         <div class="row">
-          <app-file label="Replace photo" (chosen)="replace($event)" />
+          <app-file [label]="'inspector.mockup.replace' | t" (chosen)="replace($event)" />
         </div>
         <app-check
-          label="Visible to customers"
+          [label]="'mockups.visible-tip' | t"
           [value]="m.visible !== false"
           (changed)="set({ visible: $event ? undefined : false })"
         />
         <app-check
-          label="Show this view first"
+          [label]="'inspector.mockup.default-view' | t"
           [value]="store.config()?.preview?.defaultMockupId === m.id"
           (changed)="setDefaultView($event)"
         />
       </app-section>
 
-      <app-section title="Variants">
-        <p class="field-hint">Customers see this photo for the variants you tick.</p>
+      <app-section [title]="'inspector.variants' | t">
+        <p class="field-hint">{{ 'inspector.mockup.variants-hint' | t }}</p>
         @for (v of store.config()?.variants ?? []; track v.id) {
           <app-check
             [label]="v.label"
@@ -54,9 +54,9 @@ import { PlacementFieldsComponent } from './placement-fields.component';
         }
       </app-section>
 
-      <app-section title="Printable areas on this photo">
+      <app-section [title]="'inspector.mockup.areas' | t">
         @if (m.placements.length === 0) {
-          <p class="field-hint">No printable area is placed on this photo yet.</p>
+          <p class="field-hint">{{ 'inspector.mockup.no-areas' | t }}</p>
         }
         @for (p of m.placements; track p.printableAreaId) {
           <div class="mini-card">
@@ -73,7 +73,7 @@ import { PlacementFieldsComponent } from './placement-fields.component';
                 class="link-btn text-danger"
                 (click)="removePlacement(p.printableAreaId)"
               >
-                Remove
+                {{ 'common.remove' | t }}
               </button>
             </div>
             <app-placement-fields [mockupId]="m.id" [placement]="p" />
@@ -83,37 +83,39 @@ import { PlacementFieldsComponent } from './placement-fields.component';
           <div class="row">
             @for (a of unplaced(); track a.id) {
               <button type="button" class="btn btn--sm" (click)="place(a.id)">
-                Place “{{ a.name }}”
+                {{ 'inspector.mockup.place' | t: { name: a.name } }}
               </button>
             }
           </div>
         }
         <button type="button" class="btn btn--sm" (click)="store.addAreaDialogOpen.set(true)">
-          Add printable area…
+          {{ 'inspector.mockup.add-area' | t }}
         </button>
       </app-section>
 
-      <app-section title="Foreground overlays" [open]="false">
+      <app-section [title]="'inspector.mockup.overlays' | t" [open]="false">
         <p class="field-hint">
-          Transparent images drawn above the artwork, such as glass, clock hands or highlights.
+          {{ 'inspector.mockup.overlays-hint' | t }}
         </p>
         @for (o of m.overlays ?? []; track o.id) {
           <div class="row">
-            <span class="grow truncate">Overlay {{ $index + 1 }}</span>
+            <span class="grow truncate">{{
+              'inspector.mockup.overlay-n' | t: { n: $index + 1 }
+            }}</span>
             <app-num
-              label="Opacity (%)"
+              [label]="'inspector.opacity' | t"
               [value]="round((o.opacity ?? 1) * 100)"
               [min]="0"
               [max]="100"
               (changed)="setOverlayOpacity(o.id, $event)"
             />
             <button type="button" class="btn btn--sm btn--danger" (click)="removeOverlay(o.id)">
-              Remove
+              {{ 'common.remove' | t }}
             </button>
           </div>
         }
         <app-file
-          label="Add overlay image"
+          [label]="'inspector.mockup.add-overlay' | t"
           accept="image/png,image/webp"
           (chosen)="addOverlay($event)"
         />
@@ -121,13 +123,14 @@ import { PlacementFieldsComponent } from './placement-fields.component';
 
       <div class="panel-actions row">
         <button type="button" class="btn btn--sm btn--danger" (click)="remove(m)">
-          Remove mockup…
+          {{ 'inspector.mockup.remove-btn' | t }}
         </button>
       </div>
     }
   `,
 })
 export class MockupPropsComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
 
@@ -146,6 +149,13 @@ export class MockupPropsComponent {
     if (!m || !c) return [];
     return c.printableAreas.filter((a) => !m.placements.some((p) => p.printableAreaId === a.id));
   });
+
+  protected photoSize(): string {
+    const size = this.size();
+    return size
+      ? this.i18n.t('inspector.mockup.size', { width: size.w, height: size.h })
+      : this.i18n.t('inspector.mockup.photo-loading');
+  }
 
   protected round(n: number): number {
     return Math.round(n);
@@ -221,10 +231,9 @@ export class MockupPropsComponent {
 
   protected async remove(m: ProductMockup): Promise<void> {
     const ok = await this.confirmService.confirm({
-      title: `Remove “${m.name}”?`,
-      message:
-        'Its placements are removed with it; printable areas and artwork are kept. You can undo this.',
-      confirmLabel: 'Remove mockup',
+      title: this.i18n.t('mockups.remove.title', { name: m.name }),
+      message: this.i18n.t('inspector.mockup.remove.message'),
+      confirmLabel: this.i18n.t('mockups.remove.confirm'),
       danger: true,
     });
     if (ok) this.store.edit((c) => edit.removeMockup(c, m.id));

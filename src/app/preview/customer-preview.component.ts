@@ -1,3 +1,4 @@
+import { I18n, TranslatePipe } from '../admin/i18n/i18n.service';
 import { Component, computed, input, output, signal } from '@angular/core';
 import { ProductConfig } from '../customizer/models/product.models';
 import {
@@ -24,26 +25,26 @@ type Device = 'desktop' | 'mobile';
  */
 @Component({
   selector: 'app-customer-preview',
-  imports: [ProductCustomizerComponent, IconComponent, MenuComponent],
+  imports: [ProductCustomizerComponent, IconComponent, MenuComponent, TranslatePipe],
   template: `
     <header class="preview-bar">
       <button type="button" class="btn" (click)="back.emit()">
-        <app-icon name="arrow-left" [size]="16" /> {{ backLabel() }}
+        <app-icon name="arrow-left" [size]="16" /> {{ backLabel() ?? ('editor.preview.back' | t) }}
       </button>
       <div class="preview-bar__title">
         <strong class="truncate">{{ config().product.name }}</strong>
-        <span class="badge badge--info">Customer preview</span>
+        <span class="badge badge--info">{{ 'preview.customer' | t }}</span>
         <span class="subtle small truncate">{{ sourceLabel() }}</span>
       </div>
       <span class="grow"></span>
-      <div class="segmented" role="group" aria-label="Preview width">
+      <div class="segmented" role="group" [attr.aria-label]="'preview.width' | t">
         <button
           type="button"
           class="segmented-item"
           [attr.aria-pressed]="device() === 'desktop'"
           (click)="device.set('desktop')"
         >
-          Desktop
+          {{ 'preview.desktop' | t }}
         </button>
         <button
           type="button"
@@ -51,23 +52,30 @@ type Device = 'desktop' | 'mobile';
           [attr.aria-pressed]="device() === 'mobile'"
           (click)="device.set('mobile')"
         >
-          Mobile
+          {{ 'preview.mobile' | t }}
         </button>
       </div>
-      <app-menu label="Test files" text="Test files" align="end" [disabled]="!lastSave()">
+      <app-menu
+        [label]="'preview.test-files' | t"
+        [text]="'preview.test-files' | t"
+        align="end"
+        [disabled]="!lastSave()"
+      >
         @if (lastSave(); as saved) {
-          <div class="menu-label">Production artwork, one per printable area</div>
+          <div class="menu-label">{{ 'preview.menu.art' | t }}</div>
           @for (art of saved.artworks; track art.printableAreaId) {
             <button type="button" class="menu-item" role="menuitem" (click)="downloadArea(art)">
               <app-icon name="download" [size]="16" />
               <span
                 >{{ art.printableAreaName
-                }}<small>{{ art.width }} × {{ art.height }} px PNG</small></span
+                }}<small>{{
+                  'preview.png-size' | t: { width: art.width, height: art.height }
+                }}</small></span
               >
             </button>
           }
           <div class="menu-sep"></div>
-          <div class="menu-label">Product previews</div>
+          <div class="menu-label">{{ 'preview.menu.previews' | t }}</div>
           @for (preview of saved.previews; track preview.mockupId) {
             <button
               type="button"
@@ -80,7 +88,7 @@ type Device = 'desktop' | 'mobile';
           }
           <div class="menu-sep"></div>
           <button type="button" class="menu-item" role="menuitem" (click)="downloadAll()">
-            <app-icon name="download" [size]="16" /> Download everything
+            <app-icon name="download" [size]="16" /> {{ 'preview.download-all' | t }}
           </button>
         }
       </app-menu>
@@ -97,8 +105,7 @@ type Device = 'desktop' | 'mobile';
       </div>
       @if (!lastSave()) {
         <p class="subtle small preview-note">
-          Choose “Save customization” in the form to check the design and enable the test files
-          above. Nothing is stored or sent.
+          {{ 'preview.note' | t }}
         </p>
       }
     </div>
@@ -106,10 +113,12 @@ type Device = 'desktop' | 'mobile';
 })
 export class CustomerPreviewComponent {
   private readonly toasts = inject(ToastService);
+  private readonly i18n = inject(I18n);
 
   readonly config = input.required<ProductConfig>();
   readonly sourceLabel = input('');
-  readonly backLabel = input('Back to editor');
+  /** Defaults to "Back to editor". */
+  readonly backLabel = input<string | null>(null);
   readonly back = output<void>();
 
   protected readonly device = signal<Device>('desktop');
@@ -124,10 +133,9 @@ export class CustomerPreviewComponent {
     this.saveResult.set({
       requestId: detail.requestId,
       status: 'success',
-      message:
-        'Design checked. Nothing was stored; use Test files to download the production artwork.',
+      message: this.i18n.t('preview.saved-message'),
     });
-    this.toasts.success('Design checked. Test files are ready to download.');
+    this.toasts.success(this.i18n.t('preview.toast.checked'));
   }
 
   protected onError(detail: CustomizerErrorDetail): void {

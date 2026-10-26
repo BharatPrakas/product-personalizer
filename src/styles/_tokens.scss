@@ -1,7 +1,8 @@
 // Design tokens. Every colour, size, radius, shadow and layer used by the application comes from
 // here; component styles reference the custom properties rather than literal values.
 
-:root {
+:root,
+:host {
   // Colour: neutrals
   --c-bg: #f5f6f8;
   --c-surface: #ffffff;
@@ -92,7 +93,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root,
+  :host {
     --dur-fast: 0ms;
     --dur-base: 0ms;
   }

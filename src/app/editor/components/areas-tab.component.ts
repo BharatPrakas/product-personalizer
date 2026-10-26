@@ -1,6 +1,9 @@
 import { Component, inject } from '@angular/core';
 import { PrintableArea } from '../../customizer/models/product.models';
 import { ConfirmService } from '../../ui/confirm.service';
+import { AdminHost } from '../../admin/admin-host.service';
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
+import { MarkupLibrary } from '../../markups/markup-library.service';
 import { IconComponent, IconName } from '../../ui/icon.component';
 import { MenuComponent } from '../../ui/menu.component';
 import { EditorStore } from '../services/editor-store.service';
@@ -9,27 +12,26 @@ import * as edit from '../util/config-edit';
 /** Sidebar tab: the regions of the product that get printed. */
 @Component({
   selector: 'app-areas-tab',
-  imports: [IconComponent, MenuComponent],
+  imports: [IconComponent, MenuComponent, TranslatePipe],
   template: `
     <div class="tab-head">
-      <h2 class="tab-title">Printable areas</h2>
+      <h2 class="tab-title">{{ 'areas.title' | t }}</h2>
       <button
         type="button"
         class="btn btn--sm btn--primary"
         (click)="store.addAreaDialogOpen.set(true)"
       >
         <app-icon name="plus" [size]="16" />
-        <span>Add area</span>
+        <span>{{ 'areas.add' | t }}</span>
       </button>
     </div>
     @if (store.config(); as c) {
       @if (c.printableAreas.length === 0) {
         <p class="tab-empty">
-          A printable area is the region of the product that gets printed. Draw one on a mockup to
-          start designing its artwork.
+          {{ 'areas.empty' | t }}
         </p>
       }
-      <ul class="list" aria-label="Printable areas">
+      <ul class="list" [attr.aria-label]="'areas.title' | t">
         @for (a of c.printableAreas; track a.id) {
           <li class="list-row" [class.is-selected]="isSelected(a.id)">
             <button
@@ -43,8 +45,7 @@ import * as edit from '../util/config-edit';
                   a.name
                 }}</span>
                 <span class="list-row__meta truncate">
-                  {{ a.canvas.width }} × {{ a.canvas.height }} px · {{ shapeLabel(a)
-                  }}{{ a.enabled ? '' : ' · off' }}
+                  {{ meta(a) }}
                 </span>
               </span>
             </button>
@@ -53,16 +54,19 @@ import * as edit from '../util/config-edit';
                 type="button"
                 class="btn btn--ghost btn--icon btn--sm"
                 [attr.aria-label]="
-                  (visible(a) ? 'Hide boundary of ' : 'Show boundary of ') + a.name
+                  (visible(a) ? 'areas.hide-boundary-aria' : 'areas.show-boundary-aria')
+                    | t: { name: a.name }
                 "
                 [attr.aria-pressed]="visible(a)"
-                [attr.data-tip]="visible(a) ? 'Boundary shown on mockups' : 'Boundary hidden'"
+                [attr.data-tip]="
+                  (visible(a) ? 'areas.boundary-shown' : 'areas.boundary-hidden') | t
+                "
                 (click)="toggleBoundary(a)"
               >
                 <app-icon [name]="visible(a) ? 'eye' : 'eye-off'" [size]="16" />
               </button>
               <app-menu
-                [label]="'More actions for ' + a.name"
+                [label]="'list.more-actions' | t: { name: a.name }"
                 icon="more"
                 variant="ghost"
                 align="end"
@@ -73,14 +77,23 @@ import * as edit from '../util/config-edit';
                   role="menuitem"
                   (click)="store.editArea(a.id)"
                 >
-                  <app-icon name="artwork" [size]="16" /> Edit artwork
+                  <app-icon name="artwork" [size]="16" /> {{ 'common.edit-artwork' | t }}
                 </button>
                 <button type="button" class="menu-item" role="menuitem" (click)="toggleEnabled(a)">
                   <app-icon [name]="a.enabled ? 'minus' : 'check'" [size]="16" />
-                  {{ a.enabled ? 'Turn off' : 'Turn on' }}
+                  {{ (a.enabled ? 'areas.turn-off' : 'areas.turn-on') | t }}
                 </button>
                 <button type="button" class="menu-item" role="menuitem" (click)="duplicate(a)">
-                  <app-icon name="copy" [size]="16" /> Duplicate
+                  <app-icon name="copy" [size]="16" /> {{ 'common.duplicate' | t }}
+                </button>
+                <button
+                  type="button"
+                  class="menu-item"
+                  role="menuitem"
+                  [disabled]="readonly()"
+                  (click)="library.requestSaveArea(a)"
+                >
+                  <app-icon name="shapes" [size]="16" /> {{ 'markups.save-as' | t }}
                 </button>
                 <div class="menu-sep"></div>
                 <button
@@ -89,7 +102,7 @@ import * as edit from '../util/config-edit';
                   role="menuitem"
                   (click)="remove(a)"
                 >
-                  <app-icon name="trash" [size]="16" /> Delete…
+                  <app-icon name="trash" [size]="16" /> {{ 'common.delete-ellipsis' | t }}
                 </button>
               </app-menu>
             </div>
@@ -100,8 +113,11 @@ import * as edit from '../util/config-edit';
   `,
 })
 export class AreasTabComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
+  protected readonly library = inject(MarkupLibrary);
+  protected readonly readonly = inject(AdminHost).readonly;
 
   protected isSelected(id: string): boolean {
     const s = this.store.selection();
@@ -112,12 +128,19 @@ export class AreasTabComponent {
     return a.shape.type === 'rect' ? 'square' : a.shape.type === 'ellipse' ? 'circle' : 'vector';
   }
 
-  protected shapeLabel(a: PrintableArea): string {
-    return a.shape.type === 'rect'
-      ? 'rectangle'
-      : a.shape.type === 'ellipse'
-        ? 'ellipse'
-        : 'custom shape';
+  protected meta(a: PrintableArea): string {
+    const shape = this.i18n.t(
+      a.shape.type === 'rect'
+        ? 'shape.rect'
+        : a.shape.type === 'ellipse'
+          ? 'shape.ellipse'
+          : 'shape.custom',
+    );
+    return this.i18n.t(a.enabled ? 'areas.meta' : 'areas.meta-off', {
+      width: a.canvas.width,
+      height: a.canvas.height,
+      shape,
+    });
   }
 
   protected visible(a: PrintableArea): boolean {
@@ -150,9 +173,9 @@ export class AreasTabComponent {
     const artworks =
       this.store.config()?.artworks.filter((x) => x.printableAreaId === a.id).length ?? 0;
     const ok = await this.confirmService.confirm({
-      title: `Delete “${a.name}”?`,
-      message: `The area, its ${artworks} ${artworks === 1 ? 'artwork' : 'artworks'}, their layers and customer inputs, and its placements on every mockup are deleted. You can undo this.`,
-      confirmLabel: 'Delete area',
+      title: this.i18n.t('areas.delete.title', { name: a.name }),
+      message: this.i18n.plural('areas.delete.message', artworks),
+      confirmLabel: this.i18n.t('areas.delete.confirm'),
       danger: true,
     });
     if (ok) this.store.edit((c) => edit.removeArea(c, a.id));

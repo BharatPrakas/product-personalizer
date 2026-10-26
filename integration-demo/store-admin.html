@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Plain HTML host for zb-personalization-admin</title>
+    <style>
+      /* Deliberately a little hostile: broad host-page rules must not break the element's internals. */
+      * {
+        font-family: Georgia, serif;
+      }
+      body {
+        margin: 0;
+        color: #222;
+        background: #fafafa;
+        line-height: 1.3;
+      }
+      main {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 0 8px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+        margin: 12px 0;
+      }
+      button,
+      select {
+        min-height: 44px;
+        padding: 6px 12px;
+        font-size: 1rem;
+      }
+      label {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        min-height: 44px;
+      }
+      .note {
+        font-size: 0.875rem;
+        color: #555;
+      }
+      pre {
+        max-height: 220px;
+        overflow: auto;
+        padding: 8px;
+        font: 0.75rem/1.4 monospace;
+        background: #f0f0f0;
+      }
+      /* The element fills the height you give it (CSS `height` or --zb-admin-height). */
+      zb-personalization-admin {
+        height: 760px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        overflow: hidden;
+        /* Theme through the design tokens the element exposes. */
+        --c-primary: #296fd7;
+        --c-primary-hover: #1f58ae;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Plain HTML host: store admin</h1>
+      <p>
+        No Angular here: this page loads one module (<code>../store-admin.js</code>), assigns
+        properties and listens to events. Templates are stored <strong>in this browser</strong>
+        (IndexedDB) because no <code>api-base-url</code> is set. Create a template, publish it, then
+        open <strong>Product mapping</strong> and map it to one of the fake products below; the
+        storefront page resolves products the same way.
+      </p>
+      <p class="note">
+        The product list is a fake catalog the host passes in as <code>productCatalog</code>; the
+        element never invents products.
+      </p>
+
+      <div class="toolbar">
+        <label
+          >View
+          <select id="view">
+            <option value="list">Templates</option>
+            <option value="mapping">Product mapping</option>
+          </select>
+        </label>
+        <label
+          >Language
+          <select id="locale">
+            <option value="en">English</option>
+            <option value="fr">Français</option>
+            <option value="ar">العربية (right-to-left)</option>
+          </select>
+        </label>
+        <label><input type="checkbox" id="readonly" /> Read-only</label>
+        <a href="storefront.html">Storefront demo</a>
+      </div>
+
+      <zb-personalization-admin id="admin"></zb-personalization-admin>
+
+      <h2>Event log</h2>
+      <pre id="log" aria-live="off"></pre>
+    </main>
+
+    <script type="module">
+      import '../store-admin.js';
+      await customElements.whenDefined('zb-personalization-admin');
+
+      const admin = document.getElementById('admin');
+      const logEl = document.getElementById('log');
+      const log = (line) => {
+        logEl.textContent = `${line}\n${logEl.textContent}`.split('\n').slice(0, 80).join('\n');
+      };
+
+      // The host's products, as it would load them from its own catalog.
+      admin.productCatalog = [
+        {
+          id: 'prod-tee',
+          sku: 'TEE-001',
+          title: 'Classic tee',
+          variants: [
+            { id: 'prod-tee-s', title: 'Small', sku: 'TEE-001-S' },
+            { id: 'prod-tee-m', title: 'Medium', sku: 'TEE-001-M' },
+            { id: 'prod-tee-l', title: 'Large', sku: 'TEE-001-L' },
+          ],
+          collections: [
+            { id: 'apparel', title: 'Apparel' },
+            { id: 'summer', title: 'Summer' },
+          ],
+        },
+        {
+          id: 'prod-hoodie',
+          sku: 'HOOD-001',
+          title: 'Zip hoodie',
+          variants: [
+            { id: 'prod-hoodie-m', title: 'Medium' },
+            { id: 'prod-hoodie-l', title: 'Large' },
+          ],
+          collections: [{ id: 'apparel', title: 'Apparel' }],
+        },
+        { id: 'prod-tote', sku: 'TOTE-001', title: 'Canvas tote bag', collections: [{ id: 'accessories', title: 'Accessories' }] },
+        { id: 'prod-mug', sku: 'MUG-001', title: 'Ceramic mug', collections: [{ id: 'kitchen', title: 'Kitchen' }] },
+        { id: 'prod-bottle', sku: 'BOT-001', title: 'Steel bottle', collections: [{ id: 'kitchen', title: 'Kitchen' }] },
+        { id: 'prod-clock', sku: 'CLK-001', title: 'Heart clock', collections: [{ id: 'home', title: 'Home' }] },
+        { id: 'prod-poster', sku: 'POS-001', title: 'Art poster', collections: [{ id: 'home', title: 'Home' }] },
+        { id: 'prod-cap', sku: 'CAP-001', title: 'Baseball cap', collections: [{ id: 'accessories', title: 'Accessories' }] },
+      ];
+
+      for (const type of [
+        'admin-ready',
+        'view-change',
+        'config-saved',
+        'config-published',
+        'config-archived',
+        'mapping-changed',
+        'admin-error',
+      ]) {
+        admin.addEventListener(type, (e) => log(`${type} ${JSON.stringify(e.detail)}`.slice(0, 220)));
+      }
+
+      document.getElementById('view').addEventListener('change', (e) => {
+        admin.view = e.target.value;
+      });
+      admin.addEventListener('view-change', (e) => {
+        const select = document.getElementById('view');
+        if ([...select.options].some((o) => o.value === e.detail.view)) select.value = e.detail.view;
+      });
+      document.getElementById('locale').addEventListener('change', (e) => {
+        admin.locale = e.target.value;
+      });
+      document.getElementById('readonly').addEventListener('change', (e) => {
+        admin.readonly = e.target.checked;
+      });
+
+      // With a store backend, set these instead (the token is yours to issue and refresh):
+      //   admin.apiBaseUrl = 'https://api.example.com';
+      //   admin.authToken = await myApp.getShortLivedSessionToken();
+    </script>
+  </body>
+</html>

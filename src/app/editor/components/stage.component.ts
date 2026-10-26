@@ -13,6 +13,7 @@ import {
 import { AreaPlacement, BoundarySpec, ShapeSpec } from '../../customizer/models/product.models';
 import { drawAreaScene } from '../../customizer/util/draw';
 import { AreaCanvasCache, RenderService } from '../../customizer/services/render.service';
+import { I18n } from '../../admin/i18n/i18n.service';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
 import {
@@ -103,9 +104,9 @@ const CURSORS: Record<HandleId, string> = {
 @Component({
   selector: 'app-stage',
   templateUrl: './stage.component.html',
-  styleUrl: './stage.component.scss',
 })
 export class StageComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly render = inject(RenderService);
   private readonly cache = new AreaCanvasCache();
@@ -205,17 +206,21 @@ export class StageComponent {
 
   protected readonly ariaLabel = computed(() => {
     const selected = this.selectedItem();
-    const view = this.store.view() === 'mockup' ? 'Mockup canvas' : 'Artwork canvas';
-    return `${view}. ${selected ? `${selected.label} selected. Use the arrow keys to move it, or the properties panel for exact values.` : 'Nothing selected.'}`;
+    const view = this.i18n.t(
+      this.store.view() === 'mockup' ? 'stage.canvas.mockup' : 'stage.canvas.artwork',
+    );
+    return selected
+      ? this.i18n.t('stage.aria.selected', { view, label: selected.label })
+      : this.i18n.t('stage.aria.none', { view });
   });
 
   /** Hint shown over the canvas while a tool needs explaining. */
   protected readonly message = computed(() => {
     if (this.store.tool().kind === 'draw') {
-      return 'Drag on the product photo to draw the printable area. Press Esc to cancel.';
+      return this.i18n.t('stage.draw-hint');
     }
     if (this.content() && this.store.assetErrors().length > 0) {
-      return `${this.store.assetErrors().length} image(s) could not be loaded.`;
+      return this.i18n.t('stage.assets-failed', { count: this.store.assetErrors().length });
     }
     return null;
   });

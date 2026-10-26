@@ -1,10 +1,11 @@
+import type { MessageKey } from '../admin/i18n/messages.en';
 import type { ConfigIssue } from '../customizer/models/config.models';
 import type { ProductConfig } from '../customizer/models/product.models';
 
 export interface SetupStep {
   id: 'mockup' | 'area' | 'artwork' | 'input' | 'valid';
-  label: string;
-  hint: string;
+  labelKey: MessageKey;
+  hintKey: MessageKey;
   done: boolean;
 }
 
@@ -21,32 +22,32 @@ export function setupSteps(
   return [
     {
       id: 'mockup',
-      label: 'Add a product photo',
-      hint: 'Upload the mockup customers will see their design on.',
+      labelKey: 'ready.mockup.label',
+      hintKey: 'ready.mockup.hint',
       done: config.mockups.length > 0,
     },
     {
       id: 'area',
-      label: 'Define a printable area',
-      hint: 'Draw where the print goes on the mockup.',
+      labelKey: 'ready.area.label',
+      hintKey: 'ready.area.hint',
       done: placements > 0,
     },
     {
       id: 'artwork',
-      label: 'Design the artwork',
-      hint: 'Add layers to the artwork of a printable area.',
+      labelKey: 'ready.artwork.label',
+      hintKey: 'ready.artwork.hint',
       done: layers > 0,
     },
     {
       id: 'input',
-      label: 'Add a customer input',
-      hint: 'A photo slot or editable text lets customers personalize.',
+      labelKey: 'ready.input.label',
+      hintKey: 'ready.input.hint',
       done: config.fields.length > 0,
     },
     {
       id: 'valid',
-      label: 'Resolve configuration problems',
-      hint: 'Every variant needs a mockup and a printable area, and no problems may remain.',
+      labelKey: 'ready.valid.label',
+      hintKey: 'ready.valid.hint',
       done: strictIssues.length === 0 && config.mockups.length > 0,
     },
   ];

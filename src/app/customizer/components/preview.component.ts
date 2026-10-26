@@ -21,7 +21,7 @@ const MAX_BACKING_EDGE = 2400;
 @Component({
   selector: 'app-preview',
   template: `
-    <div class="preview-frame" #frame>
+    <div class="preview-frame" part="preview-frame" #frame>
       <canvas
         #canvas
         class="preview-canvas"

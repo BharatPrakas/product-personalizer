@@ -1,4 +1,5 @@
 import { Service, inject, signal } from '@angular/core';
+import { I18n } from '../admin/i18n/i18n.service';
 import type { ProductConfig } from '../customizer/models/product.models';
 import { LocalAssetLibrary } from '../customizer/services/local-asset-library.service';
 import { dbDelete, dbGet, dbGetAll, dbPut, openLocalDb } from '../customizer/services/local-db';
@@ -20,13 +21,12 @@ import { validateConfiguration } from './validation';
 
 const BROWSER: StorageInfo = {
   kind: 'browser',
-  label: 'Saved in this browser only (IndexedDB). Nothing is sent to a server.',
+  labelKey: 'storage.detail.browser',
   persistent: true,
 };
 const MEMORY: StorageInfo = {
   kind: 'memory',
-  label:
-    'Browser storage is unavailable here: changes are kept in memory and are lost when this tab closes.',
+  labelKey: 'storage.detail.memory',
   persistent: false,
 };
 
@@ -34,6 +34,7 @@ const MEMORY: StorageInfo = {
 @Service()
 export class LocalConfigurationRepository extends ConfigurationRepository {
   private readonly library = inject(LocalAssetLibrary);
+  private readonly i18n = inject(I18n);
   private readonly memory = new Map<string, ConfigurationRecord>();
   private mode: Promise<'browser' | 'memory'> | null = null;
 
@@ -56,7 +57,7 @@ export class LocalConfigurationRepository extends ConfigurationRepository {
     try {
       return (await dbGetAll<ConfigurationRecord>('configs')).map(normalizeRecord);
     } catch {
-      throw new StorageError('The saved configurations could not be read from this browser.');
+      throw new StorageError(this.i18n.t('error.storage.read-all'));
     }
   }
 
@@ -68,7 +69,7 @@ export class LocalConfigurationRepository extends ConfigurationRepository {
     try {
       await dbPut('configs', record);
     } catch {
-      throw new StorageError();
+      throw new StorageError(this.i18n.t('error.storage.write'));
     }
     return record;
   }
@@ -88,7 +89,7 @@ export class LocalConfigurationRepository extends ConfigurationRepository {
       const raw = await dbGet<ConfigurationRecord>('configs', id);
       return raw ? normalizeRecord(raw) : null;
     } catch {
-      throw new StorageError('The configuration could not be read from this browser.');
+      throw new StorageError(this.i18n.t('error.storage.read-one'));
     }
   }
 
@@ -184,7 +185,7 @@ export class LocalConfigurationRepository extends ConfigurationRepository {
       try {
         await dbDelete('configs', id);
       } catch {
-        throw new StorageError('The configuration could not be deleted.');
+        throw new StorageError(this.i18n.t('error.storage.delete'));
       }
     }
     if (record) await this.releaseImagesOf(record);

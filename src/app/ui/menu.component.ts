@@ -49,11 +49,6 @@ import { IconComponent, IconName } from './icon.component';
       </div>
     }
   `,
-  styles: `
-    :host {
-      display: inline-flex;
-    }
-  `,
 })
 export class MenuComponent {
   readonly label = input.required<string>();
@@ -110,7 +105,8 @@ export class MenuComponent {
   }
 
   protected onDocumentClick(event: Event): void {
-    if (this.open() && !this.host.nativeElement.contains(event.target as Node)) this.close();
+    // composedPath(): inside a shadow root the document-level target is retargeted to the shadow host.
+    if (this.open() && !event.composedPath().includes(this.host.nativeElement)) this.close();
   }
 
   protected onPanelClick(event: Event): void {
@@ -127,7 +123,8 @@ export class MenuComponent {
 
   protected onPanelKey(event: KeyboardEvent): void {
     const items = this.items();
-    const index = items.indexOf(document.activeElement as HTMLElement);
+    const root = this.host.nativeElement.getRootNode() as Document | ShadowRoot;
+    const index = items.indexOf(root.activeElement as HTMLElement);
     const move = (to: number) => {
       event.preventDefault();
       items[(to + items.length) % items.length]?.focus();

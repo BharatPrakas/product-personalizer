@@ -1,14 +1,17 @@
-import { Component, inject } from '@angular/core';
+import { TranslatePipe } from '../../admin/i18n/i18n.service';
+import { Component, ElementRef, inject } from '@angular/core';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { IconComponent, IconName } from '../../ui/icon.component';
 import { EditorStore, SidebarTab } from '../services/editor-store.service';
 import { AreasTabComponent } from './areas-tab.component';
 import { ArtworksTabComponent } from './artworks-tab.component';
 import { LayersTabComponent } from './layers-tab.component';
 import { MockupsTabComponent } from './mockups-tab.component';
+import { MarkupsTabComponent } from '../../markups/markups-tab.component';
 
 interface Tab {
   id: SidebarTab;
-  label: string;
+  label: MessageKey;
   icon: IconName;
 }
 
@@ -21,9 +24,16 @@ interface Tab {
     AreasTabComponent,
     ArtworksTabComponent,
     LayersTabComponent,
+    MarkupsTabComponent,
+    TranslatePipe,
   ],
   template: `
-    <div class="tabs" role="tablist" aria-label="Design structure" (keydown)="onKey($event)">
+    <div
+      class="tabs"
+      role="tablist"
+      [attr.aria-label]="'editor.aside.left' | t"
+      (keydown)="onKey($event)"
+    >
       @for (tab of tabs; track tab.id) {
         <button
           type="button"
@@ -36,7 +46,7 @@ interface Tab {
           (click)="store.sidebarTab.set(tab.id)"
         >
           <app-icon [name]="tab.icon" [size]="18" />
-          <span>{{ tab.label }}</span>
+          <span>{{ tab.label | t }}</span>
         </button>
       }
     </div>
@@ -60,17 +70,22 @@ interface Tab {
         @case ('layers') {
           <app-layers-tab />
         }
+        @case ('markups') {
+          <app-markups-tab />
+        }
       }
     </div>
   `,
 })
 export class DesignSidebarComponent {
   protected readonly store = inject(EditorStore);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   protected readonly tabs: Tab[] = [
-    { id: 'mockups', label: 'Mockups', icon: 'mockup' },
-    { id: 'areas', label: 'Areas', icon: 'area' },
-    { id: 'artworks', label: 'Artworks', icon: 'artwork' },
-    { id: 'layers', label: 'Layers', icon: 'layers' },
+    { id: 'mockups', label: 'sidebar.tab.mockups', icon: 'mockup' },
+    { id: 'areas', label: 'sidebar.tab.areas', icon: 'area' },
+    { id: 'artworks', label: 'sidebar.tab.artworks', icon: 'artwork' },
+    { id: 'layers', label: 'sidebar.tab.layers', icon: 'layers' },
+    { id: 'markups', label: 'sidebar.tab.markups', icon: 'shapes' },
   ];
 
   /** Arrow keys move between tabs, as in the ARIA tabs pattern. */
@@ -82,6 +97,7 @@ export class DesignSidebarComponent {
     event.preventDefault();
     const tab = this.tabs[(next + this.tabs.length) % this.tabs.length];
     this.store.sidebarTab.set(tab.id);
-    queueMicrotask(() => document.getElementById(`tab-${tab.id}`)?.focus());
+    const root = this.host.nativeElement.getRootNode() as Document | ShadowRoot;
+    queueMicrotask(() => root.getElementById(`tab-${tab.id}`)?.focus());
   }
 }

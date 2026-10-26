@@ -1,3 +1,4 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, inject } from '@angular/core';
 import { IconComponent } from '../../ui/icon.component';
 import { MenuComponent } from '../../ui/menu.component';
@@ -10,13 +11,13 @@ import { MockupThumbComponent } from './mockup-thumb.component';
 /** Sidebar tab: the product photos customers see their design on. */
 @Component({
   selector: 'app-mockups-tab',
-  imports: [IconComponent, MenuComponent, MockupThumbComponent],
+  imports: [IconComponent, MenuComponent, MockupThumbComponent, TranslatePipe],
   template: `
     <div class="tab-head">
-      <h2 class="tab-title">Mockups</h2>
+      <h2 class="tab-title">{{ 'mockups.title' | t }}</h2>
       <label class="btn btn--sm">
         <app-icon name="plus" [size]="16" />
-        <span>Add mockup</span>
+        <span>{{ 'mockups.add' | t }}</span>
         <input
           class="sr-only"
           type="file"
@@ -28,11 +29,10 @@ import { MockupThumbComponent } from './mockup-thumb.component';
     @if (store.config(); as c) {
       @if (c.mockups.length === 0) {
         <p class="tab-empty">
-          Add the product photo customers will see their personalized design on. Printable areas are
-          placed on top of it.
+          {{ 'mockups.empty' | t }}
         </p>
       }
-      <ul class="list" aria-label="Mockups">
+      <ul class="list" [attr.aria-label]="'mockups.title' | t">
         @for (m of c.mockups; track m.id; let first = $first; let last = $last) {
           <li class="list-row" [class.is-selected]="isSelected(m.id)">
             <button
@@ -53,17 +53,18 @@ import { MockupThumbComponent } from './mockup-thumb.component';
                 type="button"
                 class="btn btn--ghost btn--icon btn--sm"
                 [attr.aria-label]="
-                  (m.visible === false ? 'Show ' : 'Hide ') + m.name + ' to customers'
+                  (m.visible === false ? 'mockups.show-aria' : 'mockups.hide-aria')
+                    | t: { name: m.name }
                 "
                 [attr.data-tip]="
-                  m.visible === false ? 'Hidden from customers' : 'Visible to customers'
+                  (m.visible === false ? 'mockups.hidden-tip' : 'mockups.visible-tip') | t
                 "
                 (click)="toggleVisible(m)"
               >
                 <app-icon [name]="m.visible === false ? 'eye-off' : 'eye'" [size]="16" />
               </button>
               <app-menu
-                [label]="'More actions for ' + m.name"
+                [label]="'list.more-actions' | t: { name: m.name }"
                 icon="more"
                 variant="ghost"
                 align="end"
@@ -74,10 +75,10 @@ import { MockupThumbComponent } from './mockup-thumb.component';
                   role="menuitem"
                   (click)="store.select({ kind: 'mockup', id: m.id })"
                 >
-                  <app-icon name="pen" [size]="16" /> Rename and settings
+                  <app-icon name="pen" [size]="16" /> {{ 'mockups.rename-settings' | t }}
                 </button>
                 <button type="button" class="menu-item" role="menuitem" (click)="duplicate(m)">
-                  <app-icon name="copy" [size]="16" /> Duplicate
+                  <app-icon name="copy" [size]="16" /> {{ 'common.duplicate' | t }}
                 </button>
                 <button
                   type="button"
@@ -86,7 +87,7 @@ import { MockupThumbComponent } from './mockup-thumb.component';
                   [disabled]="first"
                   (click)="move(m, -1)"
                 >
-                  <app-icon name="arrow-up" [size]="16" /> Move earlier
+                  <app-icon name="arrow-up" [size]="16" /> {{ 'common.move-earlier' | t }}
                 </button>
                 <button
                   type="button"
@@ -95,7 +96,7 @@ import { MockupThumbComponent } from './mockup-thumb.component';
                   [disabled]="last"
                   (click)="move(m, 1)"
                 >
-                  <app-icon name="arrow-down" [size]="16" /> Move later
+                  <app-icon name="arrow-down" [size]="16" /> {{ 'common.move-later' | t }}
                 </button>
                 <div class="menu-sep"></div>
                 <button
@@ -104,7 +105,7 @@ import { MockupThumbComponent } from './mockup-thumb.component';
                   role="menuitem"
                   (click)="remove(m)"
                 >
-                  <app-icon name="trash" [size]="16" /> Remove…
+                  <app-icon name="trash" [size]="16" /> {{ 'common.remove-ellipsis' | t }}
                 </button>
               </app-menu>
             </div>
@@ -115,6 +116,7 @@ import { MockupThumbComponent } from './mockup-thumb.component';
   `,
 })
 export class MockupsTabComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
 
@@ -128,11 +130,14 @@ export class MockupsTabComponent {
     const variants = (c?.variants ?? []).filter((v) => v.mockupIds.includes(m.id));
     const where =
       variants.length === 0
-        ? 'No variant'
+        ? this.i18n.t('mockups.no-variant')
         : variants.length === c?.variants.length && variants.length > 1
-          ? 'All variants'
+          ? this.i18n.t('mockups.all-variants')
           : variants.map((v) => v.label).join(', ');
-    return `${m.placements.length} ${m.placements.length === 1 ? 'area' : 'areas'} · ${where}`;
+    return this.i18n.t('mockups.meta', {
+      areas: this.i18n.plural('mockups.areas', m.placements.length),
+      where,
+    });
   }
 
   protected onFile(event: Event): void {
@@ -164,12 +169,11 @@ export class MockupsTabComponent {
 
   protected async remove(m: ProductMockup): Promise<void> {
     const ok = await this.confirmService.confirm({
-      title: `Remove “${m.name}”?`,
-      message:
-        m.placements.length > 0
-          ? 'Its printable-area placements are removed with it. The printable areas and their artwork are kept. You can undo this.'
-          : 'You can undo this.',
-      confirmLabel: 'Remove mockup',
+      title: this.i18n.t('mockups.remove.title', { name: m.name }),
+      message: this.i18n.t(
+        m.placements.length > 0 ? 'mockups.remove.message-placements' : 'mockups.remove.message',
+      ),
+      confirmLabel: this.i18n.t('mockups.remove.confirm'),
       danger: true,
     });
     if (ok) this.store.edit((c) => edit.removeMockup(c, m.id));

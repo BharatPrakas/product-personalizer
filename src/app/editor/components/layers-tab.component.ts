@@ -1,5 +1,7 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { ArtworkLayer } from '../../customizer/models/product.models';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { ConfirmService } from '../../ui/confirm.service';
 import { IconComponent, IconName } from '../../ui/icon.component';
 import { MenuComponent } from '../../ui/menu.component';
@@ -14,55 +16,63 @@ const ICONS: Record<ArtworkLayer['type'], IconName> = {
   shape: 'square',
 };
 
-const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
-  'fixed-image': 'Fixed image',
-  'image-placeholder': 'Customer photo',
-  text: 'Text',
-  artwork: 'Clipart choice',
-  shape: 'Shape',
+const KIND_LABEL: Record<ArtworkLayer['type'], MessageKey> = {
+  'fixed-image': 'layers.kind.fixed-image',
+  'image-placeholder': 'layers.kind.image-placeholder',
+  text: 'layers.kind.text',
+  artwork: 'layers.kind.artwork',
+  shape: 'layers.kind.shape',
 };
 
 /** Sidebar tab: the layers of the open artwork, front first. Drag rows (or use the menu) to reorder. */
 @Component({
   selector: 'app-layers-tab',
-  imports: [IconComponent, MenuComponent],
+  imports: [IconComponent, MenuComponent, TranslatePipe],
   template: `
     @let art = store.artwork();
     <div class="tab-head">
-      <h2 class="tab-title">Layers</h2>
+      <h2 class="tab-title">{{ 'layers.title' | t }}</h2>
       <app-menu
-        label="Add a layer"
-        text="Add layer"
+        [label]="'layers.add-label' | t"
+        [text]="'layers.add' | t"
         variant="primary"
         align="end"
         [disabled]="!art"
       >
-        <div class="menu-label">Customer inputs</div>
+        <div class="menu-label">{{ 'layers.menu.inputs' | t }}</div>
         <button type="button" class="menu-item" role="menuitem" (click)="add('image-placeholder')">
           <app-icon name="upload" [size]="16" />
-          <span>Photo upload<small>Customers add their own photo</small></span>
+          <span
+            >{{ 'layers.photo-upload' | t
+            }}<small>{{ 'layers.photo-upload-hint' | t }}</small></span
+          >
         </button>
         <button type="button" class="menu-item" role="menuitem" (click)="add('text-editable')">
           <app-icon name="text" [size]="16" />
-          <span>Editable text<small>Customers type the text</small></span>
+          <span
+            >{{ 'layers.editable-text' | t
+            }}<small>{{ 'layers.editable-text-hint' | t }}</small></span
+          >
         </button>
         <button type="button" class="menu-item" role="menuitem" (click)="add('artwork-choice')">
           <app-icon name="shapes" [size]="16" />
-          <span>Clipart choice<small>Customers pick from artwork</small></span>
+          <span
+            >{{ 'layers.clipart' | t }}<small>{{ 'layers.clipart-hint' | t }}</small></span
+          >
         </button>
         <div class="menu-sep"></div>
-        <div class="menu-label">Fixed design</div>
+        <div class="menu-label">{{ 'layers.menu.fixed' | t }}</div>
         <button type="button" class="menu-item" role="menuitem" (click)="chooseFixedImage()">
-          <app-icon name="image" [size]="16" /> Fixed image…
+          <app-icon name="image" [size]="16" /> {{ 'layers.fixed-image-menu' | t }}
         </button>
         <button type="button" class="menu-item" role="menuitem" (click)="add('text-fixed')">
-          <app-icon name="text" [size]="16" /> Fixed text
+          <app-icon name="text" [size]="16" /> {{ 'layers.fixed-text' | t }}
         </button>
         <button type="button" class="menu-item" role="menuitem" (click)="add('shape-rect')">
-          <app-icon name="square" [size]="16" /> Rectangle
+          <app-icon name="square" [size]="16" /> {{ 'layers.rect' | t }}
         </button>
         <button type="button" class="menu-item" role="menuitem" (click)="add('shape-ellipse')">
-          <app-icon name="circle" [size]="16" /> Ellipse
+          <app-icon name="circle" [size]="16" /> {{ 'layers.ellipse' | t }}
         </button>
       </app-menu>
       <input
@@ -78,18 +88,20 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
 
     @if (!art) {
       <p class="tab-empty">
-        Select an artwork in the Artworks tab, or a printable area on the product photo, to see its
-        layers.
+        {{ 'layers.empty-select' | t }}
       </p>
     } @else {
       <p class="list-context truncate"><app-icon name="artwork" [size]="14" /> {{ art.name }}</p>
       @if (art.layers.length === 0) {
         <p class="tab-empty">
-          This artwork is empty. Add a photo upload or editable text so customers can personalize
-          it.
+          {{ 'layers.empty' | t }}
         </p>
       }
-      <ul class="list" aria-label="Layers, front first" (dragover)="$event.preventDefault()">
+      <ul
+        class="list"
+        [attr.aria-label]="'layers.list-aria' | t"
+        (dragover)="$event.preventDefault()"
+      >
         @for (l of reversed(art.layers); track l.id; let i = $index) {
           <li
             class="list-row"
@@ -122,7 +134,10 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
               <button
                 type="button"
                 class="btn btn--ghost btn--icon btn--sm"
-                [attr.aria-label]="(l.visible === false ? 'Show ' : 'Hide ') + (l.name || label(l))"
+                [attr.aria-label]="
+                  (l.visible === false ? 'layers.show-aria' : 'layers.hide-aria')
+                    | t: { name: l.name || label(l) }
+                "
                 [attr.aria-pressed]="l.visible !== false"
                 (click)="toggle(l, 'visible')"
               >
@@ -131,20 +146,23 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
               <button
                 type="button"
                 class="btn btn--ghost btn--icon btn--sm"
-                [attr.aria-label]="(l.locked ? 'Unlock ' : 'Lock ') + (l.name || label(l))"
+                [attr.aria-label]="
+                  (l.locked ? 'layers.unlock-aria' : 'layers.lock-aria')
+                    | t: { name: l.name || label(l) }
+                "
                 [attr.aria-pressed]="l.locked === true"
                 (click)="toggle(l, 'locked')"
               >
                 <app-icon [name]="l.locked ? 'lock' : 'unlock'" [size]="16" />
               </button>
               <app-menu
-                [label]="'More actions for ' + (l.name || label(l))"
+                [label]="'list.more-actions' | t: { name: l.name || label(l) }"
                 icon="more"
                 variant="ghost"
                 align="end"
               >
                 <button type="button" class="menu-item" role="menuitem" (click)="duplicate(l)">
-                  <app-icon name="copy" [size]="16" /> Duplicate
+                  <app-icon name="copy" [size]="16" /> {{ 'common.duplicate' | t }}
                 </button>
                 <button
                   type="button"
@@ -152,7 +170,7 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
                   role="menuitem"
                   (click)="move(l, 'forward')"
                 >
-                  <app-icon name="arrow-up" [size]="16" /> Bring forward
+                  <app-icon name="arrow-up" [size]="16" /> {{ 'layers.forward' | t }}
                 </button>
                 <button
                   type="button"
@@ -160,7 +178,7 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
                   role="menuitem"
                   (click)="move(l, 'backward')"
                 >
-                  <app-icon name="arrow-down" [size]="16" /> Send backward
+                  <app-icon name="arrow-down" [size]="16" /> {{ 'layers.backward' | t }}
                 </button>
                 <div class="menu-sep"></div>
                 <button
@@ -169,7 +187,7 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
                   role="menuitem"
                   (click)="remove(l)"
                 >
-                  <app-icon name="trash" [size]="16" /> Delete…
+                  <app-icon name="trash" [size]="16" /> {{ 'common.delete-ellipsis' | t }}
                 </button>
               </app-menu>
             </div>
@@ -180,6 +198,7 @@ const KIND_LABEL: Record<ArtworkLayer['type'], string> = {
   `,
 })
 export class LayersTabComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
   private readonly fixedImageInput =
@@ -197,11 +216,13 @@ export class LayersTabComponent {
   }
 
   protected label(l: ArtworkLayer): string {
-    return KIND_LABEL[l.type];
+    return this.i18n.t(KIND_LABEL[l.type]);
   }
 
   protected kind(l: ArtworkLayer): string {
-    return l.type === 'text' && !l.fieldId ? 'Fixed text' : KIND_LABEL[l.type];
+    return l.type === 'text' && !l.fieldId
+      ? this.i18n.t('layers.fixed-text')
+      : this.i18n.t(KIND_LABEL[l.type]);
   }
 
   protected isSelected(id: string): boolean {
@@ -260,11 +281,9 @@ export class LayersTabComponent {
     const customerInput =
       l.type === 'image-placeholder' || l.type === 'artwork' || (l.type === 'text' && !!l.fieldId);
     const ok = await this.confirmService.confirm({
-      title: `Delete “${l.name || this.label(l)}”?`,
-      message: customerInput
-        ? 'The customer input it feeds is removed too, unless another layer uses it. You can undo this.'
-        : 'You can undo this.',
-      confirmLabel: 'Delete layer',
+      title: this.i18n.t('layers.delete.title', { name: l.name || this.label(l) }),
+      message: this.i18n.t(customerInput ? 'layers.delete.message-input' : 'layers.delete.message'),
+      confirmLabel: this.i18n.t('layers.delete.confirm'),
       danger: true,
     });
     if (!ok) return;

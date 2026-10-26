@@ -1,15 +1,34 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { ApplicationConfig, inject, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { routes } from './app.routes';
 import { ConfigurationRepository } from './workspace/configuration-repository';
 import { LocalConfigurationRepository } from './workspace/local-configuration-repository.service';
+import { CloudConfigurationRepository } from './workspace/cloud/cloud-configuration-repository.service';
+import { RuntimeConfig } from './workspace/cloud/runtime-config';
+import { LocalProductMappingRepository } from './mapping/local-product-mapping-repository.service';
+import { ProductMappingRepository } from './mapping/product-mapping-repository';
+import { LocalMarkupRepository } from './markups/local-markup-repository.service';
+import { MarkupRepository } from './markups/markup-repository';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes, withComponentInputBinding()),
-    // Standalone persistence is the browser. A hosted deployment swaps this one provider for an
-    // implementation that talks to its API; no component depends on the storage mechanism.
-    { provide: ConfigurationRepository, useExisting: LocalConfigurationRepository },
+    provideHttpClient(withFetch()),
+    // Persistence is chosen at runtime. The standalone app ships no runtime config, so it stays on
+    // the browser (IndexedDB) implementation — unchanged. A hosted deployment that sets
+    // `window.__ZB_PERSONALIZER__ = { apiBaseUrl, authToken }` switches to the cloud repository, and
+    // no component depends on which one is active. (See workspace/cloud/runtime-config.ts.)
+    // The standalone app keeps mappings in the browser; the admin element switches per call.
+    { provide: ProductMappingRepository, useExisting: LocalProductMappingRepository },
+    { provide: MarkupRepository, useExisting: LocalMarkupRepository },
+    {
+      provide: ConfigurationRepository,
+      useFactory: () =>
+        inject(RuntimeConfig).useCloud()
+          ? inject(CloudConfigurationRepository)
+          : inject(LocalConfigurationRepository),
+    },
   ],
 };

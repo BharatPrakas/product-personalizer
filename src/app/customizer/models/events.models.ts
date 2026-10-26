@@ -33,6 +33,12 @@ export interface CustomizerReadyDetail {
   templateVersion: number;
   /** Present for schema-version-2 configurations only (version-1 detail is unchanged). */
   schemaVersion?: 2;
+  /**
+   * Only set when the template was resolved from `product-id`: `false` means no published
+   * template is mapped to the product (`templateId` is empty and `templateVersion` is 0), so the
+   * theme can hide the section; `true` means the mapped template is loaded.
+   */
+  personalizable?: boolean;
 }
 
 export interface CustomizerChangeDetail {

@@ -6,7 +6,7 @@
     "start": "ng serve",
     "build": "ng build",
     "build:element": "ng run product-personalizer:build-element && node scripts/finalize-element.mjs",
-    "serve:element": "node scripts/serve-static.mjs dist/element 4300",
+    "serve:element": "node scripts/serve-static.mjs dist/product-personalization 4300",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "test:ci": "ng test --watch=false",

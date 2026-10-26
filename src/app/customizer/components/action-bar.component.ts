@@ -64,7 +64,13 @@ export interface PriceView {
         }
       </div>
       <div class="btn-row">
-        <button type="button" class="btn primary" [disabled]="saveDisabled()" (click)="save.emit()">
+        <button
+          type="button"
+          class="btn primary"
+          part="primary-button"
+          [disabled]="saveDisabled()"
+          (click)="save.emit()"
+        >
           {{ saveLabel() }}
         </button>
         <button

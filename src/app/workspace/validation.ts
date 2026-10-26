@@ -1,5 +1,6 @@
 import { validateProductConfig } from '../customizer/util/product-validator';
 import { resolveBase } from '../customizer/util/url-policy';
+import { assetBaseUrl } from './asset-base';
 
 export interface ValidationMode {
   /** Drafts may still be empty; published configurations may not. */
@@ -12,7 +13,7 @@ export interface ValidationMode {
  */
 export function validateConfiguration(raw: unknown, mode: ValidationMode) {
   return validateProductConfig(raw, {
-    resolvedBase: resolveBase({ configUrl: null, baseUrl: null, documentBase: document.baseURI }),
+    resolvedBase: resolveBase({ configUrl: null, baseUrl: null, documentBase: assetBaseUrl() }),
     policy: { pageOrigin: location.origin, allowedOrigins: [], allowLocalAssets: true },
     allowIncomplete: mode.allowIncomplete,
   });

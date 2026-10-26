@@ -1,10 +1,25 @@
-import { Component, DestroyRef, computed, effect, inject, input, signal } from '@angular/core';
+import {
+  Component,
+  DestroyRef,
+  ElementRef,
+  computed,
+  effect,
+  inject,
+  input,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { ProductConfig } from '../../customizer/models/product.models';
 import { AssetStore } from '../../customizer/services/asset-store.service';
 import { CustomerPreviewComponent } from '../../preview/customer-preview.component';
 import { relativeTime } from '../../configurations/relative-time';
 import { ConfirmService } from '../../ui/confirm.service';
+import { AdminHost } from '../../admin/admin-host.service';
+import { MarkupLibrary } from '../../markups/markup-library.service';
+import { SaveMarkupDialogComponent } from '../../markups/save-markup-dialog.component';
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
+import { ConfigurationRepository } from '../../workspace/configuration-repository';
 import { EmptyStateComponent } from '../../ui/empty-state.component';
 import { IconComponent } from '../../ui/icon.component';
 import { MenuComponent } from '../../ui/menu.component';
@@ -33,35 +48,38 @@ type Mode = 'edit' | 'preview';
     InspectorComponent,
     AddAreaDialogComponent,
     CustomerPreviewComponent,
+    TranslatePipe,
+    SaveMarkupDialogComponent,
   ],
-  providers: [EditorStore, AssetStore],
+  providers: [EditorStore, AssetStore, MarkupLibrary],
   host: {
-    '(window:keydown)': 'onKey($event)',
+    // Shortcuts act only while focus is inside the editor, so an embedded editor never hijacks
+    // keys (Ctrl+S, Ctrl+Z ...) meant for the host page.
+    '(keydown)': 'onKey($event)',
     '(window:beforeunload)': 'onBeforeUnload($event)',
-    '(window:resize)': 'onResize()',
   },
   template: `
     @if (store.config(); as c) {
       @if (mode() === 'preview' && previewConfig(); as pc) {
         <app-customer-preview
           [config]="pc"
-          sourceLabel="Working draft, including unsaved changes"
-          backLabel="Back to editor"
+          [sourceLabel]="'editor.preview.source' | t"
+          [backLabel]="'editor.preview.back' | t"
           (back)="mode.set('edit')"
         />
       } @else {
-        <div class="editor">
+        <div class="editor" #editorRoot tabindex="-1">
           <header class="editor-header">
             <a
               class="btn btn--ghost btn--icon"
               routerLink="/configurations"
-              aria-label="Back to configurations"
-              data-tip="Configurations"
+              [attr.aria-label]="'editor.back' | t"
+              [attr.data-tip]="'list.title' | t"
             >
               <app-icon name="arrow-left" />
             </a>
             <div class="title-block">
-              <label class="sr-only" for="config-name">Configuration name</label>
+              <label class="sr-only" for="config-name">{{ 'newconfig.name' | t }}</label>
               <input
                 id="config-name"
                 class="input input--ghost title-input"
@@ -90,7 +108,7 @@ type Mode = 'edit' | 'preview';
               <button
                 type="button"
                 class="btn btn--icon"
-                aria-label="Toggle design structure panel"
+                [attr.aria-label]="'editor.panel.left' | t"
                 [attr.aria-pressed]="leftOpen()"
                 (click)="toggleLeft()"
               >
@@ -99,19 +117,19 @@ type Mode = 'edit' | 'preview';
               <button
                 type="button"
                 class="btn btn--icon"
-                aria-label="Toggle properties panel"
+                [attr.aria-label]="'editor.panel.right' | t"
                 [attr.aria-pressed]="rightOpen()"
                 (click)="toggleRight()"
               >
                 <app-icon name="panel-right" />
               </button>
             }
-            <div class="row row--tight" role="group" aria-label="History">
+            <div class="row row--tight" role="group" [attr.aria-label]="'editor.history' | t">
               <button
                 type="button"
                 class="btn btn--icon btn--ghost"
-                aria-label="Undo"
-                data-tip="Undo (Ctrl+Z)"
+                [attr.aria-label]="'editor.undo' | t"
+                [attr.data-tip]="'editor.undo-tip' | t"
                 [disabled]="!store.canUndo()"
                 (click)="store.undo()"
               >
@@ -120,8 +138,8 @@ type Mode = 'edit' | 'preview';
               <button
                 type="button"
                 class="btn btn--icon btn--ghost"
-                aria-label="Redo"
-                data-tip="Redo (Ctrl+Shift+Z)"
+                [attr.aria-label]="'editor.redo' | t"
+                [attr.data-tip]="'editor.redo-tip' | t"
                 [disabled]="!store.canRedo()"
                 (click)="store.redo()"
               >
@@ -132,12 +150,10 @@ type Mode = 'edit' | 'preview';
               type="button"
               class="btn"
               [disabled]="!store.previewable()"
-              [attr.title]="
-                store.previewable() ? null : 'Finish the setup to preview this configuration'
-              "
+              [attr.title]="store.previewable() ? null : ('editor.preview-disabled' | t)"
               (click)="openPreview()"
             >
-              <app-icon name="preview" [size]="16" /> Preview
+              <app-icon name="preview" [size]="16" /> {{ 'editor.preview' | t }}
             </button>
             <button
               type="button"
@@ -146,7 +162,9 @@ type Mode = 'edit' | 'preview';
               (click)="save()"
             >
               <app-icon name="save" [size]="16" />
-              {{ store.saveState() === 'saving' ? 'Saving…' : 'Save draft' }}
+              {{
+                (store.saveState() === 'saving' ? 'editor.save.saving' : 'editor.save-draft') | t
+              }}
             </button>
             <button
               type="button"
@@ -154,22 +172,27 @@ type Mode = 'edit' | 'preview';
               [disabled]="
                 !store.publishable() || store.publishing() || store.saveState() === 'saving'
               "
-              [attr.title]="store.publishable() ? null : 'Complete the setup steps to publish'"
+              [attr.title]="store.publishable() ? null : ('editor.publish-disabled' | t)"
               (click)="publish()"
             >
-              {{ store.publishing() ? 'Publishing…' : 'Publish' }}
+              {{ (store.publishing() ? 'editor.publishing' : 'editor.publish') | t }}
             </button>
-            <app-menu label="More actions" icon="more" align="end">
+            @if (host.embedded() && store.record()?.published) {
+              <a class="btn" [routerLink]="['/mapping', id()]">
+                <app-icon name="list" [size]="16" /> {{ 'mapping.action.open' | t }}
+              </a>
+            }
+            <app-menu [label]="'editor.more' | t" icon="more" align="end">
               <button
                 type="button"
                 class="menu-item"
                 role="menuitem"
                 (click)="store.exportConfigJson()"
               >
-                <app-icon name="file" [size]="16" /> Export configuration (JSON)
+                <app-icon name="file" [size]="16" /> {{ 'editor.export-json' | t }}
               </button>
               <div class="menu-sep"></div>
-              <div class="menu-label">Test exports from the current design</div>
+              <div class="menu-label">{{ 'editor.test-exports' | t }}</div>
               <button
                 type="button"
                 class="menu-item"
@@ -179,7 +202,7 @@ type Mode = 'edit' | 'preview';
               >
                 <app-icon name="download" [size]="16" />
                 <span
-                  >Artwork PNG<small>{{ store.area()?.name }}</small></span
+                  >{{ 'editor.export-artwork' | t }}<small>{{ store.area()?.name }}</small></span
                 >
               </button>
               <button
@@ -189,7 +212,7 @@ type Mode = 'edit' | 'preview';
                 [disabled]="c.printableAreas.length === 0"
                 (click)="store.exportAllAreaPngs()"
               >
-                <app-icon name="download" [size]="16" /> Artwork PNG for every area
+                <app-icon name="download" [size]="16" /> {{ 'editor.export-artwork-all' | t }}
               </button>
               <button
                 type="button"
@@ -200,7 +223,7 @@ type Mode = 'edit' | 'preview';
               >
                 <app-icon name="download" [size]="16" />
                 <span
-                  >Product preview PNG<small>{{ store.mockup()?.name }}</small></span
+                  >{{ 'editor.export-preview' | t }}<small>{{ store.mockup()?.name }}</small></span
                 >
               </button>
             </app-menu>
@@ -216,17 +239,17 @@ type Mode = 'edit' | 'preview';
             <aside
               class="sidebar sidebar--left"
               [class.is-open]="!compact() || leftOpen()"
-              aria-label="Design structure"
+              [attr.aria-label]="'editor.aside.left' | t"
             >
               <app-design-sidebar />
             </aside>
-            <main class="workspace" aria-label="Canvas workspace">
+            <section class="workspace" [attr.aria-label]="'editor.canvas' | t">
               <app-workspace />
-            </main>
+            </section>
             <aside
               class="sidebar sidebar--right"
               [class.is-open]="!compact() || rightOpen()"
-              aria-label="Properties"
+              [attr.aria-label]="'editor.aside.right' | t"
             >
               <app-inspector />
             </aside>
@@ -234,26 +257,27 @@ type Mode = 'edit' | 'preview';
               <button
                 type="button"
                 class="scrim"
-                aria-label="Close panels"
+                [attr.aria-label]="'editor.close-panels' | t"
                 (click)="closePanels()"
               ></button>
             }
           </div>
         </div>
         <app-add-area-dialog />
+        <app-save-markup-dialog />
       }
     } @else if (missing()) {
       <div class="page">
         <app-empty-state
           icon="alert"
-          title="Configuration not found"
-          description="It may have been deleted, or it belongs to another browser profile."
+          [title]="'editor.missing.title' | t"
+          [description]="'editor.missing.description' | t"
         >
-          <a class="btn btn--primary" routerLink="/configurations">Back to configurations</a>
+          <a class="btn btn--primary" routerLink="/configurations">{{ 'editor.back' | t }}</a>
         </app-empty-state>
       </div>
     } @else {
-      <p class="page muted" role="status">Opening the editor…</p>
+      <p class="page muted" role="status">{{ 'editor.opening' | t }}</p>
     }
   `,
 })
@@ -262,36 +286,45 @@ export class EditorPageComponent {
   protected readonly store = inject(EditorStore);
   private readonly router = inject(Router);
   private readonly confirmService = inject(ConfirmService);
+  private readonly repository = inject(ConfigurationRepository);
+  private readonly i18n = inject(I18n);
+  protected readonly host = inject(AdminHost);
+  private readonly hostRef = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly editorRoot = viewChild<ElementRef<HTMLElement>>('editorRoot');
 
   protected readonly mode = signal<Mode>('edit');
   protected readonly previewConfig = signal<ProductConfig | null>(null);
   protected readonly missing = signal(false);
 
-  protected readonly compact = signal(window.innerWidth < 1180);
+  protected readonly compact = signal(false);
   protected readonly leftOpen = signal(false);
   protected readonly rightOpen = signal(false);
   private readonly now = signal(Date.now());
 
   protected readonly statusBadge = computed(() => {
     const record = this.store.record();
-    if (!record?.published) return { text: 'Draft', cls: '' };
+    if (!record?.published) return { text: this.i18n.t('status.draft'), cls: '' };
     return this.store.unpublishedChanges()
-      ? { text: 'Published · changes pending', cls: 'badge--warning' }
-      : { text: 'Published', cls: 'badge--success' };
+      ? { text: this.i18n.t('editor.status.pending'), cls: 'badge--warning' }
+      : { text: this.i18n.t('status.published'), cls: 'badge--success' };
   });
 
   protected readonly saveText = computed(() => {
     switch (this.store.saveState()) {
       case 'saving':
-        return 'Saving…';
+        return this.i18n.t('editor.save.saving');
       case 'error':
-        return this.store.saveError() ? 'Not saved' : 'Save failed';
+        return this.i18n.t(this.store.saveError() ? 'editor.save.not-saved' : 'editor.save.failed');
       default:
         break;
     }
-    if (this.store.dirty()) return 'Unsaved changes';
+    if (this.store.dirty()) return this.i18n.t('editor.save.unsaved');
     const record = this.store.record();
-    return record ? `Saved ${relativeTime(record.updatedAt, this.now())}` : '';
+    return record
+      ? this.i18n.t('editor.save.saved', {
+          when: relativeTime(record.updatedAt, this.now(), this.i18n),
+        })
+      : '';
   });
 
   constructor() {
@@ -300,11 +333,34 @@ export class EditorPageComponent {
     const timer = setInterval(() => this.now.set(Date.now()), 30_000);
     destroyRef.onDestroy(() => clearInterval(timer));
 
+    // Panels collapse by the width of the editor itself (not the window): it may be embedded in a
+    // narrow admin column. ResizeObserver also fires once on observe, which sets the initial value.
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      if (width > 0) this.onResize(width);
+    });
+    observer.observe(this.hostRef.nativeElement);
+    destroyRef.onDestroy(() => observer.disconnect());
+
+    // A read-only admin shows the customer preview instead of the editor.
+    effect(() => {
+      if (this.host.readonly()) {
+        void this.router.navigate(['/preview', this.id()], {
+          queryParams: { draft: 1 },
+          replaceUrl: true,
+        });
+      }
+    });
+
     effect(() => {
       const id = this.id();
       this.mode.set('edit');
       this.missing.set(false);
-      void this.store.open(id).then((ok) => this.missing.set(!ok));
+      void this.store.open(id).then((ok) => {
+        this.missing.set(!ok);
+        // Focus the editor so its shortcuts work straight away.
+        if (ok) setTimeout(() => this.editorRoot()?.nativeElement.focus({ preventScroll: true }));
+      });
     });
   }
 
@@ -315,20 +371,29 @@ export class EditorPageComponent {
   }
 
   protected async save(): Promise<void> {
-    if (await this.store.saveDraft()) this.store.notify('info', 'Draft saved.');
+    if (await this.store.saveDraft())
+      this.store.notify('info', this.i18n.t('editor.toast.draft-saved'));
   }
 
   protected async publish(): Promise<void> {
     const c = this.store.config();
     if (!c) return;
     const ok = await this.confirmService.confirm({
-      title: 'Publish this configuration?',
-      message: this.store.dirty()
-        ? 'Your unsaved changes are saved first. Publishing makes the current design the published configuration and keeps the draft open for further edits. It is stored in this browser; nothing is sent to a server.'
-        : 'Publishing makes the current design the published configuration and keeps the draft open for further edits. It is stored in this browser; nothing is sent to a server.',
-      confirmLabel: 'Publish',
+      title: this.i18n.t('editor.publish.title'),
+      message: this.i18n.t(
+        this.store.dirty() ? 'editor.publish.message-dirty' : 'editor.publish.message',
+        { note: this.persistenceNote() },
+      ),
+      confirmLabel: this.i18n.t('editor.publish'),
     });
     if (ok) await this.store.publish();
+  }
+
+  /** Honest wording: where the published configuration actually ends up. */
+  private persistenceNote(): string {
+    return this.repository.storage().kind === 'cloud'
+      ? this.i18n.t('editor.publish.note-cloud')
+      : this.i18n.t('editor.publish.note-local');
   }
 
   protected openPreview(): void {
@@ -343,10 +408,10 @@ export class EditorPageComponent {
   confirmLeave(): boolean | Promise<boolean> {
     if (!this.store.dirty()) return true;
     return this.confirmService.confirm({
-      title: 'Leave without saving?',
-      message: 'You have unsaved changes to this configuration. They will be lost.',
-      confirmLabel: 'Discard changes',
-      cancelLabel: 'Keep editing',
+      title: this.i18n.t('editor.leave.title'),
+      message: this.i18n.t('editor.leave.message'),
+      confirmLabel: this.i18n.t('editor.leave.confirm'),
+      cancelLabel: this.i18n.t('editor.leave.cancel'),
       danger: true,
     });
   }
@@ -357,8 +422,8 @@ export class EditorPageComponent {
 
   // ---- responsive panels --------------------------------------------------------------------------
 
-  protected onResize(): void {
-    const compact = window.innerWidth < 1180;
+  protected onResize(width: number): void {
+    const compact = width < 1180;
     if (compact !== this.compact()) {
       this.compact.set(compact);
       this.closePanels();

@@ -1,3 +1,4 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, computed, inject, input } from '@angular/core';
 import {
   AcceptedImageType,
@@ -6,6 +7,7 @@ import {
   TextFieldSpec,
   TextStyleControl,
 } from '../../customizer/models/config.models';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { Condition } from '../../customizer/models/product.models';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
@@ -20,36 +22,36 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
  */
 @Component({
   selector: 'app-field-editor',
-  imports: [CONTROLS, SectionComponent],
+  imports: [CONTROLS, SectionComponent, TranslatePipe],
   template: `
     @if (field(); as f) {
       <app-section [title]="heading(f)">
         <app-text-in
-          label="Label"
+          [label]="'inspector.field.label' | t"
           [value]="f.label"
           [maxlength]="80"
           (changed)="patch({ label: $event || f.label })"
         />
         <app-text-in
-          label="Help text"
+          [label]="'inspector.field.help' | t"
           [value]="f.helpText ?? ''"
           [maxlength]="240"
           (changed)="patch({ helpText: $event || undefined })"
         />
         <app-text-in
-          label="Placeholder"
+          [label]="'inspector.field.placeholder' | t"
           [value]="f.placeholder ?? ''"
           [maxlength]="80"
           (changed)="patch({ placeholder: $event || undefined })"
         />
         <div class="row row--end">
           <app-check
-            label="Required"
+            [label]="'inspector.field.required' | t"
             [value]="f.required"
             (changed)="patch({ required: $event }, true)"
           />
           <app-check
-            label="Show input"
+            [label]="'inspector.field.show-input' | t"
             [value]="f.visible !== false"
             (changed)="patch({ visible: $event ? undefined : false }, true)"
           />
@@ -58,14 +60,14 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
         @switch (f.type) {
           @case ('text') {
             <app-num
-              label="Maximum characters"
+              [label]="'inspector.field.max-chars' | t"
               [value]="text(f).maxLength"
               [min]="1"
               [max]="500"
               (changed)="patch({ maxLength: $event })"
             />
             <fieldset class="field-group">
-              <legend class="field-label">Fonts the customer can choose</legend>
+              <legend class="field-label">{{ 'inspector.field.fonts' | t }}</legend>
               @for (font of store.config()!.fonts; track font.id) {
                 <app-check
                   [label]="font.label ?? font.family"
@@ -75,50 +77,50 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
               }
             </fieldset>
             <fieldset class="field-group">
-              <legend class="field-label">Colours</legend>
+              <legend class="field-label">{{ 'inspector.field.colours' | t }}</legend>
               <div class="swatches">
                 @for (color of text(f).colors; track color) {
                   <button
                     type="button"
                     class="swatch"
                     [style.background-color]="color"
-                    [attr.aria-label]="'Remove colour ' + color"
-                    title="Remove"
+                    [attr.aria-label]="'inspector.field.remove-colour' | t: { color: color }"
+                    [title]="'common.remove' | t"
                     (click)="removeColor(f.id, color)"
                   ></button>
                 }
                 <input
                   class="color-input"
                   type="color"
-                  aria-label="Add a colour"
+                  [attr.aria-label]="'inspector.field.add-colour' | t"
                   #picker
                   (change)="addColor(f.id, picker.value)"
                 />
               </div>
             </fieldset>
             <app-text-in
-              label="Default text"
+              [label]="'inspector.field.default-text' | t"
               [value]="text(f).defaultValue?.text ?? ''"
               [maxlength]="text(f).maxLength"
               (changed)="setDefault(f.id, { text: $event })"
             />
             <app-select
-              label="Default font"
+              [label]="'inspector.field.default-font' | t"
               [options]="fontOptions(f)"
               [value]="text(f).defaultValue?.fontId ?? text(f).fontIds[0]"
               (changed)="setDefault(f.id, { fontId: $event })"
             />
             <app-select
-              label="Default colour"
+              [label]="'inspector.field.default-colour' | t"
               [options]="colorOptions(f)"
               [value]="text(f).defaultValue?.color ?? text(f).colors[0]"
               (changed)="setDefault(f.id, { color: $event })"
             />
             <fieldset class="field-group">
-              <legend class="field-label">Style controls for the customer</legend>
+              <legend class="field-label">{{ 'inspector.field.style-controls' | t }}</legend>
               @for (control of styleControls; track control) {
                 <app-check
-                  [label]="control"
+                  [label]="styleLabels[control] | t"
                   [value]="(text(f).styleControls ?? []).includes(control)"
                   (changed)="toggleStyle(f.id, control, $event)"
                 />
@@ -127,7 +129,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
           }
           @case ('image') {
             <fieldset class="field-group">
-              <legend class="field-label">Accepted formats</legend>
+              <legend class="field-label">{{ 'inspector.field.formats' | t }}</legend>
               @for (type of imageTypes; track type.value) {
                 <app-check
                   [label]="type.label"
@@ -137,7 +139,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
               }
             </fieldset>
             <app-num
-              label="Maximum file size (MB)"
+              [label]="'inspector.field.max-size' | t"
               [value]="(image(f).maxBytes ?? 10485760) / 1048576"
               [min]="1"
               [max]="10"
@@ -146,14 +148,14 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
             />
             <div class="row row--end">
               <app-num
-                label="Min. width (px)"
+                [label]="'inspector.field.min-width' | t"
                 [value]="image(f).minPixels?.width ?? 0"
                 [min]="0"
                 [max]="20000"
                 (changed)="setMinPixels(f.id, { width: $event })"
               />
               <app-num
-                label="Min. height (px)"
+                [label]="'inspector.field.min-height' | t"
                 [value]="image(f).minPixels?.height ?? 0"
                 [min]="0"
                 [max]="20000"
@@ -162,21 +164,23 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
             </div>
           }
           @case ('artwork') {
-            <p class="field-hint">Choices: {{ artworkChoices(f) }}</p>
+            <p class="field-hint">
+              {{ 'inspector.field.choices' | t: { list: artworkChoices(f) } }}
+            </p>
           }
         }
 
-        <h4 class="panel-subtitle">Visibility</h4>
+        <h4 class="panel-subtitle">{{ 'inspector.field.visibility' | t }}</h4>
         <app-select
-          label="When"
-          [options]="ruleOptions"
+          [label]="'inspector.field.when' | t"
+          [options]="ruleOptions()"
           [value]="mode()"
           (changed)="setMode(f.id, $event)"
         />
         @switch (mode()) {
           @case ('artwork') {
             <app-select
-              label="Artwork selected"
+              [label]="'inspector.field.artwork-selected' | t"
               [options]="artworkOptions()"
               [value]="ruleArtwork()"
               (changed)="setRule(f.id, { op: 'artwork', artworkId: $event })"
@@ -184,7 +188,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
           }
           @case ('filled') {
             <app-select
-              label="Field has a value"
+              [label]="'inspector.field.has-value' | t"
               [options]="otherFieldOptions(f.id)"
               [value]="ruleField()"
               (changed)="setRule(f.id, { op: 'field-filled', fieldId: $event })"
@@ -192,14 +196,14 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
           }
           @case ('variant') {
             <app-select
-              label="Variant is"
+              [label]="'inspector.field.variant-is' | t"
               [options]="variantOptions()"
               [value]="ruleVariant()"
               (changed)="setRule(f.id, { op: 'variant', variantIds: [$event] })"
             />
           }
           @case ('advanced') {
-            <p class="field-hint">This field uses an advanced rule (kept as saved).</p>
+            <p class="field-hint">{{ 'inspector.field.advanced-note' | t }}</p>
           }
         }
       </app-section>
@@ -207,6 +211,7 @@ type RuleMode = 'always' | 'artwork' | 'filled' | 'variant' | 'advanced';
   `,
 })
 export class FieldEditorComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   protected readonly Math = Math;
 
@@ -218,24 +223,36 @@ export class FieldEditorComponent {
     { value: 'image/png', label: 'PNG' },
     { value: 'image/jpeg', label: 'JPEG' },
   ];
-  protected readonly ruleOptions: Option[] = [
-    { value: 'always', label: 'Always' },
-    { value: 'artwork', label: 'When an artwork is selected' },
-    { value: 'filled', label: 'When another field has a value' },
-    { value: 'variant', label: 'For one variant' },
-    { value: 'advanced', label: 'Advanced rule (keep)' },
-  ];
+  protected readonly styleLabels: Record<TextStyleControl, MessageKey> = {
+    bold: 'inspector.field.style.bold',
+    italic: 'inspector.field.style.italic',
+    underline: 'inspector.field.style.underline',
+    align: 'inspector.field.style.align',
+  };
+  protected readonly ruleOptions = computed<Option[]>(() =>
+    (
+      [
+        ['always', 'inspector.field.rule.always'],
+        ['artwork', 'inspector.field.rule.artwork'],
+        ['filled', 'inspector.field.rule.filled'],
+        ['variant', 'inspector.field.rule.variant'],
+        ['advanced', 'inspector.field.rule.advanced'],
+      ] as const
+    ).map(([value, label]) => ({ value, label: this.i18n.t(label) })),
+  );
 
   protected readonly field = computed<FieldSpec | null>(
     () => this.store.config()?.fields.find((f) => f.id === this.fieldId()) ?? null,
   );
 
   protected heading(f: FieldSpec): string {
-    return f.type === 'image'
-      ? 'Customer photo upload'
-      : f.type === 'text'
-        ? 'Customer text input'
-        : 'Customer artwork choice';
+    return this.i18n.t(
+      f.type === 'image'
+        ? 'inspector.field.heading.image'
+        : f.type === 'text'
+          ? 'inspector.field.heading.text'
+          : 'inspector.field.heading.artwork',
+    );
   }
 
   protected text(f: FieldSpec): TextFieldSpec {

@@ -32,18 +32,28 @@ import { ExportService } from './services/export.service';
 import { LoadOutcome, LoadPipeline, LoadRequest } from './services/load-pipeline.service';
 import { SaveCoordinator } from './services/save-coordinator.service';
 import { StateService } from './services/state.service';
+import { ResolveOutcome, StorefrontResolver } from './services/storefront-resolver.service';
 import { stableKey } from './util/draft-utils';
+import { coerceBoolean, coerceStringList } from './util/coerce';
 import { formatMinor } from './util/price';
 import { ActiveField } from './util/resolve';
 
 /** Debounce for `customizer-change` while the shopper is typing. */
 export const CHANGE_DEBOUNCE_MS = 150;
 
-/** absent/false -> false; empty string / true / any other string except "false" -> true. */
-export function coerceDisabled(value: unknown): boolean {
-  if (typeof value === 'string') return value.trim().toLowerCase() !== 'false';
-  return value === true;
+/** Kept for existing importers; see `util/coerce.ts`. */
+export { coerceBoolean as coerceDisabled };
+
+function coerceTheme(value: unknown): 'light' | 'dark' | 'auto' {
+  return value === 'dark' || value === 'auto' ? value : 'light';
 }
+
+type Resolution =
+  | { kind: 'idle' }
+  | { kind: 'resolving' }
+  | { kind: 'mapped'; key: string; config: unknown }
+  | { kind: 'unmapped' }
+  | { kind: 'failed' };
 
 function isSaveResult(value: unknown): value is SaveResult {
   if (typeof value !== 'object' || value === null) return false;
@@ -75,11 +85,12 @@ function isSaveResult(value: unknown): value is SaveResult {
     ArtworkFieldComponent,
     ActionBarComponent,
   ],
-  providers: [AssetStore, StateService, SaveCoordinator, LoadPipeline],
+  providers: [AssetStore, StateService, SaveCoordinator, LoadPipeline, StorefrontResolver],
   encapsulation: ViewEncapsulation.ShadowDom,
   templateUrl: './product-customizer.component.html',
   styleUrl: './product-customizer.component.scss',
   host: {
+    '[attr.theme]': 'theme()',
     '[attr.data-status]': 'state.status()',
     '[attr.data-save-state]': 'save.state()',
   },
@@ -93,9 +104,21 @@ export class ProductCustomizerComponent {
   readonly assetMap = input<LoadRequest['assetMap']>(null);
   readonly allowedAssetOrigins = input<readonly string[] | null>(null);
   /** Standalone authoring app only: accept `idb:` and inline `data:image/` asset sources. */
-  readonly allowLocalAssets = input<boolean, unknown>(false, { transform: coerceDisabled });
-  readonly disabled = input<boolean, unknown>(false, { transform: coerceDisabled });
+  readonly allowLocalAssets = input<boolean, unknown>(false, { transform: coerceBoolean });
+  readonly disabled = input<boolean, unknown>(false, { transform: coerceBoolean });
   readonly saveResult = input<unknown>(null);
+  /** Appearance: `light` (default), `dark`, or `auto` (follows the visitor's colour scheme). */
+  readonly theme = input<'light' | 'dark' | 'auto', unknown>('light', { transform: coerceTheme });
+
+  // ---- resolve-by-product (used only when neither `config` nor `configUrl` is set) -------------
+  /** The host's id of the product on this page. */
+  readonly productId = input<string | null>(null);
+  readonly variantId = input<string | null>(null);
+  /** Ids of the collections the product belongs to (array property or comma separated attribute). */
+  readonly collectionIds = input<readonly string[], unknown>([], { transform: coerceStringList });
+  readonly apiBaseUrl = input<string | null>(null);
+  /** Public storefront key of the store; not a secret. */
+  readonly storeId = input<string | null>(null);
 
   // ---- public outputs (aliases are the DOM event names) ----------------------------------
   readonly customizerReady = output<CustomizerReadyDetail>({ alias: 'customizer-ready' });
@@ -107,12 +130,16 @@ export class ProductCustomizerComponent {
   protected readonly save = inject(SaveCoordinator);
   private readonly pipeline = inject(LoadPipeline);
   private readonly exporter = inject(ExportService);
+  private readonly resolver = inject(StorefrontResolver);
 
   protected readonly failure = signal<{ message: string; issues: readonly ConfigIssue[] } | null>(
     null,
   );
   protected readonly restoreNotices = signal<readonly string[]>([]);
 
+  private readonly resolution = signal<Resolution>({ kind: 'idle' });
+  private readonly retryTick = signal(0);
+  private resolveAbort: AbortController | null = null;
   private abort: AbortController | null = null;
   private destroyed = false;
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -192,21 +219,67 @@ export class ProductCustomizerComponent {
 
   protected readonly editingLocked = this.state.locked;
 
+  /** A transient failure while asking the API which template is mapped can be retried. */
+  protected readonly canRetry = computed(() => this.resolution().kind === 'failed');
+
+  /** True when the host asks for resolution by product rather than supplying a configuration. */
+  private readonly productMode = computed(
+    () =>
+      !this.hasValue(this.config()) &&
+      !this.hasValue(this.configUrl()) &&
+      !!this.productId() &&
+      !!this.apiBaseUrl() &&
+      !!this.storeId(),
+  );
+
   constructor() {
     this.state.bindHostDisabled(this.disabled);
 
-    // (Re)load whenever the host assigns a new configuration or restore data.
+    // Ask the API which published template is mapped to this product/variant/collections.
     effect(() => {
+      const request = this.productMode()
+        ? {
+            apiBaseUrl: this.apiBaseUrl()!,
+            storeId: this.storeId()!,
+            productId: this.productId()!,
+            variantId: this.variantId(),
+            collectionIds: this.collectionIds(),
+          }
+        : null;
+      this.retryTick();
+      untracked(() => void this.startResolve(request));
+    });
+
+    // (Re)load whenever the host assigns a new configuration, restore data or the mapped template changes.
+    effect(() => {
+      const resolution = this.resolution();
+      const productMode = this.productMode();
+      const apiOrigin = productMode ? this.originOf(this.apiBaseUrl()) : null;
+      const hostOrigins = this.allowedAssetOrigins();
       const request: LoadRequest = {
-        config: this.config(),
-        configUrl: this.configUrl(),
+        config: productMode
+          ? resolution.kind === 'mapped'
+            ? resolution.config
+            : null
+          : this.config(),
+        configUrl: productMode ? null : this.configUrl(),
         baseUrl: this.baseUrl(),
-        allowedOrigins: this.allowedAssetOrigins(),
+        // An empty list already means "any http(s) origin"; only extend a restrictive list.
+        allowedOrigins:
+          productMode && apiOrigin && hostOrigins && hostOrigins.length > 0
+            ? [...hostOrigins, apiOrigin]
+            : hostOrigins,
         allowLocalAssets: this.allowLocalAssets(),
         initialCustomization: this.initialCustomization(),
         assetMap: this.assetMap(),
       };
-      untracked(() => void this.startLoad(request));
+      untracked(() => {
+        if (productMode && resolution.kind !== 'mapped') {
+          this.holdForResolution(resolution);
+          return;
+        }
+        void this.startLoad(request, productMode);
+      });
     });
 
     // Host acknowledgements.
@@ -330,7 +403,7 @@ export class ProductCustomizerComponent {
 
   // ---- load lifecycle -------------------------------------------------------------------
 
-  private async startLoad(request: LoadRequest): Promise<void> {
+  private async startLoad(request: LoadRequest, resolvedByProduct = false): Promise<void> {
     this.abort?.abort();
     const controller = new AbortController();
     this.abort = controller;
@@ -389,8 +462,94 @@ export class ProductCustomizerComponent {
           templateVersion: outcome.config.version,
           // The original version-1 event detail is kept exactly as hosts know it.
           ...(outcome.sourceVersion === 2 ? { schemaVersion: 2 as const } : {}),
+          ...(resolvedByProduct ? { personalizable: true } : {}),
         });
         break;
+    }
+  }
+
+  // ---- resolve by product -----------------------------------------------------------------
+
+  private hasValue(value: unknown): boolean {
+    return value !== null && value !== undefined && value !== '';
+  }
+
+  private originOf(url: string | null): string | null {
+    try {
+      return url ? new URL(url).origin : null;
+    } catch {
+      return null;
+    }
+  }
+
+  protected retryResolve(): void {
+    this.retryTick.update((n) => n + 1);
+  }
+
+  private async startResolve(
+    request: Parameters<StorefrontResolver['resolve']>[0] | null,
+  ): Promise<void> {
+    this.resolveAbort?.abort();
+    if (!request) {
+      if (this.resolution().kind !== 'idle') this.resolution.set({ kind: 'idle' });
+      return;
+    }
+    const controller = new AbortController();
+    this.resolveAbort = controller;
+    const previous = this.resolution();
+    // Keep showing the current design while a variant/collection change is re-checked.
+    if (previous.kind !== 'mapped') this.resolution.set({ kind: 'resolving' });
+    let outcome: ResolveOutcome;
+    try {
+      outcome = await this.resolver.resolve(request, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted || this.destroyed) return;
+      const known = error instanceof CustomizerError;
+      this.resolution.set({ kind: 'failed' });
+      this.failLoad('invalid-config', {
+        code: known ? error.code : 'config-load-failed',
+        message: known ? error.message : 'The personalization service could not be reached.',
+        recoverable: known ? error.recoverable : true,
+      });
+      return;
+    }
+    if (controller.signal.aborted || this.destroyed) return;
+    if (outcome.kind === 'unmapped') {
+      this.resolution.set({ kind: 'unmapped' });
+      return;
+    }
+    const key = `${outcome.configId}@${outcome.version}`;
+    // Same template and version as before: keep the loaded design (and the shopper's input).
+    if (previous.kind === 'mapped' && previous.key === key) return;
+    this.resolution.set({ kind: 'mapped', key, config: outcome.config });
+  }
+
+  /** Product mode without a template (yet): show loading, the fallback, or leave the failure panel. */
+  private holdForResolution(resolution: Resolution): void {
+    this.abort?.abort();
+    this.save.cancel();
+    this.cancelPendingChange();
+    this.lastChangeKey = '';
+    this.restoreNotices.set([]);
+    switch (resolution.kind) {
+      case 'resolving':
+        this.failure.set(null);
+        this.state.beginLoad();
+        break;
+      case 'unmapped':
+        this.failure.set(null);
+        this.state.setStatus('not-personalizable');
+        this.emitReady({
+          productId: this.productId() ?? '',
+          templateId: '',
+          templateVersion: 0,
+          personalizable: false,
+        });
+        break;
+      case 'failed': // the failure panel was already set by startResolve
+        break;
+      default:
+        this.state.setStatus('awaiting-config');
     }
   }
 
@@ -451,6 +610,7 @@ export class ProductCustomizerComponent {
   private teardown(): void {
     this.destroyed = true;
     this.abort?.abort();
+    this.resolveAbort?.abort();
     this.cancelPendingChange();
     this.save.cancel();
     this.state.dispose();

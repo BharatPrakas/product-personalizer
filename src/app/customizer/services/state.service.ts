@@ -44,7 +44,13 @@ import { PreviewComposite, RenderService } from './render.service';
 import { SaveCoordinator } from './save-coordinator.service';
 
 export type CustomizerStatus =
-  'awaiting-config' | 'loading' | 'ready' | 'invalid-config' | 'asset-error';
+  | 'awaiting-config'
+  | 'loading'
+  | 'ready'
+  | 'invalid-config'
+  | 'asset-error'
+  /** `product-id` has no published template mapped to it: the element renders only its fallback slot. */
+  | 'not-personalizable';
 
 export interface PhotoView {
   assetId: string;

@@ -1,0 +1,34 @@
+{
+  "name": "@zb/worker-api",
+  "version": "1.0.0",
+  "description": "Shared multi-plugin Cloudflare Worker backend for the Product Personalization platform.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "typecheck": "tsc --noEmit",
+    "migrate": "node scripts/migrate.mjs",
+    "migrate:status": "node scripts/migrate.mjs status",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.13.13",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261023.1",
+    "@types/node": "^26.6.5",
+    "@types/pg": "^8.15.6",
+    "typescript": "~6.0.2",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.152.0"
+  }
+}

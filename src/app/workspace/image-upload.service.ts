@@ -1,4 +1,5 @@
 import { Service, inject } from '@angular/core';
+import { I18n } from '../admin/i18n/i18n.service';
 import { ImageService } from '../customizer/services/image.service';
 import { LocalAssetLibrary } from '../customizer/services/local-asset-library.service';
 
@@ -12,16 +13,17 @@ const MAX_PIXELS = 36_000_000;
 export class ImageUploadService {
   private readonly images = inject(ImageService);
   private readonly library = inject(LocalAssetLibrary);
+  private readonly i18n = inject(I18n);
 
   async store(file: File): Promise<StoredImage> {
-    if (file.size > MAX_BYTES) return { ok: false, message: 'Images can be at most 15 MB.' };
+    if (file.size > MAX_BYTES) return { ok: false, message: this.i18n.t('error.image.too-large') };
     try {
       const bitmap = await this.images.decodeBlob(file);
       const pixels = bitmap.width * bitmap.height;
       bitmap.close();
       if (pixels > MAX_PIXELS) throw new Error('too large');
     } catch {
-      return { ok: false, message: `"${file.name}" is not a readable PNG, JPEG or WebP image.` };
+      return { ok: false, message: this.i18n.t('error.image.unreadable', { name: file.name }) };
     }
     return { ok: true, src: await this.library.put(file, file.name) };
   }

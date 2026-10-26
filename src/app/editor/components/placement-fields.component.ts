@@ -1,14 +1,16 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, computed, inject, input } from '@angular/core';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { AreaPlacement } from '../../customizer/models/product.models';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
 import { CONTROLS, Option } from './controls.component';
 
-const BLEND: Option[] = [
-  { value: 'normal', label: 'Normal' },
-  { value: 'multiply', label: 'Multiply (good for fabric)' },
-  { value: 'overlay', label: 'Overlay' },
-  { value: 'soft-light', label: 'Soft light' },
+const BLEND: { value: string; label: MessageKey }[] = [
+  { value: 'normal', label: 'inspector.blend.normal' },
+  { value: 'multiply', label: 'inspector.blend.multiply' },
+  { value: 'overlay', label: 'inspector.blend.overlay' },
+  { value: 'soft-light', label: 'inspector.blend.soft-light' },
 ];
 
 /**
@@ -17,34 +19,34 @@ const BLEND: Option[] = [
  */
 @Component({
   selector: 'app-placement-fields',
-  imports: [CONTROLS],
+  imports: [CONTROLS, TranslatePipe],
   template: `
     @if (size(); as s) {
       <div class="grid-2">
         <app-num
-          label="X"
+          [label]="'inspector.placement.x' | t"
           [value]="round(placement().x * s.w)"
           (changed)="patch({ x: $event / s.w })"
         />
         <app-num
-          label="Y"
+          [label]="'inspector.placement.y' | t"
           [value]="round(placement().y * s.h)"
           (changed)="patch({ y: $event / s.h })"
         />
         <app-num
-          label="Width"
+          [label]="'inspector.width' | t"
           [value]="round(placement().width * s.w)"
           [min]="4"
           (changed)="patch({ width: $event / s.w })"
         />
         <app-num
-          label="Height"
+          [label]="'inspector.height' | t"
           [value]="round(placement().height * s.h)"
           [min]="4"
           (changed)="patch({ height: $event / s.h })"
         />
         <app-num
-          label="Rotation (°)"
+          [label]="'inspector.placement.rotation' | t"
           [value]="placement().rotation ?? 0"
           [min]="-360"
           [max]="360"
@@ -53,7 +55,7 @@ const BLEND: Option[] = [
           (changed)="patch({ rotation: $event || undefined })"
         />
         <app-num
-          label="Opacity (%)"
+          [label]="'inspector.opacity' | t"
           [value]="round((placement().opacity ?? 1) * 100)"
           [min]="0"
           [max]="100"
@@ -61,29 +63,32 @@ const BLEND: Option[] = [
         />
       </div>
       <app-select
-        label="Blend with photo"
-        [options]="blend"
+        [label]="'inspector.placement.blend' | t"
+        [options]="blend()"
         [value]="placement().blendMode ?? 'normal'"
         (changed)="setBlend($event)"
       />
       <div class="row">
         <app-check
-          label="Perspective (four corners)"
+          [label]="'inspector.placement.perspective' | t"
           [value]="placement().type === 'quad'"
           (changed)="togglePerspective($event)"
         />
       </div>
       <button type="button" class="btn btn--sm" (click)="matchAspect()">
-        Match the canvas proportions
+        {{ 'inspector.placement.match' | t }}
       </button>
     } @else {
-      <p class="field-hint">Loading the product photo…</p>
+      <p class="field-hint">{{ 'inspector.placement.loading' | t }}</p>
     }
   `,
 })
 export class PlacementFieldsComponent {
   private readonly store = inject(EditorStore);
-  protected readonly blend = BLEND;
+  private readonly i18n = inject(I18n);
+  protected readonly blend = computed<Option[]>(() =>
+    BLEND.map((b) => ({ value: b.value, label: this.i18n.t(b.label) })),
+  );
 
   readonly mockupId = input.required<string>();
   readonly placement = input.required<AreaPlacement>();

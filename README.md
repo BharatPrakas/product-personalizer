@@ -1,4 +1,4 @@
-# Product Personalizer (merchant editor + `<zb-product-customizer>`)
+# Product Personalizer (two custom elements: `<zb-personalization-admin>` + `<zb-product-customizer>`)
 
 A standalone Angular 22 application for TeeInBlue-style product personalization. A **merchant** manages
 *configurations*: for each product, several mockups, independent printable areas (each with its own production
@@ -7,13 +7,57 @@ generated from the configuration: add a photo slot to an artwork and the matchin
 code change. The same rendering engine and the same `<zb-product-customizer>` custom element power both.
 
 It runs entirely in the browser: configurations and uploaded images are stored in IndexedDB, rendering is Canvas 2D.
-There is no backend yet; the persistence layer is an interface (see below) so ZenBasket integration can replace it
-without touching the UI or the renderer.
+The persistence layer is an interface (see below) so ZenBasket integration can replace it without touching the UI or
+the renderer. A **shared Cloudflare Worker backend** (PostgreSQL via Hyperdrive + R2 for assets) lives in
+[`worker-api/`](worker-api/README.md) and plugs into that interface; it is **opt-in** — with no runtime config the app
+stays on IndexedDB and is unchanged.
 
 ```bash
 npm install
 npm start            # http://localhost:4200  ->  opens the Configurations workspace
 ```
+
+## Two custom elements, one codebase
+
+The app ships as **two framework-free web components** any storefront or admin shell loads with a plain
+`<script type="module">`:
+
+| Element | Audience | Purpose | Entry |
+|---|---|---|---|
+| [`<zb-personalization-admin>`](#using-the-admin-element) | Store admin / merchant | Create, edit, publish and **map** templates (mockups, printable areas, artworks, customer inputs) to store products; markup library | `store-admin.js` |
+| [`<zb-product-customizer>`](#using-the-storefront-element) | Shopper on the product page | Resolve the template mapped to the current product and let the shopper personalize it live | `storefront.js` |
+
+```
+dist/product-personalization/            (npm run build:element)
+├── storefront.js          stable un-hashed entry -> loads the storefront code
+├── store-admin.js         stable un-hashed entry -> loads the admin code
+├── main-<hash>.js         tiny shared façade (no side effects)
+├── chunk-<hash>.js        content-hashed code: Angular runtime + shared engine in shared chunks,
+│                          each element's own code and the admin's heavy parts (editor, mapping,
+│                          dialogs) in lazy chunks. The storefront never downloads editor code.
+├── assets/  data/         demo fonts, clipart, mockups and sample templates (replace with your own)
+├── schema/                product-config.schema.json, customizer-config.schema.json
+├── types/                 public .d.ts for both elements (index.d.ts, element-contract.d.ts, admin-element-contract.d.ts, ...)
+├── integration-demo/      plain-HTML pages: storefront.html, store-admin.html
+└── MANIFEST.json          every file: size, sha256, role (entry | runtime | contract | demo-*), plus each
+                           entry's initial download graph
+dist/element/product-customizer.js       compatibility shim (imports ../product-personalization/storefront.js)
+```
+
+`scripts/finalize-element.mjs` enforces the bundle budgets on the *real* per-entry download graph (the Angular
+builder only sees the shared façade as "initial"): **storefront** warn 400 kB / error 700 kB raw (currently ~396 kB),
+**admin** warn 1.4 MB / error 2.0 MB for the initial download (currently ~430 kB; the editor, mapping and preview
+pages are lazy chunks). It also fails the build if admin code (`zb-personalization-admin`, `config-published`,
+`mapping-changed`) ever leaks into the storefront graph.
+
+Why one build with a façade instead of two builds: the Angular builder takes a single browser entry, so
+`src/main.elements.ts` exports `loadStorefront()` / `loadAdmin()` (dynamic imports of `src/main.storefront.ts` /
+`src/main.admin.ts`) and the build splits shared code into chunks both entries reuse. Loading both elements on one
+page downloads Angular once.
+
+**Moved from `dist/element/`:** the old output folder now only contains the shim above. Deploy the whole
+`product-personalization/` folder and point pages at `storefront.js`; the shim exists for pages that still import
+`/element/product-customizer.js`.
 
 ## Using the application
 
@@ -53,12 +97,17 @@ selection, `Esc` cancels drawing. The canvas has numeric alternatives for every 
 | Create, save draft, reopen, duplicate, archive / restore, delete | Implemented against the browser (IndexedDB); each resolves only after the write succeeded and failures are shown |
 | Publish | Implemented as a state transition in the same store (draft → published snapshot; draft continues as the next version); validated strictly first |
 | Import / export configuration JSON | Implemented (stored images are embedded as data URLs in exports) |
-| Server persistence, multi-user publishing, authentication, cloud image storage, cart / checkout | **Not implemented**: no backend exists. The UI says "Saved in this browser only" |
+| Server persistence, cloud image storage, version history | Implemented as an **opt-in** Cloudflare Worker backend (`worker-api/`): PostgreSQL via Hyperdrive + R2. Verified locally (migrations, full API + R2 flow, and an end-to-end `wrangler dev` run on the `workerd` runtime); not yet exercised on a live Cloudflare account. Default standalone build still says "Saved in this browser only" |
+| Authentication, multi-user publishing | Integration boundary defined (HS256 session token issued by the host; store id from verified claims). No production identity provider is bundled — see `worker-api/README.md` |
+| Cart / checkout | **Not implemented** |
 
 All persistence goes through `ConfigurationRepository` (`src/app/workspace/configuration-repository.ts`):
 `list`, `get`, `create`, `createFromDraft`, `saveDraft` (with an optimistic-concurrency check), `publish`, `duplicate`,
-`archive`, `restore`, `delete`. `LocalConfigurationRepository` is the only implementation; a hosted deployment provides
-another one in `app.config.ts`. If IndexedDB cannot be opened the app falls back to memory and says so on screen.
+`archive`, `restore`, `delete`. `LocalConfigurationRepository` (IndexedDB) is the default; `CloudConfigurationRepository`
+(`src/app/workspace/cloud/`) is the hosted implementation that talks to the Worker API, selected at runtime in
+`app.config.ts` when `window.__ZB_PERSONALIZER__.apiBaseUrl` is set. If IndexedDB cannot be opened the app falls back to
+memory and says so on screen. A one-time, resumable, non-destructive IndexedDB→cloud migration lives in
+`src/app/workspace/cloud/migration.service.ts`.
 
 ### Developer tools
 
@@ -84,7 +133,9 @@ list, or *Clear all local data* in the developer tools).
 
 ### Known limitations and deferred work
 
-- No backend, authentication, catalog / cart / checkout, cloud upload, AI artwork or 3D.
+- Cloud persistence is opt-in and the Angular↔cloud path is not yet verified against a live Cloudflare deployment
+  (the Worker itself is verified locally and on `workerd`); no bundled production auth provider; no catalog / cart /
+  checkout, AI artwork or 3D. See [`worker-api/README.md`](worker-api/README.md) for the backend's own limitations.
 - Print size is set per printable area, not per variant.
 - `idb:` and `data:` image sources are accepted only by the standalone app (`allowLocalAssets`); hosted configurations
   use `http(s)` assets, as before.
@@ -102,16 +153,17 @@ list, or *Clear all local data* in the developer tools).
 ```bash
 npm install
 npm start                    # Angular demo app at http://localhost:4200
-npm run build:element        # production element bundle -> dist/element/
-npm run serve:element        # serves dist/element at http://localhost:4300
-                             #   plain HTML demo: http://localhost:4300/integration-demo/
+npm run build:element        # both elements -> dist/product-personalization/
+npm run serve:element        # serves it at http://localhost:4300
+                             #   demos: http://localhost:4300/integration-demo/storefront.html
+                             #          http://localhost:4300/integration-demo/store-admin.html
 ```
 
 | Script | What it does |
 |---|---|
 | `npm start` | Dev server for the standalone application |
 | `npm run build` | Production build of the standalone app (`dist/product-personalizer`) |
-| `npm run build:element` | Production element build, then `scripts/finalize-element.mjs` (stable entry, `.d.ts`, demo page, `MANIFEST.json`) |
+| `npm run build:element` | Production build of both elements, then `scripts/finalize-element.mjs` (stable entries, `.d.ts`, demo pages, budgets, `MANIFEST.json`) |
 | `npm test` | Unit tests (Vitest through `ng test`; `npm run test:ci` runs once without watch) |
 | `npm run test:browser` | Builds the element, then runs the browser suite against it in headless Chrome |
 | `npm run test:browser:dev` | Same suite against the **development** build (surfaces Angular dev-mode assertions) |
@@ -147,12 +199,12 @@ bundle, because it compiles code and would need `unsafe-eval`; runtime validatio
 `@types/node` (test tooling). `@angular/router` provides the lazy-loaded routes of the standalone app only; it is
 not part of the element bundle.
 
-## Using the element
+## Using the storefront element
 
 ```html
 <div id="slot"></div>
 <script type="module">
-  import '/customizer/product-customizer.js';          // the stable entry URL
+  import '/customizer/storefront.js';                  // the stable entry URL
   await customElements.whenDefined('zb-product-customizer');
 
   const element = document.createElement('zb-product-customizer');
@@ -187,10 +239,50 @@ disconnect; a detached instance cannot be re-attached). Restore a draft by setti
 | `disabled` | `disabled` | Disables all inputs and Save. Absent/`"false"` is false; empty/`"true"`/any other string is true |
 | `saveResult` | none | `{requestId, status: 'success' \| 'error', message?}`: the host's acknowledgement |
 | `allowedAssetOrigins` | none | *Extension.* Origin allow-list (`['https://cdn.example']`). Empty means any http(s) origin; the page's own origin is always allowed |
+| `productId` | `product-id` | *Resolve by product.* The host's id of the product on this page |
+| `variantId` | `variant-id` | The host's currently selected variant; a variant mapping wins over a product mapping |
+| `collectionIds` | `collection-ids` | Collections of the product (`string[]` property, or comma separated attribute) |
+| `apiBaseUrl` | `api-base-url` | Base URL of the personalization API |
+| `storeId` | `store-id` | Public storefront key of the store (identifies, grants nothing) |
 
 Setting `config`/`configUrl`/`baseUrl`/`initialCustomization`/`assetMap` (re)starts a load: the previous draft is
 discarded, in-flight loads are aborted and late responses are ignored. Use the `dirty` flag from
 `customizer-change` to confirm with the shopper **before** swapping the configuration.
+
+### Resolve by product (no `config` / `config-url` needed)
+
+```html
+<zb-product-customizer
+  product-id="gid-1234" variant-id="gid-1234-m" collection-ids="summer,apparel"
+  api-base-url="https://api.example.com" store-id="my-store">
+  <p slot="fallback">This product cannot be personalized.</p>
+</zb-product-customizer>
+```
+
+When neither `config` nor `config-url` is set and `product-id`, `api-base-url` and `store-id` are, the element calls
+the **public** read endpoint (no merchant token, no cookies: `credentials: 'omit'`)
+
+```
+GET {api-base-url}/api/v1/storefront/personalization/products/{product-id}/config
+    ?storeId=…[&variantId=…][&collectionIds=a,b]
+→ 200 { "data": { "personalizable": true, "configId", "version", "scope": "product|variant|collection",
+                  "externalId", "config": <published ProductConfig, absolute https asset URLs> } }
+→ 200 { "data": { "personalizable": false } }          nothing mapped / published (also unknown store)
+```
+
+and loads only the **published** template mapped to that target. Precedence: **variant > product > collection**
+(`src/app/mapping/mapping-resolution.ts` mirrors the server). `config` / `config-url`, when present, always win and
+the API is not asked.
+
+* Nothing mapped: the element renders only the `fallback` slot (host-provided light-DOM content), sets
+  `data-status="not-personalizable"` and emits `customizer-ready` with `{ personalizable: false, templateId: '',
+  templateVersion: 0, productId }` so the theme can hide the whole section.
+* Changing `variant-id` / `collection-ids` / `product-id` re-resolves. The same template id and version keeps the
+  loaded design (and the shopper's input); a new published version or a different template replaces it.
+* A failing service shows a recoverable error with **Try again** (`customizer-error` code `config-load-failed`).
+* The URL policy still applies to the answer: asset URLs outside the page origin / `allowedAssetOrigins` are
+  rejected (the API origin is added automatically when you set a restrictive list).
+* The response is cacheable (`ETag`, `Cache-Control: s-maxage`, `stale-while-revalidate`), so repeat views are cheap.
 
 ### Events
 
@@ -198,7 +290,7 @@ Plain `CustomEvent`s dispatched on the element. They do **not** bubble; listen o
 
 | Event | `event.detail` |
 |---|---|
-| `customizer-ready` | `{productId, templateId, templateVersion}` (+ `schemaVersion: 2` for v2 configurations; `templateId`/`templateVersion` carry the configuration id/version), once per successful load, after fonts and images are ready |
+| `customizer-ready` | `{productId, templateId, templateVersion}` (+ `schemaVersion: 2` for v2 configurations, + `personalizable` when resolved by product; `templateId`/`templateVersion` carry the configuration id/version), once per successful load, after fonts and images are ready |
 | `customizer-change` | `{draft, valid, dirty, errors}`; text edits debounced by 150 ms, other edits immediate; contains no image bytes |
 | `customizer-save` | `{requestId, customization, previewBlob, artworkBlob, assets, artworks, previews}`; `artworks` has one production PNG per active printable area (`artworkBlob` is the first), `previews` one composite per active mockup (`previewBlob` is the first) |
 | `customizer-error` | `{code, message, fieldId?, recoverable}`; sanitised (never contains shopper text or photo content) |
@@ -206,8 +298,8 @@ Plain `CustomEvent`s dispatched on the element. They do **not** bubble; listen o
 Error codes: `invalid-config`, `config-conflict`, `config-load-failed`, `font-load-failed`, `asset-load-failed`,
 `asset-cors`, `asset-missing`, `restore-mismatch`, `export-failed`, `unexpected`.
 
-Type declarations ship in `dist/element/types/` (`index.d.ts`, plus a global `HTMLElementTagNameMap` entry so
-`document.createElement('zb-product-customizer')` is typed).
+Type declarations ship in `dist/product-personalization/types/` (`index.d.ts`, plus global `HTMLElementTagNameMap` entries so
+`document.createElement('zb-product-customizer')` and `('zb-personalization-admin')` are typed).
 
 ### Theming
 
@@ -216,7 +308,120 @@ Set on the element or any ancestor: `--customizer-primary` (default `#296FD7`), 
 asks of form controls). The widget draws its own white surface so contrast holds on any host background.
 
 For debugging the host element mirrors its state in `data-status` (`awaiting-config`, `loading`, `ready`,
-`invalid-config`, `asset-error`) and `data-save-state`. These are diagnostic, not part of the contract.
+`invalid-config`, `asset-error`, `not-personalizable`) and `data-save-state`. These are diagnostic, not part of the contract.
+
+## Using the admin element
+
+```html
+<zb-personalization-admin id="admin" style="height: 800px"></zb-personalization-admin>
+<script type="module">
+  import '/personalization/store-admin.js';
+  await customElements.whenDefined('zb-personalization-admin');
+  const admin = document.getElementById('admin');
+
+  admin.apiBaseUrl = 'https://api.example.com';            // enables cloud persistence
+  admin.authToken = await myApp.getShortLivedSessionToken(); // yours to issue and refresh
+  admin.productCatalog = await myApp.loadProducts();        // [{ id, title, sku?, imageUrl?, variants?, collections? }]
+  admin.locale = 'fr';
+
+  admin.addEventListener('config-published', (e) => console.log('live version', e.detail.version));
+  admin.addEventListener('mapping-changed', (e) => console.log(e.detail.action, e.detail.mappings));
+  admin.addEventListener('admin-error', (e) => console.warn(e.detail.code));
+</script>
+```
+
+Give the element a height (CSS `height`, or `--zb-admin-height`; default `100vh`). Everything renders inside its
+shadow root; the host page's CSS cannot reach in and nothing leaks out (no global styles, no `window` globals, no
+`history` / `location` / `document.title` changes, no host-wide keyboard shortcuts). **Use one admin element per
+page**: instances share one session (storage, API, token) and a second instance logs a warning.
+
+### Properties and attributes
+
+| Property | Attribute | Meaning |
+|---|---|---|
+| `apiBaseUrl` | `api-base-url` | Personalization API. With it set, templates, mappings and markups live in your store (PostgreSQL via the Worker); without it they live in this browser (IndexedDB) and the header says so |
+| `authToken` | none | Host-issued short-lived session token for the signed-in merchant. **Never persisted** by the element and re-read on every request, so assigning a fresh token is all a refresh needs. The Worker takes the store from the verified token claims; the element never sends a store id |
+| `productCatalog` | none | The host's products for the mapping UI: `{ id, title, sku?, imageUrl?, variants?: {id, title, sku?}[], collections?: {id, title}[] }[]`. The element never invents products; malformed entries and non-http(s) images are dropped |
+| `productSearchUrl` | `product-search-url` | Alternative to `productCatalog`: `GET <url>?q=<text>&limit=50` answering `ProductRef[]`, `{items: ProductRef[]}` or `{data: ...}`. The session token is only ever sent to the personalization API's own origin, never to this URL |
+| `view` | `view` | `list` \| `editor` \| `mapping` \| `preview`. Assigning it (even to the same value) navigates there |
+| `configId` | `config-id` | Template shown by `editor` / `preview` / `mapping` |
+| `readonly` | `readonly` | Disables every control that changes data (the editor shows the customer preview instead) |
+| `locale` | `locale` | BCP-47 tag. Built-in: `en`, `fr`, `ar` (right-to-left languages mirror the layout); missing messages fall back to English |
+| `allowedAssetOrigins` | none | Extra origins template images and fonts may load from |
+| `persistence` | `persistence` | `'local'` / `'cloud'` override (default: cloud when `apiBaseUrl` is set) |
+
+`view` and `configId` are *commands*: the merchant can navigate on their own, and the element reports where it is
+through `data-view` / `data-config-id` attributes on itself and the `view-change` event. Routing is in memory
+(a custom `LocationStrategy`), so the host URL never changes; deep-link by assigning `view` / `config-id`.
+
+### Events
+
+Plain `CustomEvent`s on the element, not bubbling. Details never contain merchant content (template text,
+product titles, tokens) beyond what is listed.
+
+| Event | `event.detail` |
+|---|---|
+| `admin-ready` | `{ version, persistence }`, once, after the first view rendered |
+| `view-change` | `{ view, configId }` |
+| `config-saved` | `{ configId, name, updatedAt }`, after a draft was stored |
+| `config-published` | `{ configId, name, version, publishedAt }` |
+| `config-archived` | `{ configId, name, archived, affectedMappings }`; `archived: false` is a restore |
+| `mapping-changed` | `{ action: 'created'\|'reassigned'\|'updated'\|'deleted'\|'bulk', configId, mappings, deletedIds }` |
+| `admin-error` | `{ code, message, recoverable }`; codes `auth`, `network`, `conflict`, `invalid`, `not-found`, `storage`, `forbidden`, `rate-limited`, `unexpected`. Messages are fixed strings chosen by error class: server messages and tokens never reach the host |
+
+### Templates, editor, preview
+
+The existing editor, unchanged in behaviour and tests: list (search, filter, create, duplicate, archive/restore,
+delete, import/export), mockups, printable areas (rectangle, ellipse, custom SVG, four-corner perspective), artworks
+and layers (photo, editable text, clipart choice, fixed image/text, shapes), customer inputs, `showWhen` rules,
+variants, undo/redo, draft autosave with optimistic-concurrency conflict handling, keyboard shortcuts (active only
+while focus is inside the editor) with numeric alternatives to every drag. **Preview** embeds the real storefront
+renderer on the working draft, with test exports (one production PNG per area, one composite per mockup).
+**Publish** is validated strictly; the confirmation says where the template is stored.
+
+### Product mapping
+
+*Product mapping* (header tab, or the row menu / editor header **Map to products**) links a **published** template
+to products, variants or collections.
+
+* **Scopes:** `product`, `variant`, `collection`; the target is the host's id (`externalId`). SKUs are searchable
+  and shown. **Precedence when several match:** variant > product > collection (collection ties: lowest id).
+* **One active template per target.** `ProductMapping { id, storeId, configId, scope, externalId, label,
+  createdAt, updatedAt }` is unique on `(storeId, scope, externalId)`. A target owned by another template is shown
+  as **Conflict** ("Mapped to “X”"); mapping it asks to **reassign** (it moves, the other template stops showing for
+  it). Status is always text + icon, never colour alone.
+* **Bulk map / unmap** with checkboxes, per-row buttons, filters (*All / Unmapped / Mapped to this template /
+  Mapped elsewhere*), search, and **Add by id** for targets not in the catalog.
+* **Lifecycle:** mappings point at the template *id*, so publishing a new version needs no remapping (the storefront
+  always gets the latest published version). Archiving a template warns how many mappings it has (archived
+  templates are not served); deleting a template removes its mappings.
+
+### Markup library
+
+A **markup** is a reusable printable area (canvas, mask, print size, boundary) or artwork (its layers plus the
+customer fields they use). **Save as markup…** is in the area / artwork menus; the **Markups** sidebar tab lists,
+searches, inserts, renames and deletes them (names are unique per kind, case-insensitively). Inserting **copies**
+the markup into the template (fresh ids for areas, artworks, layers and fields; fonts the template lacks fall back
+to its first font with a notice); it is never a live link, and an insert that would make the template invalid is
+refused. Stored per store (cloud) or in the browser.
+
+### Language, direction, accessibility
+
+All admin chrome is externalised (`src/app/admin/i18n/`); see *Known limitations* for what is still English.
+Right-to-left locales mirror the layout (logical CSS properties). Responsive from 360 px, focus moves to the page
+heading after a view change, a live region announces it, toasts are live regions, dialogs are native `<dialog>`,
+reduced motion is respected. axe-core (WCAG 2.2 AA + best practice) is part of the browser suite for the list,
+dialogs, mapping, the editor and every sidebar tab at 1280 px and 360 px, plus RTL and read-only variants.
+
+### Strict CSP
+
+Same recipe as the storefront (nonce via `<meta name="csp-nonce">`); the admin additionally needs
+`img-src … blob: data:` (thumbnails). Verified with `default-src 'none'; script-src 'self'; style-src 'nonce-…'`.
+
+### Theming
+
+Design tokens are CSS custom properties on the element: `--c-primary`, `--c-primary-hover`, `--c-bg`, `--c-surface`,
+`--c-text`, `--r-md`, `--font-sans` ... (see `src/styles/_tokens.scss`), plus `--zb-admin-height`.
 
 ## Persistence handoff (what the host must do)
 
@@ -247,6 +452,19 @@ Then replace local ids (`local-…`) with durable references of your own, and an
   marked `authoritative: false`; do pricing, tax and payment on your server.
 - The artwork PNG is browser-generated: it carries no printer-specific DPI metadata. Physical dimensions travel in the
   JSON (`print`), so call it *artwork export*, not universally print-ready output.
+
+### Cart line-item convention
+
+The element never implements cart or checkout. Attach your own record id to the cart line so the order can be
+tied back to the saved design:
+
+| Line property | Value |
+|---|---|
+| `_zb_personalization_id` | The id of the record **your** backend created from `customizer-save` (e.g. the `requestId`, or your own id for the stored `customization` + PNGs + image files) |
+| `_zb_template` | optional: `customization.templateId` / `configId` and version, for support and reorders |
+
+Underscore-prefixed properties are hidden from the shopper by most storefronts. To edit from the cart or re-order,
+load your stored customization and assets and assign `initialCustomization` + `assetMap` to a fresh element.
 
 ## Configuration
 
@@ -285,12 +503,12 @@ may raise those, not lower them).
 
 ## Deployment
 
-`dist/element/MANIFEST.json` lists every file with size and SHA-256 and a role.
+`dist/product-personalization/MANIFEST.json` lists every file with size and SHA-256 and a role, and each entry's initial download graph.
 
 | Role | Files | Deploy |
 |---|---|---|
-| `entry` | `product-customizer.js` | Always. The stable URL; cache briefly |
-| `runtime` | `main-<hash>.js` (and any `chunk-*.js`) | Always, next to the entry; content-hashed, cache long |
+| `entry` | `storefront.js`, `store-admin.js` | The stable URLs (one per element); cache briefly |
+| `runtime` | `main-<hash>.js`, `chunk-*.js` | Always, next to the entries; content-hashed, cache long |
 | `license` | `3rdpartylicenses.txt` | Ship with the runtime |
 | `contract` | `types/*.d.ts`, `schema/*.json` | For developers |
 | `demo-asset` / `demo-page` | `data/`, `assets/`, `integration-demo/` | Samples; replace with your own templates and assets |
@@ -315,24 +533,29 @@ Verified with a strict host policy (`default-src 'none'`):
 ## Project layout
 
 ```
-src/main.ts                     demo app bootstrap          src/main.element.ts   element registration
+src/main.ts                     demo app bootstrap
+src/main.elements.ts            side-effect-free build entry: loadStorefront() / loadAdmin()
+src/main.storefront.ts          <zb-product-customizer> registration     src/main.admin.ts   <zb-personalization-admin> registration
 src/app/app.*                   shell + lazy routes (/configurations, /configurations/:id, /preview/:id, /dev)
 src/app/configurations/         workspace list, new-configuration dialog
 src/app/workspace/              configuration records, repository interface + local implementation, import / export
 src/app/editor/                 merchant editor: page, canvas stage, sidebar tabs, inspector, edit operations
 src/app/preview/                customer preview (page and in-editor mode)
 src/app/ui/                     icons, menu, dialog, confirm, toast, section, empty state
+src/app/admin/                  the admin element: root component, in-memory router, host state, events, i18n
+src/app/mapping/                product mapping: models, resolution, repositories (local/cloud/admin), catalog, page
+src/app/markups/                markup library: models, pure capture/insert logic, repositories, sidebar tab, dialog
 src/app/dev/                    development-only tools and the element contract demo
 src/app/customizer/
   product-customizer.component.*  the element (inputs/outputs = public contract; all styles live in its shadow root)
   components/                   preview, text, photo+crop, artwork, action bar
-  models/                       config / draft / events types + element contract (compiled to dist/element/types)
+  models/                       config / draft / events types + both element contracts (compiled to dist/product-personalization/types)
   services/                     config, font (shared cache), image, asset-store, state, render, export,
                                 save-coordinator (request-id protocol), load-pipeline
   util/                         pure logic: v1/v2 validators, v1→v2 upgrade, resolution, URL policy, crop + DPI math,
                                 text layout, scene evaluation, drawing, geometry/shapes
 public/data, public/assets, public/schema      samples, fixtures, JSON Schema
-integration-demo/index.html     framework-free host page (copied into dist/element/integration-demo/)
+integration-demo/               framework-free host pages: storefront.html, store-admin.html (copied into dist/…/integration-demo/)
 scripts/                        finalize-element, serve-static, generate-fixtures
 tests/browser, tests/types      browser suite and declaration consumer test (unit specs sit beside their sources)
 ```
@@ -372,13 +595,38 @@ mutation-checked: removing their fix makes them fail.
 
 ## Verification (what was actually run)
 
+Two-element release (admin element, product mapping, markups, resolve-by-product, backend routes):
+
+| Check | Result |
+|---|---|
+| `npm run test:ci`: 22 unit spec files (adds mapping resolution, local mapping/markup repositories, markup capture/insert, storefront resolver, catalog, navigation, memory router, i18n incl. plural + catalog consistency) | 274 passed |
+| `npm run build:element` then `npx vitest run --config tests/browser/vitest.config.mts` (headless Chrome 154, production bundles) | 137 passed, 1 skipped (the optional cloud end-to-end, below) |
+| `npm run test:types`: consumer compiled against both shipped contracts (`@ts-expect-error` lines stay errors) | passes |
+| `npm run build` (standalone app), `npm run build:element` | succeed; storefront initial download ≈ 398 kB, admin ≈ 520 kB (both within budget; the admin figure includes ≈ 500 translation keys in three languages) |
+| `worker-api`: `npx tsc --noEmit`, `npm test` (real local PostgreSQL + in-memory R2) | 115 passed (43 pre-existing, 72 new: mapping conflicts and reassignment, bulk, precedence, unpublished/archived not served, tenant isolation, rate limiting, CORS, ETag/304, markups, asset URL rewriting) |
+| **Live cloud end to end** (`tests/browser/cloud-e2e.spec.ts`): both elements against `wrangler dev` (real workerd, local PostgreSQL, local R2), over HTTP | passed: the admin imports, publishes and maps a template through the cloud repositories (checked back with `GET /mappings`), a markup round-trips, the storefront element resolves it from the public route (CORS per-store allow-list, no credentials), an unmapped product stays silent, an archived template stops being served |
+
+The new browser specs: `admin-element` (registration once, double load, no head/global/history/title leak,
+hostile host CSS, events, `view` / `config-id`, cloud token re-read and sanitised `auth` error, locale incl. French
+editor and right-to-left), `admin-workflow` (import → publish → map → conflict → reassign → unmap → archive warning,
+persistence across loads, read-only incl. editor→preview, markup save / insert / duplicate-name / delete, strict CSP),
+`admin-accessibility` (axe-core WCAG 2.2 AA + best practice on list, dialogs, mapping, conflict dialog, editor and all
+five sidebar tabs at 1280 px and 360 px, right-to-left + read-only, keyboard navigation and focus), `storefront-resolve`
+(product resolution, attribute forms, fallback slot, variant re-resolution, retry, no credentials, origin policy, a
+full save), `storefront-theming` (`--zb-*` variables, `::part()`, light / dark / auto, dark axe, skeleton) and
+`demo-pages` (both shipped demo pages).
+
+**Not verified:** a live Cloudflare account (deployed Hyperdrive / R2 / rate-limiting rules; the Worker's in-memory limiter
+is per isolate and best-effort), browsers other than Chrome, a low-end mobile profile, and the Angular admin against a
+*deployed* Worker (only the local `wrangler dev` stack above). The `worker-api` end-to-end test needs that stack running;
+see `worker-api/README.md`.
+
+Earlier verification of the single-element release (kept for the record):
+
 | Check | Result |
 |---|---|
 | `npm test`: 13 unit spec files (v1 specs now run through the v1→v2 upgrade path) | 227 passed |
 | `npm run test:browser`: production element bundle, headless Chrome 154 | 104 passed (the pre-existing v1 contract suite) |
-| `npm run test:types` | consumer compiles against the shipped `.d.ts` (now including `product.models.d.ts`) |
-| `npm run build`, `npm run build:element` | succeed within budgets (element bundle ≈ 343 kB raw / ≈ 95 kB transferred; app initial ≈ 364 kB with the editor, preview and workspace as lazy chunks) |
-| Manual end-to-end run of the v2 workflows (scripted with puppeteer, scratch scripts not committed) | see below |
 
 Manual run of the redesigned application (Chrome, scripted with puppeteer; the scripts are scratch files and not committed):
 a fresh profile opens an empty workspace (no seeded products); New configuration with a product photo opens the editor with
@@ -405,6 +653,16 @@ canvas. **A low-end mobile device profile was not measured**, so the brief's mob
 
 ### Known limitations
 
+- **Admin language coverage:** the admin chrome, list, editor, inspectors and dialogs are externalised (English,
+  French, Arabic; about 500 keys). Still English: validator / server issue texts (shared with the server), names stored
+  as template *content* ("Front view", "Print area 1" ...), the shopper-facing storefront strings, and `admin-error`
+  event messages. Other languages fall back to English per key.
+- One `<zb-personalization-admin>` per page (instances share one session; a second one warns).
+- A markup area is inserted unplaced: the merchant places it on a mockup afterwards.
+- Restoring a deleted template's mappings, per-store storefront origins UI, and a UI for the Worker's sync issues are
+  not implemented. The public storefront route is cached up to 5 minutes at the edge, so a publish or unmap can take
+  that long to reach shoppers.
+- Mapping scopes are product / variant / collection; a SKU is matched through its product or variant id.
 - Only Chrome was tested. Safari/Firefox behaviour is by design, not by test.
 - The "can this font draw this character?" check compares browser rendering with generic fallbacks. It is reliable for
   real glyph gaps (CJK, emoji and Devanagari are rejected by the bundled Latin/Cyrillic/Greek fonts), but it is a

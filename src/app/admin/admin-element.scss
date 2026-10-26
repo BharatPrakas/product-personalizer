@@ -1,0 +1,71 @@
+// Everything the element shows lives in this shadow root: the shared design tokens and the same
+// control / layout stylesheets the standalone app uses, plus the rules that make it a good guest.
+@use '../../styles/tokens';
+@use '../../styles/base';
+@use '../../styles/controls';
+@use '../../styles/layout';
+@use '../../styles/components';
+
+:host {
+  all: initial; // the host page's inherited typography / colour / direction must not leak in
+  display: block;
+  // The editor fills the element. Give it a height (CSS `height`, or --zb-admin-height).
+  height: var(--zb-admin-height, 100vh);
+  min-height: 480px;
+  background: var(--c-bg);
+  --app-h: 100%;
+  contain: layout style;
+}
+
+:host([hidden]) {
+  display: none;
+}
+
+// Typography lives here, not on :host: a host-page rule such as `* { font-family: ... }` matches
+// the host element itself and would beat :host styles, but it cannot match anything inside the
+// shadow root. `all: initial` then cuts every other inherited property off at this boundary.
+.zb-admin {
+  all: initial;
+  display: flex;
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  line-height: var(--lh-normal);
+  color: var(--c-text);
+  -webkit-font-smoothing: antialiased;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.zb-admin[dir='rtl'] {
+  direction: rtl;
+  --flip: -1; // mirrors slide-in panels
+}
+
+.zb-admin > .app-main {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.zb-admin > .app-main--immersive {
+  flex: 1 1 auto;
+}
+
+.storage-chip {
+  padding: var(--s-1) var(--s-3);
+  font-size: var(--fs-sm);
+  color: var(--c-success-text, var(--c-success));
+  background: var(--c-success-soft);
+  border-radius: 999px;
+}
+
+.storage-chip--local {
+  color: var(--c-text-muted);
+  background: var(--c-surface-muted);
+  border: 1px solid var(--c-border);
+}
+
+.readonly-banner {
+  margin: var(--s-3) var(--s-6) 0;
+}

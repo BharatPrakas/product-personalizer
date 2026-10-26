@@ -75,7 +75,7 @@
     <main>
       <h1>Plain HTML host</h1>
       <p>
-        No Angular here: this page loads one module (<code>../product-customizer.js</code>), assigns
+        No Angular here: this page loads one module (<code>../storefront.js</code>), assigns
         properties and listens for
         <code>customizer-*</code> events. The host below plays the store: it keeps the saved payload
         <strong>in memory only</strong> and answers with <code>saveResult</code>.
@@ -91,7 +91,7 @@
     </main>
 
     <script type="module">
-      import '../product-customizer.js';
+      import '../storefront.js';
       await customElements.whenDefined('zb-product-customizer');
 
       const SAMPLES = {
@@ -102,6 +102,37 @@
         clock: { label: 'v2 Heart clock (3 areas)', url: '../data/products/heart-clock.json' },
         tshirt2: { label: 'v2 T-shirt (front + back)', url: '../data/products/tshirt.json' },
         bottle: { label: 'v2 Bottle (label, back, cap)', url: '../data/products/bottle.json' },
+        // Resolve by product: the element asks the (fake, see below) personalization API which
+        // published template is mapped to this product. No config / config-url is given.
+        mapped: { label: 'Resolved by product-id (mapped)', productId: 'demo-tshirt' },
+        unmapped: { label: 'Resolved by product-id (nothing mapped)', productId: 'demo-unmapped' },
+      };
+
+      // ---- fake personalization API (demo only) --------------------------------------------
+      // A real store points api-base-url at its Worker. Here fetch() answers the one public
+      // endpoint from the sample files, so the page works with no backend.
+      const API = 'https://demo-api.invalid';
+      const realFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const m = url.origin === API && /\/products\/([^/]+)\/config$/.exec(url.pathname);
+        if (!m) return realFetch(input, init);
+        const productId = decodeURIComponent(m[1]);
+        const body = (data) =>
+          new Response(JSON.stringify({ data }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        if (productId !== 'demo-tshirt') return body({ personalizable: false });
+        const config = await (await realFetch('../data/products/tshirt.json')).json();
+        config.assetBaseUrl = new URL('../assets/', location.href).href; // the API serves absolute URLs
+        return body({
+          personalizable: true,
+          configId: config.id,
+          version: config.version,
+          scope: url.searchParams.get('variantId') ? 'variant' : 'product',
+          config,
+        });
       };
       const logEl = document.getElementById('log');
       let counter = 0;
@@ -124,13 +155,30 @@
         slot.replaceChildren();
         const el = document.createElement('zb-product-customizer');
         // Objects are assigned as properties (never serialised into attributes); the element is appended last.
-        el.configUrl = SAMPLES[instance.sample].url;
+        const sample = SAMPLES[instance.sample];
+        if (sample.productId) {
+          el.productId = sample.productId;
+          el.apiBaseUrl = API;
+          el.storeId = 'demo-store';
+          el.collectionIds = ['summer'];
+          const fallback = document.createElement('p');
+          fallback.slot = 'fallback';
+          fallback.className = 'note';
+          fallback.textContent = 'This product has no personalization template, so the theme shows its normal buy box.';
+          el.append(fallback);
+        } else {
+          el.configUrl = sample.url;
+        }
         if (initialCustomization) el.initialCustomization = initialCustomization;
         if (assetMap) el.assetMap = assetMap;
         el.disabled = instance.disabled;
         const tag = `#${instance.id}`;
         el.addEventListener('customizer-ready', (e) =>
-          log(`${tag} ready ${e.detail.templateId} v${e.detail.templateVersion}`),
+          log(
+            e.detail.personalizable === false
+              ? `${tag} ready: not personalizable (nothing mapped)`
+              : `${tag} ready ${e.detail.templateId} v${e.detail.templateVersion}`,
+          ),
         );
         el.addEventListener('customizer-change', (e) =>
           log(

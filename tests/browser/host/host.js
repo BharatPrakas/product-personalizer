@@ -8,7 +8,7 @@
 }
 
 const params = new URLSearchParams(location.search);
-const ENTRY = '/nested/path/customizer/product-customizer.js';
+const ENTRY = '/nested/path/customizer/storefront.js';
 
 if (params.get('hostile')) {
   // Deliberately aggressive global CSS.
@@ -70,7 +70,7 @@ window.testHost = {
   async importAgain(url) {
     await import(url ?? ENTRY);
   },
-  mount(id, props = {}, { attributes = {}, appendTo = '#slots', beforeAppend } = {}) {
+  mount(id, props = {}, { attributes = {}, appendTo = '#slots', beforeAppend, fallback } = {}) {
     const el = document.createElement('zb-product-customizer');
     el.id = id;
     recorded[id] = [];
@@ -88,6 +88,13 @@ window.testHost = {
     }
     for (const [key, value] of Object.entries(props)) el[key] = value;
     for (const [key, value] of Object.entries(attributes)) el.setAttribute(key, value);
+    if (fallback) {
+      const p = document.createElement('p');
+      p.slot = 'fallback';
+      p.id = `${id}-fallback`;
+      p.textContent = fallback;
+      el.append(p);
+    }
     beforeAppend?.(el);
     document.querySelector(appendTo).append(el);
     return id;

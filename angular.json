@@ -38,13 +38,13 @@
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "500kB",
+                  "maximumWarning": "600kB",
                   "maximumError": "1MB"
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "12kB",
-                  "maximumError": "20kB"
+                  "maximumWarning": "32kB",
+                  "maximumError": "40kB"
                 }
               ],
               "outputHashing": "all"
@@ -60,12 +60,12 @@
         "build-element": {
           "builder": "@angular/build:application",
           "options": {
-            "browser": "src/main.element.ts",
+            "browser": "src/main.elements.ts",
             "tsConfig": "tsconfig.element.json",
             "inlineStyleLanguage": "scss",
             "index": false,
             "outputPath": {
-              "base": "dist/element",
+              "base": "dist/product-personalization",
               "browser": ""
             },
             "assets": [
@@ -89,8 +89,8 @@
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "12kB",
-                  "maximumError": "20kB"
+                  "maximumWarning": "32kB",
+                  "maximumError": "40kB"
                 }
               ],
               "outputHashing": "bundles",

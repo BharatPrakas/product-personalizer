@@ -1,16 +1,25 @@
 /**
- * Compiled by `npm run test:types` against the declarations that ship in dist/element/types.
+ * Compiled by `npm run test:types` against the declarations that ship in dist/product-personalization/types.
  * It is what a host application's TypeScript sees; `@ts-expect-error` lines must stay errors.
  */
 import type {
+  AdminErrorDetail,
+  ConfigArchivedDetail,
+  ConfigPublishedDetail,
+  ConfigSavedDetail,
   CustomizerChangeDetail,
   CustomizerConfig,
   CustomizerErrorDetail,
   CustomizerSaveDetail,
   Customization,
+  MappingChangedDetail,
+  ProductMapping,
+  ProductRef,
   SaveResult,
+  ViewChangeDetail,
+  ZbPersonalizationAdminElement,
   ZbProductCustomizerElement,
-} from '../../dist/element/types/index';
+} from '../../dist/product-personalization/types/index';
 
 // The tag name map is augmented globally, so createElement is typed.
 const element = document.createElement('zb-product-customizer');
@@ -107,3 +116,75 @@ element.addEventListener('customizer-save', (event) => {
   const n: number = event.detail.requestId;
   void n;
 });
+
+// ---- storefront: resolve by product -------------------------------------------------------------
+const resolving = document.createElement('zb-product-customizer');
+resolving.productId = 'prod-1';
+resolving.variantId = null;
+resolving.collectionIds = ['summer', 'apparel'];
+resolving.apiBaseUrl = 'https://api.example.com';
+resolving.storeId = 'store-1';
+resolving.addEventListener('customizer-ready', (event) => {
+  // false: nothing is mapped, so the theme can hide the section
+  const personalizable: boolean | undefined = event.detail.personalizable;
+  void personalizable;
+});
+// @ts-expect-error productId is a string
+resolving.productId = 42;
+// @ts-expect-error collectionIds is a list of strings
+resolving.collectionIds = 'a,b';
+
+// ---- store admin element ----------------------------------------------------------------------------
+const admin = document.createElement('zb-personalization-admin');
+const sameAdmin: ZbPersonalizationAdminElement = admin;
+void sameAdmin;
+admin.apiBaseUrl = 'https://api.example.com';
+admin.authToken = 'short-lived-session-token';
+const products: ProductRef[] = [
+  { id: 'p1', title: 'Tee', sku: 'T-1', variants: [{ id: 'v1', title: 'Small' }], collections: [{ id: 'c1', title: 'Summer' }] },
+];
+admin.productCatalog = products;
+admin.productSearchUrl = '/catalog/search';
+admin.view = 'mapping';
+admin.configId = null;
+admin.readonly = false;
+admin.locale = 'fr';
+admin.allowedAssetOrigins = ['https://cdn.example'];
+admin.persistence = 'cloud';
+
+admin.addEventListener('admin-ready', (event) => void [event.detail.version, event.detail.persistence]);
+admin.addEventListener('view-change', (event) => {
+  const detail: ViewChangeDetail = event.detail;
+  void [detail.view, detail.configId];
+});
+admin.addEventListener('config-saved', (event) => {
+  const detail: ConfigSavedDetail = event.detail;
+  void [detail.configId, detail.name, detail.updatedAt];
+});
+admin.addEventListener('config-published', (event) => {
+  const detail: ConfigPublishedDetail = event.detail;
+  void [detail.version, detail.publishedAt];
+});
+admin.addEventListener('config-archived', (event) => {
+  const detail: ConfigArchivedDetail = event.detail;
+  void [detail.archived, detail.affectedMappings];
+});
+admin.addEventListener('mapping-changed', (event) => {
+  const detail: MappingChangedDetail = event.detail;
+  const mapping: ProductMapping | undefined = detail.mappings[0];
+  void [detail.action, detail.deletedIds, mapping?.scope, mapping?.externalId];
+});
+admin.addEventListener('admin-error', (event) => {
+  const detail: AdminErrorDetail = event.detail;
+  void [detail.code, detail.message, detail.recoverable];
+});
+
+// @ts-expect-error unknown view
+admin.view = 'dashboard';
+// @ts-expect-error scope is product | variant | collection
+const badMapping: ProductMapping['scope'] = 'sku';
+void badMapping;
+// @ts-expect-error persistence is local | cloud
+admin.persistence = 'edge';
+// @ts-expect-error unknown admin event detail field
+admin.addEventListener('admin-error', (event) => void event.detail.stack);

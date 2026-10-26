@@ -49,6 +49,20 @@ export interface ZbProductCustomizerElement extends HTMLElement {
   disabled: boolean;
   /** Host acknowledgement of a `customizer-save` request. */
   saveResult: SaveResult | null;
+  /** Appearance (attribute `theme`): `light` (default), `dark`, or `auto` (follows `prefers-color-scheme`). */
+  theme: 'light' | 'dark' | 'auto';
+
+  // ---- resolve by product: used when neither `config` nor `configUrl` is set ---------------------
+  /** The host's id of the product on this page (attribute `product-id`). */
+  productId: string | null;
+  /** The host's currently selected variant id (attribute `variant-id`). A variant mapping wins over a product mapping. */
+  variantId: string | null;
+  /** Collections the product belongs to (property: string[]; attribute `collection-ids`: comma separated). */
+  collectionIds: readonly string[];
+  /** Base URL of the personalization API (attribute `api-base-url`). */
+  apiBaseUrl: string | null;
+  /** Public storefront key of the store (attribute `store-id`); identifies the store, grants nothing. */
+  storeId: string | null;
 
   addEventListener<K extends keyof ZbProductCustomizerEventMap>(
     type: K,

@@ -3,10 +3,14 @@
 // the host page's CSS cannot reach them (except inherited properties, which :host resets).
 //
 // Public theming hooks (set them on the <zb-product-customizer> element or any ancestor):
-//   --customizer-primary       default #296FD7 (ZenBasket blue)
-//   --customizer-font-family   default system UI stack
-//   --customizer-radius        default 8px
-//   --customizer-border-color  default #6b7280 (3:1+ against white, as WCAG 1.4.11 requires for controls)
+//   --zb-accent / --customizer-primary          default #296FD7 (ZenBasket blue)
+//   --zb-font   / --customizer-font-family      default system UI stack
+//   --zb-radius / --customizer-radius           default 8px
+//   --customizer-border-color                   default #6b7280 (3:1+ against white, as WCAG 1.4.11 requires for controls)
+// (the --zb-* names win when both are set). Shadow parts for host-page styling:
+//   ::part(primary-button)   the Save / Add personalization button
+//   ::part(preview-frame)    the frame around the live preview
+// Appearance: attribute `theme="light"` (default) | `dark` | `auto` (follows prefers-color-scheme).
 
 :host {
   all: initial; // stop inherited host-page typography / colour / direction leaking in
@@ -31,8 +35,8 @@
   display: block;
   box-sizing: border-box;
 
-  --c-primary: var(--customizer-primary, #296fd7);
-  --c-radius: var(--customizer-radius, 8px);
+  --c-primary: var(--zb-accent, var(--customizer-primary, #296fd7));
+  --c-radius: var(--zb-radius, var(--customizer-radius, 8px));
   --c-border: var(--customizer-border-color, #6b7280);
   --c-border-soft: #d1d5db;
   --c-text: #1f2937;
@@ -41,7 +45,15 @@
   --c-warn: #8a5300;
   --c-ok: #0b6b3a;
   --c-surface: #ffffff;
-  --c-tint: color-mix(in srgb, var(--c-primary) 8%, #ffffff);
+  --c-subtle: #f3f4f6;
+  --c-track: #e5e7eb;
+  --c-warn-bg: #fff7e6;
+  --c-warn-border: #f0c36d;
+  --c-error-bg: #fef3f2;
+  --c-ring-gap: #ffffff;
+  --c-accent-text: var(--c-primary); // the accent used as TEXT colour; lightened on the dark surface
+  --c-tint: color-mix(in srgb, var(--c-primary) 8%, var(--c-surface));
+  color-scheme: light;
 
   // Typography lives here, not on :host: a host-page rule such as `* { font-family: ... }` matches the
   // host element itself and would beat :host styles, but it cannot match elements inside the shadow root.
@@ -49,17 +61,20 @@
   min-width: 0;
   padding: 16px;
   color: var(--c-text);
-  background: #ffffff; // a fixed light surface keeps WCAG contrast whatever the host page looks like
+  background: var(--c-surface); // the surface is always opaque, so contrast never depends on the host page
   border-radius: var(--c-radius);
   font-family: var(
-    --customizer-font-family,
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    'Helvetica Neue',
-    Arial,
-    sans-serif
+    --zb-font,
+    var(
+      --customizer-font-family,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      Arial,
+      sans-serif
+    )
   );
   font-size: 16px;
   font-weight: 400;
@@ -70,6 +85,39 @@
   text-transform: none;
   -webkit-text-size-adjust: 100%;
 }
+
+// Dark appearance (opt-in). Every colour comes from the variables above; the text colours are
+// chosen to stay >= 4.5:1 on the dark surface, borders >= 3:1.
+@mixin dark-palette {
+  --c-border: #9ca3af;
+  --c-border-soft: #374151;
+  --c-text: #f3f4f6;
+  --c-muted: #cbd5e1;
+  --c-error: #fca5a5;
+  --c-warn: #fcd34d;
+  --c-ok: #6ee7b7;
+  --c-surface: #111827;
+  --c-subtle: #1f2937;
+  --c-track: #374151;
+  --c-warn-bg: #3a2a05;
+  --c-warn-border: #8a5300;
+  --c-error-bg: #3b1511;
+  --c-ring-gap: #111827;
+  --c-accent-text: color-mix(in srgb, var(--c-primary) 45%, #ffffff);
+  --c-tint: color-mix(in srgb, var(--c-primary) 22%, var(--c-surface));
+  color-scheme: dark;
+}
+
+:host([theme='dark']) .zbc {
+  @include dark-palette;
+}
+
+@media (prefers-color-scheme: dark) {
+  :host([theme='auto']) .zbc {
+    @include dark-palette;
+  }
+}
+
 
 h2,
 p,
@@ -131,7 +179,7 @@ fieldset {
   border: 1px solid var(--c-border-soft);
   border-radius: var(--c-radius);
   overflow: hidden;
-  background: #f3f4f6;
+  background: var(--c-subtle);
 }
 
 .preview-canvas {
@@ -225,7 +273,7 @@ select.control {
 
 .swatch input:checked + .swatch-dot {
   box-shadow:
-    0 0 0 2px #fff,
+    0 0 0 2px var(--c-ring-gap),
     0 0 0 5px var(--c-primary);
 }
 
@@ -273,7 +321,7 @@ select.control {
   top: 2px;
   right: 7px;
   font-weight: 700;
-  color: var(--c-primary);
+  color: var(--c-accent-text);
 }
 
 .card:has(input:focus-visible) {
@@ -321,7 +369,7 @@ select.control {
   width: 100%;
   max-width: 320px;
   height: auto;
-  background: #e5e7eb;
+  background: var(--c-track);
   border: 1px solid var(--c-border);
   border-radius: var(--c-radius);
   cursor: grab;
@@ -381,7 +429,7 @@ select.control {
   padding: 8px 16px;
   font: inherit;
   font-weight: 600;
-  color: var(--c-primary);
+  color: var(--c-accent-text);
   background: var(--c-surface);
   border: 2px solid var(--c-primary);
   border-radius: var(--c-radius);
@@ -537,8 +585,8 @@ select.control {
 
 .notice-warn {
   color: var(--c-warn);
-  background: #fff7e6;
-  border: 1px solid #f0c36d;
+  background: var(--c-warn-bg);
+  border: 1px solid var(--c-warn-border);
 }
 
 .panel {
@@ -547,7 +595,7 @@ select.control {
   gap: 8px;
   padding: 16px;
   color: var(--c-text);
-  background: #fef3f2;
+  background: var(--c-error-bg);
   border: 2px solid var(--c-error);
   border-radius: var(--c-radius);
 }
@@ -655,7 +703,7 @@ app-action-bar {
 
 .confirm {
   padding: 12px;
-  background: #fef3f2;
+  background: var(--c-error-bg);
   border: 1px solid var(--c-error);
   border-radius: var(--c-radius);
 
@@ -796,4 +844,53 @@ app-action-bar {
 
 .underlined {
   text-decoration: underline;
+}
+
+// ---- loading skeleton -------------------------------------------------------------------------
+
+.skeleton {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+@container (min-width: 720px) {
+  .skeleton {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+}
+
+.skeleton-preview,
+.skeleton-lines span {
+  background: linear-gradient(90deg, var(--c-subtle) 25%, var(--c-track) 50%, var(--c-subtle) 75%);
+  background-size: 200% 100%;
+  border-radius: var(--c-radius);
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+.skeleton-preview {
+  aspect-ratio: 4 / 3;
+}
+
+.skeleton-lines {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.skeleton-lines span {
+  height: 44px;
+}
+
+@keyframes skeleton-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-preview,
+  .skeleton-lines span {
+    animation: none;
+  }
 }

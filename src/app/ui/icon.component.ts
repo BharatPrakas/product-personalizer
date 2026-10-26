@@ -74,6 +74,8 @@ export type IconName = keyof typeof ICONS;
 
 @Component({
   selector: 'app-icon',
+  // Exposed so right-to-left layouts can mirror the directional icons (see _components.scss).
+  host: { '[attr.data-icon]': 'name()' },
   template: `
     <svg
       viewBox="0 0 24 24"
@@ -91,12 +93,6 @@ export type IconName = keyof typeof ICONS;
         <path [attr.d]="d" />
       }
     </svg>
-  `,
-  styles: `
-    :host {
-      display: inline-flex;
-      flex: none;
-    }
   `,
 })
 export class IconComponent {

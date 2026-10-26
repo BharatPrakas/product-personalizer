@@ -2,22 +2,26 @@ import { Component, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter, map } from 'rxjs';
+import { TranslatePipe } from './admin/i18n/i18n.service';
 import { ConfirmHostComponent } from './ui/confirm-host.component';
 import { ToastHostComponent } from './ui/toast-host.component';
 
 /** Application shell. The editor and the customer preview bring their own header and use the full window. */
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, ConfirmHostComponent, ToastHostComponent],
+  imports: [
+    RouterOutlet,
+    RouterLink,
+    RouterLinkActive,
+    ConfirmHostComponent,
+    ToastHostComponent,
+    TranslatePipe,
+  ],
   template: `
-    <a class="skip-link" href="#main">Skip to content</a>
+    <a class="skip-link" href="#main">{{ 'app.skip' | t }}</a>
     @if (!immersive()) {
       <header class="app-header">
-        <a
-          class="brand"
-          routerLink="/configurations"
-          aria-label="Product Personalizer, configurations"
-        >
+        <a class="brand" routerLink="/configurations" [attr.aria-label]="'app.brand-aria' | t">
           <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
             <rect width="24" height="24" rx="6" fill="currentColor" />
             <path
@@ -29,10 +33,10 @@ import { ToastHostComponent } from './ui/toast-host.component';
               stroke-linejoin="round"
             />
           </svg>
-          <span>Product Personalizer</span>
+          <span>{{ 'app.brand' | t }}</span>
         </a>
-        <nav aria-label="Primary">
-          <a routerLink="/configurations" routerLinkActive="is-active">Configurations</a>
+        <nav [attr.aria-label]="'app.nav-primary' | t">
+          <a routerLink="/configurations" routerLinkActive="is-active">{{ 'list.title' | t }}</a>
         </nav>
       </header>
     }

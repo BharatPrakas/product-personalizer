@@ -104,14 +104,14 @@
   app-icon {
     position: absolute;
     top: 50%;
-    left: var(--s-3);
+    inset-inline-start: var(--s-3);
     color: var(--c-text-subtle);
     transform: translateY(-50%);
     pointer-events: none;
   }
 
   .input {
-    padding-left: 36px;
+    padding-inline-start: 36px;
   }
 }
 
@@ -174,7 +174,7 @@
   font-size: var(--fs-xs);
   font-weight: var(--fw-semibold);
   color: var(--c-text-subtle);
-  text-align: left;
+  text-align: start;
   background: var(--c-surface-muted);
   border-bottom: 1px solid var(--c-border);
 }
@@ -194,7 +194,7 @@
 }
 
 .data-table .num {
-  text-align: right;
+  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 
@@ -282,7 +282,7 @@
   }
 
   .data-table .num {
-    text-align: left;
+    text-align: start;
   }
 
   .data-table td[data-label]::before {
@@ -368,7 +368,7 @@
 
 .toast-region {
   position: fixed;
-  right: var(--s-4);
+  inset-inline-end: var(--s-4);
   bottom: var(--s-4);
   z-index: var(--z-toast);
   display: flex;
@@ -511,7 +511,7 @@
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding-left: var(--s-2);
+  padding-inline-start: var(--s-2);
 }
 
 .save-status {
@@ -549,13 +549,13 @@
 }
 
 .sidebar--left {
-  border-right: 1px solid var(--c-border);
+  border-inline-end: 1px solid var(--c-border);
 }
 
 .sidebar--right {
   overflow-y: auto;
   padding: var(--s-4);
-  border-left: 1px solid var(--c-border);
+  border-inline-start: 1px solid var(--c-border);
 }
 
 .workspace {
@@ -582,13 +582,13 @@
   }
 
   .sidebar--left {
-    left: 0;
-    transform: translateX(-100%);
+    inset-inline-start: 0;
+    transform: translateX(calc(-100% * var(--flip, 1)));
   }
 
   .sidebar--right {
-    right: 0;
-    transform: translateX(100%);
+    inset-inline-end: 0;
+    transform: translateX(calc(100% * var(--flip, 1)));
   }
 
   .sidebar.is-open {
@@ -737,7 +737,7 @@
   min-width: 0;
   padding: var(--s-1) var(--s-2);
   font: inherit;
-  text-align: left;
+  text-align: start;
   color: var(--c-text);
   background: none;
   border: 0;
@@ -858,7 +858,7 @@
 .mode-chip {
   position: absolute;
   top: var(--s-3);
-  left: var(--s-3);
+  inset-inline-start: var(--s-3);
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
@@ -882,7 +882,7 @@
 
 .zoom-controls {
   position: absolute;
-  right: var(--s-3);
+  inset-inline-end: var(--s-3);
   bottom: var(--s-3);
   display: inline-flex;
   align-items: center;
@@ -1054,7 +1054,7 @@
 .link-btn {
   padding: 0;
   font: inherit;
-  text-align: left;
+  text-align: start;
   color: var(--c-primary-text);
   background: none;
   border: 0;
@@ -1106,7 +1106,7 @@
 }
 
 .issue-list {
-  padding-left: var(--s-4);
+  padding-inline-start: var(--s-4);
   font-size: var(--fs-sm);
   color: var(--c-danger);
   list-style: disc;
@@ -1242,4 +1242,134 @@ app-field-editor {
 
 app-customer-preview {
   display: block;
+}
+
+// Product mapping and markup library --------------------------------------------------------------
+
+.mapping-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-4);
+}
+
+.mapping-controls .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.mapping-controls .field--grow {
+  flex: 1 1 240px;
+  max-width: 380px;
+}
+
+.mapping-controls .label,
+.manual-form .label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--c-text-muted);
+}
+
+.mapping-controls select.input {
+  min-width: 220px;
+}
+
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+
+.bulk-bar .check,
+.mapping-table .check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.mapping-table input[type='checkbox'],
+.bulk-bar input[type='checkbox'] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--c-primary);
+}
+
+.mapping-table tr.is-selected {
+  background: var(--c-primary-soft);
+}
+
+.mapping-thumb {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm, 4px);
+}
+
+.mapping-table .block {
+  display: block;
+  margin-top: 2px;
+}
+
+.mapping-table .actions {
+  text-align: end;
+  white-space: nowrap;
+}
+
+.manual-form {
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.manual-form .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.current-list,
+.conflict-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.current-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.current-item:last-child {
+  border-bottom: 0;
+}
+
+.markup-kinds {
+  margin: 0 var(--s-3) var(--s-2);
+}
+
+.markup-search {
+  display: block;
+  max-width: none;
+  margin: 0 var(--s-3) var(--s-3);
+}
+
+.field-error {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--c-danger);
 }

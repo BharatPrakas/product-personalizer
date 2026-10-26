@@ -12,25 +12,6 @@ import { IconComponent } from '../../ui/icon.component';
       <app-icon name="mockup" [size]="18" />
     }
   `,
-  styles: `
-    :host {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 44px;
-      height: 44px;
-      overflow: hidden;
-      color: var(--c-text-subtle);
-      background: var(--c-surface-muted);
-      border: 1px solid var(--c-border);
-      border-radius: var(--r-sm);
-      flex: none;
-    }
-    .mockup-thumb-canvas {
-      width: 100%;
-      height: 100%;
-    }
-  `,
 })
 export class MockupThumbComponent {
   private readonly store = inject(EditorStore);

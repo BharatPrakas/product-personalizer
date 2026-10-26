@@ -10,7 +10,7 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from 'puppetee
 import { createStaticHandler } from '../../scripts/serve-static.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const ELEMENT_DIR = join(root, 'dist', 'element');
+const ELEMENT_DIR = join(root, 'dist', 'product-personalization');
 const HOST_DIR = join(dirname(fileURLToPath(import.meta.url)), 'host');
 export const NESTED = '/nested/path/customizer';
 
@@ -19,19 +19,76 @@ type Handler = (
   res: import('node:http').ServerResponse,
 ) => boolean;
 
-function listen(handlers: Handler[]): Promise<{ server: Server; origin: string }> {
+function listen(handlers: Handler[], port = 0): Promise<{ server: Server; origin: string }> {
   const server = createServer((req, res) => {
     for (const handler of handlers) if (handler(req, res) !== false) return;
     res.writeHead(404).end('Not found');
   });
   return new Promise((resolve) =>
-    server.listen(0, '127.0.0.1', () =>
+    server.listen(port, '127.0.0.1', () =>
       resolve({ server, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` }),
     ),
   );
 }
 
+/** A scriptable stand-in for the personalization API's public storefront endpoint. */
+export interface MockApi {
+  /** productId (or '*') -> what the endpoint answers. */
+  responses: Map<string, { status?: number; body?: unknown; delayMs?: number }>;
+  requests: { method: string; url: string; headers: Record<string, string | string[] | undefined> }[];
+  /** `"GET /api/v1/plugins/personalization/configs"` -> answer, for the admin API. */
+  admin: Map<string, { status?: number; body?: unknown }>;
+  reset(): void;
+}
+
+const STOREFRONT = /^\/api\/v1\/storefront\/personalization\/products\/([^/]+)\/config$/;
+
+function createMockApi(): { api: MockApi; handler: Handler } {
+  const api: MockApi = {
+    responses: new Map(),
+    requests: [],
+    admin: new Map(),
+    reset() {
+      api.responses.clear();
+      api.admin.clear();
+      api.requests.length = 0;
+    },
+  };
+  const handler: Handler = (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    if (url.pathname.startsWith('/api/v1/plugins/personalization/')) {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, {
+          'access-control-allow-origin': '*',
+          'access-control-allow-headers': '*',
+          'access-control-allow-methods': '*',
+        });
+        res.end();
+        return true;
+      }
+      api.requests.push({ method: req.method ?? 'GET', url: req.url ?? '', headers: req.headers });
+      const answer = api.admin.get(`${req.method} ${url.pathname}`) ?? { status: 404, body: { error: { code: 'not_found' } } };
+      res.writeHead(answer.status ?? 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(answer.body ?? { data: [] }));
+      return true;
+    }
+    const match = STOREFRONT.exec(url.pathname);
+    if (!match) return false;
+    api.requests.push({ method: req.method ?? 'GET', url: req.url ?? '', headers: req.headers });
+    const id = decodeURIComponent(match[1]);
+    const response = api.responses.get(id) ?? api.responses.get('*') ?? { body: { data: { personalizable: false } } };
+    setTimeout(() => {
+      res.writeHead(response.status ?? 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(response.body ?? {}));
+    }, response.delayMs ?? 0);
+    return true;
+  };
+  return { api, handler };
+}
+
 export interface Environment {
+  /** Scriptable personalization API served from the page origin. */
+  api: MockApi;
   /** Page origin: host pages at `/host.html`, the element bundle under NESTED. */
   origin: string;
   /** `${origin}${NESTED}`: where the element, its data and its assets live. */
@@ -46,10 +103,12 @@ export interface Environment {
 }
 
 export async function startEnvironment(): Promise<Environment> {
+  const mock = createMockApi();
   const main = await listen([
+    mock.handler,
     createStaticHandler({ root: ELEMENT_DIR, mount: NESTED }),
     createStaticHandler({ root: HOST_DIR, mount: '' }),
-  ]);
+  ], Number(process.env['ZB_E2E_PORT'] ?? 0));
   const cors = await listen([createStaticHandler({ root: ELEMENT_DIR, cors: true })]);
   const plain = await listen([createStaticHandler({ root: ELEMENT_DIR, cors: false })]);
   const tmp = mkdtempSync(join(tmpdir(), 'zbc-tests-'));
@@ -59,6 +118,7 @@ export async function startEnvironment(): Promise<Environment> {
     args: ['--no-sandbox', '--force-color-profile=srgb', '--hide-scrollbars'],
   });
   return {
+    api: mock.api,
     origin: main.origin,
     elementBase: `${main.origin}${NESTED}`,
     corsOrigin: cors.origin,
@@ -114,6 +174,74 @@ export async function openHost(
   return { page, consoleErrors, pageErrors };
 }
 
+export async function openAdminHost(
+  env: Environment,
+  options: { query?: string; viewport?: { width: number; height: number }; page?: 'admin-host.html' | 'admin-host-csp.html' } = {},
+): Promise<HostPage> {
+  const page = await env.browser.newPage();
+  await page.setViewport({ width: 1280, height: 1000, ...options.viewport });
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => pageErrors.push(String(error)));
+  await page.goto(`${env.origin}/${options.page ?? 'admin-host.html'}${options.query ?? ''}`);
+  await page.waitForFunction(
+    () => (window as unknown as { testHostReady?: boolean }).testHostReady === true,
+  );
+  const close = page.close.bind(page);
+  page.close = async (...args: Parameters<Page['close']>) => {
+    await close(...args);
+    const angular = consoleErrors.filter((message) => /\bNG0\d+|^ERROR\b|Unhandled/.test(message));
+    if (angular.length > 0 || pageErrors.length > 0) {
+      throw new Error(`Page reported errors:\n${[...angular, ...pageErrors].join('\n')}`);
+    }
+  };
+  return { page, consoleErrors, pageErrors };
+}
+
+export const adminHost = {
+  mount: (page: Page, id: string, props: Record<string, unknown> = {}, attributes: Record<string, string> = {}) =>
+    page.evaluate((i, p, a) => (window as any).adminHost.mount(i, p, { attributes: a }), id, props as any, attributes),
+  remove: (page: Page, id: string) => page.evaluate((i) => (window as any).adminHost.remove(i), id),
+  set: (page: Page, id: string, prop: string, value: unknown) =>
+    page.evaluate((i, p, v) => (window as any).adminHost.set(i, p, v), id, prop, value as any),
+  events: <T = any>(page: Page, id: string, type?: string) =>
+    page.evaluate((i, t) => (window as any).adminHost.events(i, t), id, type) as Promise<
+      { type: string; detail: T; bubbles: boolean }[]
+    >,
+  view: (page: Page, id: string) => page.evaluate((i) => (window as any).adminHost.view(i), id) as Promise<string | null>,
+  waitView: (page: Page, id: string, view: string, timeout = 20000) =>
+    page.waitForFunction((i, v) => (window as any).adminHost.view(i) === v, { timeout }, id, view),
+  ready: (page: Page, id: string, timeout = 20000) =>
+    page.waitForFunction((i) => (window as any).adminHost.events(i, 'admin-ready').length > 0, { timeout }, id),
+};
+
+/** Wait until `selector` exists inside the element's shadow root. */
+export const waitInside = (page: Page, id: string, selector: string, timeout = 20000) =>
+  page.waitForFunction(
+    (i, s) => !!document.getElementById(i)?.shadowRoot?.querySelector(s),
+    { timeout },
+    id,
+    selector,
+  );
+
+/** Click the first element matching `selector` whose text contains `text`. */
+export const clickText = (page: Page, id: string, selector: string, text: string) =>
+  page.evaluate(
+    (i, s, t) => {
+      const el = [...document.getElementById(i)!.shadowRoot!.querySelectorAll(s)].find((e) =>
+        (e.textContent ?? '').replace(/\s+/g, ' ').includes(t),
+      ) as HTMLElement | undefined;
+      if (!el) throw new Error(`no ${s} containing "${t}"`);
+      el.click();
+    },
+    id,
+    selector,
+    text,
+  );
+
 // ---- helpers that talk to window.testHost in the page ----------------------------------------
 
 type Props = Record<string, unknown>;
@@ -123,7 +251,7 @@ export const host = {
     page: Page,
     id: string,
     props: Props = {},
-    opts: { attributes?: Record<string, string>; appendTo?: string } = {},
+    opts: { attributes?: Record<string, string>; appendTo?: string; fallback?: string } = {},
   ) =>
     page.evaluate(
       (i, p, o) => (window as any).testHost.mount(i, p, o),

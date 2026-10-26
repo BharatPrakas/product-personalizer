@@ -1,12 +1,13 @@
 import type { Signal } from '@angular/core';
+import type { MessageKey } from '../admin/i18n/messages.en';
 import type { ConfigIssue } from '../customizer/models/config.models';
 import type { ProductConfig } from '../customizer/models/product.models';
 import type { ConfigurationRecord } from './configuration.models';
 
 export interface StorageInfo {
-  kind: 'browser' | 'memory';
-  /** Shown to the merchant, so persistence is never overstated. */
-  label: string;
+  kind: 'browser' | 'memory' | 'cloud';
+  /** Message shown to the merchant, so persistence is never overstated. */
+  labelKey: MessageKey;
   /** False when changes would be lost on reload. */
   persistent: boolean;
 }
@@ -34,8 +35,8 @@ export class ConfigurationInvalidError extends Error {
 }
 
 export class StorageError extends Error {
-  constructor(message = 'The browser could not store this change.') {
-    super(message);
+  constructor(message = 'The browser could not store this change.', options?: ErrorOptions) {
+    super(message, options);
     this.name = 'StorageError';
   }
 }

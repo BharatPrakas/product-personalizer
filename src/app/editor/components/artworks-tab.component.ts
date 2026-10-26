@@ -1,6 +1,9 @@
 import { Component, inject } from '@angular/core';
 import { Artwork, PrintableArea } from '../../customizer/models/product.models';
 import { ConfirmService } from '../../ui/confirm.service';
+import { AdminHost } from '../../admin/admin-host.service';
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
+import { MarkupLibrary } from '../../markups/markup-library.service';
 import { IconComponent } from '../../ui/icon.component';
 import { MenuComponent } from '../../ui/menu.component';
 import { EditorStore } from '../services/editor-store.service';
@@ -9,17 +12,17 @@ import * as edit from '../util/config-edit';
 /** Sidebar tab: the designs of each printable area (an area can offer several for customers to choose from). */
 @Component({
   selector: 'app-artworks-tab',
-  imports: [IconComponent, MenuComponent],
+  imports: [IconComponent, MenuComponent, TranslatePipe],
   template: `
     <div class="tab-head">
-      <h2 class="tab-title">Artworks</h2>
+      <h2 class="tab-title">{{ 'artworks.title' | t }}</h2>
     </div>
     @if (store.config(); as c) {
       @if (c.printableAreas.length === 0) {
-        <p class="tab-empty">Artwork belongs to a printable area. Add a printable area first.</p>
+        <p class="tab-empty">{{ 'artworks.need-area' | t }}</p>
       }
       @for (a of c.printableAreas; track a.id) {
-        <section class="list-group" [attr.aria-label]="a.name + ' artworks'">
+        <section class="list-group" [attr.aria-label]="'artworks.group-aria' | t: { name: a.name }">
           <h3 class="list-group__title truncate">{{ a.name }}</h3>
           <ul class="list">
             @for (art of artworksOf(a); track art.id) {
@@ -32,17 +35,12 @@ import * as edit from '../util/config-edit';
                   <span class="list-row__icon"><app-icon name="artwork" [size]="18" /></span>
                   <span class="list-row__text">
                     <span class="list-row__title truncate">{{ art.name }}</span>
-                    <span class="list-row__meta truncate">
-                      {{ art.layers.length }} {{ art.layers.length === 1 ? 'layer' : 'layers' }}
-                      @if (a.artworkIds.length > 1 && art.id === a.artworkId) {
-                        · default
-                      }
-                    </span>
+                    <span class="list-row__meta truncate">{{ meta(a, art) }}</span>
                   </span>
                 </button>
                 <div class="list-row__actions">
                   <app-menu
-                    [label]="'More actions for ' + art.name"
+                    [label]="'list.more-actions' | t: { name: art.name }"
                     icon="more"
                     variant="ghost"
                     align="end"
@@ -53,7 +51,7 @@ import * as edit from '../util/config-edit';
                       role="menuitem"
                       (click)="store.select({ kind: 'artwork', id: art.id })"
                     >
-                      <app-icon name="pen" [size]="16" /> Edit artwork
+                      <app-icon name="pen" [size]="16" /> {{ 'common.edit-artwork' | t }}
                     </button>
                     <button
                       type="button"
@@ -62,7 +60,16 @@ import * as edit from '../util/config-edit';
                       [disabled]="art.id === a.artworkId"
                       (click)="makeDefault(a, art)"
                     >
-                      <app-icon name="check" [size]="16" /> Show by default
+                      <app-icon name="check" [size]="16" /> {{ 'artworks.show-default' | t }}
+                    </button>
+                    <button
+                      type="button"
+                      class="menu-item"
+                      role="menuitem"
+                      [disabled]="readonly()"
+                      (click)="library.requestSaveArtwork(art.id)"
+                    >
+                      <app-icon name="shapes" [size]="16" /> {{ 'markups.save-as' | t }}
                     </button>
                     <div class="menu-sep"></div>
                     <button
@@ -72,7 +79,7 @@ import * as edit from '../util/config-edit';
                       [disabled]="a.artworkIds.length <= 1"
                       (click)="remove(art)"
                     >
-                      <app-icon name="trash" [size]="16" /> Delete…
+                      <app-icon name="trash" [size]="16" /> {{ 'common.delete-ellipsis' | t }}
                     </button>
                   </app-menu>
                 </div>
@@ -80,7 +87,7 @@ import * as edit from '../util/config-edit';
             }
           </ul>
           <button type="button" class="btn btn--ghost btn--sm list-group__add" (click)="add(a)">
-            <app-icon name="plus" [size]="16" /> Add another artwork
+            <app-icon name="plus" [size]="16" /> {{ 'artworks.add-another' | t }}
           </button>
         </section>
       }
@@ -88,11 +95,21 @@ import * as edit from '../util/config-edit';
   `,
 })
 export class ArtworksTabComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
   private readonly confirmService = inject(ConfirmService);
+  protected readonly library = inject(MarkupLibrary);
+  protected readonly readonly = inject(AdminHost).readonly;
 
   protected artworksOf(area: PrintableArea): Artwork[] {
     return (this.store.config()?.artworks ?? []).filter((a) => a.printableAreaId === area.id);
+  }
+
+  protected meta(area: PrintableArea, art: Artwork): string {
+    const layers = this.i18n.plural('artworks.layers', art.layers.length);
+    return area.artworkIds.length > 1 && art.id === area.artworkId
+      ? this.i18n.t('artworks.meta-default', { layers })
+      : layers;
   }
 
   protected isSelected(id: string): boolean {
@@ -117,9 +134,9 @@ export class ArtworksTabComponent {
 
   protected async remove(art: Artwork): Promise<void> {
     const ok = await this.confirmService.confirm({
-      title: `Delete “${art.name}”?`,
-      message: 'Its layers and the customer inputs only it uses are deleted. You can undo this.',
-      confirmLabel: 'Delete artwork',
+      title: this.i18n.t('artworks.delete.title', { name: art.name }),
+      message: this.i18n.t('artworks.delete.message'),
+      confirmLabel: this.i18n.t('artworks.delete.confirm'),
       danger: true,
     });
     if (ok) {

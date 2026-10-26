@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
-// Browser-level tests: drive the built element bundle (dist/element) in headless Chrome.
+// Browser-level tests: drive the built element bundle (dist/product-personalization) in headless Chrome.
 // Run with `npm run test:browser` (builds first). Set CHROME_PATH if Chrome is not at /usr/bin/google-chrome.
 export default defineConfig({
   root: fileURLToPath(new URL('../..', import.meta.url)),

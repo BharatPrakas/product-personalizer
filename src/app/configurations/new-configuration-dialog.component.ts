@@ -2,6 +2,7 @@ import { Component, inject, input, output, signal } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ConfigurationRepository } from '../workspace/configuration-repository';
 import { ImageUploadService } from '../workspace/image-upload.service';
+import { I18n, TranslatePipe } from '../admin/i18n/i18n.service';
 import { DialogComponent } from '../ui/dialog.component';
 import { IconComponent } from '../ui/icon.component';
 
@@ -11,43 +12,45 @@ import { IconComponent } from '../ui/icon.component';
  */
 @Component({
   selector: 'app-new-configuration-dialog',
-  imports: [ReactiveFormsModule, DialogComponent, IconComponent],
+  imports: [ReactiveFormsModule, DialogComponent, IconComponent, TranslatePipe],
   template: `
     <app-dialog
       [open]="open()"
-      title="New configuration"
-      description="Name the product to personalize. You can add the product photo now or later."
+      [title]="'newconfig.title' | t"
+      [description]="'newconfig.description' | t"
       (closed)="cancel()"
     >
       <form class="stack" (submit)="$event.preventDefault(); create()" id="new-config-form">
         <label class="field">
-          <span class="field-label">Configuration name</span>
+          <span class="field-label">{{ 'newconfig.name' | t }}</span>
           <input
             class="input"
             type="text"
             autocomplete="off"
-            placeholder="e.g. Heart-shaped photo clock"
+            [placeholder]="'newconfig.name-placeholder' | t"
             [formControl]="name"
             [attr.aria-invalid]="name.invalid && name.touched"
             [attr.aria-describedby]="name.invalid && name.touched ? 'name-error' : null"
           />
           @if (name.invalid && name.touched) {
-            <span id="name-error" class="field-error">Enter a name for this configuration.</span>
+            <span id="name-error" class="field-error">{{ 'newconfig.name-error' | t }}</span>
           }
         </label>
 
         <div class="field">
-          <span class="field-label">Product photo (optional)</span>
+          <span class="field-label">{{ 'newconfig.photo' | t }}</span>
           @if (photoName(); as chosen) {
             <div class="row">
               <app-icon name="image" />
               <span class="grow truncate">{{ chosen }}</span>
-              <button type="button" class="btn btn--sm" (click)="clearPhoto()">Remove</button>
+              <button type="button" class="btn btn--sm" (click)="clearPhoto()">
+                {{ 'common.remove' | t }}
+              </button>
             </div>
           } @else {
             <label class="btn btn--block">
               <app-icon name="upload" />
-              <span>Choose an image…</span>
+              <span>{{ 'newconfig.choose' | t }}</span>
               <input
                 class="sr-only"
                 type="file"
@@ -56,16 +59,16 @@ import { IconComponent } from '../ui/icon.component';
               />
             </label>
           }
-          <span class="field-hint">PNG, JPEG or WebP up to 15 MB. It stays in this browser.</span>
+          <span class="field-hint">{{ 'newconfig.photo-hint' | t }}</span>
           @if (photoError(); as message) {
             <span class="field-error" role="alert">{{ message }}</span>
           }
         </div>
       </form>
       <ng-container dialogActions>
-        <button type="button" class="btn" (click)="cancel()">Cancel</button>
+        <button type="button" class="btn" (click)="cancel()">{{ 'common.cancel' | t }}</button>
         <button type="submit" form="new-config-form" class="btn btn--primary" [disabled]="busy()">
-          {{ busy() ? 'Creating…' : 'Create configuration' }}
+          {{ (busy() ? 'newconfig.creating' : 'newconfig.create') | t }}
         </button>
       </ng-container>
     </app-dialog>
@@ -74,6 +77,7 @@ import { IconComponent } from '../ui/icon.component';
 export class NewConfigurationDialogComponent {
   private readonly repo = inject(ConfigurationRepository);
   private readonly uploads = inject(ImageUploadService);
+  private readonly i18n = inject(I18n);
 
   readonly open = input(false);
   readonly closed = output<void>();
@@ -131,7 +135,7 @@ export class NewConfigurationDialogComponent {
       this.reset();
       this.created.emit(record.id);
     } catch {
-      this.photoError.set('The configuration could not be created. Please try again.');
+      this.photoError.set(this.i18n.t('newconfig.error'));
     } finally {
       this.busy.set(false);
     }

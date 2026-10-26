@@ -139,8 +139,8 @@
 
 [data-tip-side='left']::after {
   top: 50%;
-  right: calc(100% + 6px);
-  left: auto;
+  inset-inline-end: calc(100% + 6px);
+  inset-inline-start: auto;
   transform: translateY(-50%);
 }
 
@@ -327,6 +327,7 @@ textarea.input {
 }
 
 .menu-item {
+  text-decoration: none;
   display: flex;
   align-items: center;
   gap: var(--s-2);
@@ -335,7 +336,7 @@ textarea.input {
   font: inherit;
   font-size: var(--fs-md);
   color: var(--c-text);
-  text-align: left;
+  text-align: start;
   background: none;
   border: 0;
   border-radius: var(--r-sm);

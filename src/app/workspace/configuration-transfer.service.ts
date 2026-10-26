@@ -1,4 +1,5 @@
 import { Service, inject } from '@angular/core';
+import { I18n } from '../admin/i18n/i18n.service';
 import type { ConfigIssue } from '../customizer/models/config.models';
 import type { ProductConfig } from '../customizer/models/product.models';
 import { LocalAssetLibrary } from '../customizer/services/local-asset-library.service';
@@ -6,6 +7,7 @@ import { upgradeV1 } from '../customizer/util/config-upgrade';
 import { validateConfig } from '../customizer/util/config-validator';
 import { isLocalAssetUrl, resolveBase } from '../customizer/util/url-policy';
 import { validateConfiguration } from './validation';
+import { assetBaseUrl } from './asset-base';
 
 export type ImportResult =
   { ok: true; draft: ProductConfig } | { ok: false; issues: ConfigIssue[] };
@@ -18,6 +20,7 @@ export type ImportResult =
 @Service()
 export class ConfigurationTransferService {
   private readonly library = inject(LocalAssetLibrary);
+  private readonly i18n = inject(I18n);
 
   async exportJson(config: ProductConfig): Promise<string> {
     const embedded = await mapStrings(structuredClone(config), async (text) => {
@@ -36,7 +39,7 @@ export class ConfigurationTransferService {
     } catch {
       return {
         ok: false,
-        issues: [{ path: '', code: 'json', message: 'The file is not valid JSON.' }],
+        issues: [{ path: '', code: 'json', message: this.i18n.t('error.json') }],
       };
     }
     const version =
@@ -50,7 +53,7 @@ export class ConfigurationTransferService {
         resolvedBase: resolveBase({
           configUrl: null,
           baseUrl: null,
-          documentBase: document.baseURI,
+          documentBase: assetBaseUrl(),
         }),
         policy: { pageOrigin: location.origin, allowedOrigins: [], allowLocalAssets: true },
       });
@@ -74,7 +77,7 @@ export class ConfigurationTransferService {
   /** Absolute URL for a stored `src` (browser-stored images keep their `idb:` reference). */
   assetUrl(config: ProductConfig, src: string): string {
     if (isLocalAssetUrl(src) || src.startsWith('data:') || /^https?:/i.test(src)) return src;
-    return new URL(src, new URL(config.assetBaseUrl ?? '', document.baseURI)).href;
+    return new URL(src, new URL(config.assetBaseUrl ?? '', assetBaseUrl())).href;
   }
 
   /** A URL an `<img>` can show for the first mockup; call `revoke` when done with it. */

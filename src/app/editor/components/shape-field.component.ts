@@ -1,4 +1,5 @@
-import { Component, computed, input, output, signal } from '@angular/core';
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
+import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { ShapeSpec } from '../../customizer/models/product.models';
 import { HEART_SHAPE, isSafePathData, parseSvgMask } from '../../customizer/util/geometry';
 import { CONTROLS, Option } from './controls.component';
@@ -9,11 +10,11 @@ import { CONTROLS, Option } from './controls.component';
  */
 @Component({
   selector: 'app-shape-field',
-  imports: [CONTROLS],
+  imports: [CONTROLS, TranslatePipe],
   template: `
     <div class="panel-section">
       <app-select
-        [label]="label()"
+        [label]="label() ?? ('addarea.shape' | t)"
         [options]="options()"
         [value]="kind()"
         (changed)="setKind($event)"
@@ -21,7 +22,7 @@ import { CONTROLS, Option } from './controls.component';
       @if (shape(); as s) {
         @if (s.type === 'rect') {
           <app-num
-            label="Corner radius (%)"
+            [label]="'inspector.shape.corner-radius' | t"
             [value]="round((s.cornerRadius ?? 0) * 200)"
             [min]="0"
             [max]="100"
@@ -30,20 +31,20 @@ import { CONTROLS, Option } from './controls.component';
         }
         @if (s.type === 'path') {
           <app-text-in
-            label="SVG path data (d)"
+            [label]="'inspector.shape.path-data' | t"
             [multiline]="true"
             [value]="s.d"
             (changed)="setPath($event, s.viewBox)"
           />
           <div class="row row--end">
             <app-num
-              label="View box width"
+              [label]="'inspector.shape.vb-width' | t"
               [value]="s.viewBox[0]"
               [min]="1"
               (changed)="setPath(s.d, [$event, s.viewBox[1]])"
             />
             <app-num
-              label="View box height"
+              [label]="'inspector.shape.vb-height' | t"
               [value]="s.viewBox[1]"
               [min]="1"
               (changed)="setPath(s.d, [s.viewBox[0], $event])"
@@ -51,11 +52,13 @@ import { CONTROLS, Option } from './controls.component';
           </div>
           <div class="row row--end">
             <app-file
-              label="Upload SVG mask"
+              [label]="'addarea.upload-svg' | t"
               accept="image/svg+xml,.svg"
               (chosen)="readSvg($event)"
             />
-            <button type="button" class="btn" (click)="changed.emit(heart)">Use heart</button>
+            <button type="button" class="btn" (click)="changed.emit(heart)">
+              {{ 'inspector.shape.use-heart' | t }}
+            </button>
           </div>
         }
       }
@@ -66,7 +69,9 @@ import { CONTROLS, Option } from './controls.component';
   `,
 })
 export class ShapeFieldComponent {
-  readonly label = input('Shape');
+  private readonly i18n = inject(I18n);
+  /** Defaults to "Shape". */
+  readonly label = input<string | null>(null);
   readonly shape = input<ShapeSpec | null>(null);
   /** Layers may have no clipping at all; printable areas always have a shape. */
   readonly allowNone = input(false);
@@ -76,10 +81,10 @@ export class ShapeFieldComponent {
   protected readonly problem = signal<string | null>(null);
   protected readonly kind = computed(() => this.shape()?.type ?? 'none');
   protected readonly options = computed<Option[]>(() => [
-    ...(this.allowNone() ? [{ value: 'none', label: 'None' }] : []),
-    { value: 'rect', label: 'Rectangle' },
-    { value: 'ellipse', label: 'Ellipse / circle' },
-    { value: 'path', label: 'Custom SVG path' },
+    ...(this.allowNone() ? [{ value: 'none', label: this.i18n.t('inspector.shape.none') }] : []),
+    { value: 'rect', label: this.i18n.t('inspector.shape.rect') },
+    { value: 'ellipse', label: this.i18n.t('inspector.shape.ellipse') },
+    { value: 'path', label: this.i18n.t('inspector.shape.path') },
   ]);
 
   protected round(value: number): number {
@@ -96,9 +101,7 @@ export class ShapeFieldComponent {
 
   protected setPath(d: string, viewBox: readonly [number, number]): void {
     if (!isSafePathData(d)) {
-      this.problem.set(
-        'Path data must start with M and use only SVG path commands, numbers and separators.',
-      );
+      this.problem.set(this.i18n.t('inspector.shape.error.path'));
       return;
     }
     this.problem.set(null);
@@ -108,9 +111,7 @@ export class ShapeFieldComponent {
   protected async readSvg(file: File): Promise<void> {
     const mask = parseSvgMask(await file.text());
     if (!mask) {
-      this.problem.set(
-        'That SVG has no usable outline (needs a viewBox and a path, polygon, circle, ellipse or rect).',
-      );
+      this.problem.set(this.i18n.t('inspector.shape.error.svg'));
       return;
     }
     this.problem.set(null);

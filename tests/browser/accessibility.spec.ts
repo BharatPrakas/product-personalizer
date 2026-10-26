@@ -473,7 +473,7 @@ describe('A19 / A20: display price and the plain HTML demo', () => {
     await page.setViewport({ width: 1280, height: 1100 });
     const pageErrors: string[] = [];
     page.on('pageerror', (e) => pageErrors.push(String(e)));
-    await page.goto(`${env.elementBase}/integration-demo/index.html`);
+    await page.goto(`${env.elementBase}/integration-demo/storefront.html`);
     await page.waitForSelector('zb-product-customizer[data-status="ready"]');
     // Dev builds publish Angular's `ng` debug global; the contract is that no Zone.js patch is installed.
     expect(await page.evaluate(() => typeof (window as any).Zone)).toBe('undefined');

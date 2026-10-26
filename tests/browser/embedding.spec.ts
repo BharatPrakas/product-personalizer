@@ -196,18 +196,20 @@ describe('A15: registration and lifecycle', () => {
       };
     });
     await page.evaluate(async (base) => {
-      await (window as any).testHost.importAgain(`${base}/product-customizer.js`);
-      await (window as any).testHost.importAgain(`${base}/product-customizer.js`);
-      await (window as any).testHost.importAgain(`${base}/product-customizer.js?v=2`);
+      await (window as any).testHost.importAgain(`${base}/storefront.js`);
+      await (window as any).testHost.importAgain(`${base}/storefront.js`);
+      await (window as any).testHost.importAgain(`${base}/storefront.js?v=2`);
     }, NESTED);
     // A *second copy* of the bundle code (different module URL) must also be a no-op.
-    const mainFile = await page.evaluate(async (base) => {
-      const shim = await (await fetch(`${base}/product-customizer.js`)).text();
-      return /import '\.\/(main(?:-[^']+)?\.js)'/.exec(shim)![1];
+    const lazyFile = await page.evaluate(async (base) => {
+      const entry = await (await fetch(`${base}/storefront.js`)).text();
+      const mainFile = /from '\.\/(main(?:-[^']+)?\.js)'/.exec(entry)![1];
+      const facade = await (await fetch(`${base}/${mainFile}`)).text();
+      return /import\(\s*["`]\.\/(chunk-[^"`]+\.js)["`]\s*\)/.exec(facade)![1];
     }, NESTED);
     await page.evaluate(async (url) => {
       await (window as any).testHost.importAgain(url);
-    }, `${NESTED}/${mainFile}?copy=2`);
+    }, `${NESTED}/${lazyFile}?copy=2`);
     await page.evaluate(() => customElements.whenDefined('zb-product-customizer'));
     expect(await page.evaluate(() => (window as any).defineCalls)).toBe(1);
 

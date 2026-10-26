@@ -1,0 +1,84 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Shared multi-plugin backend. The Product Personalization plugin is the first tenant of this
+  // Worker; future plugins register inside the same Worker (see src/platform/plugin-registry).
+  "name": "zb-plugin-platform",
+  "main": "src/index.ts",
+  // Recent runtime so Hyperdrive + node-postgres (`pg`) work. Do not lower without re-verifying `pg`.
+  "compatibility_date": "2025-09-01",
+  // `nodejs_compat` is REQUIRED for the `pg` driver (Buffer, streams, net shims) on the Workers runtime.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // --- Non-secret vars. Secrets (DB password inside the Hyperdrive connection string, JWT signing
+  // --- key) are NEVER placed here; set them with `wrangler secret put` / `.dev.vars`. See README.
+  "vars": {
+    "ENVIRONMENT": "development",
+    "API_VERSION": "v1",
+    // Comma-separated allowlist for CORS. The hosting storefront/admin origins only.
+    "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300",
+    // Public delivery base for intentionally-public assets. Leave empty to serve every asset through
+    // the Worker's authorized delivery endpoint instead of a public R2 custom domain.
+    "ASSET_PUBLIC_BASE_URL": "",
+    "MAX_UPLOAD_BYTES": "15728640",
+    "LOG_LEVEL": "info",
+    // Local / dev object storage is AWS S3. Replace the placeholders once the bucket and region exist.
+    "STORAGE_DRIVER": "s3",
+    "S3_BUCKET": "REPLACE_WITH_DEV_BUCKET",
+    "S3_REGION": "REPLACE_WITH_REGION"
+  },
+
+  // --- Hyperdrive: pooled connection to the dedicated PostgreSQL plugin database.
+  // Create with: wrangler hyperdrive create <name> --connection-string="postgres://..."
+  // Replace the placeholder id below with the real one it prints (it is environment-specific, not a secret).
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9cd1b962a64f425ab5b47da985012480",
+      // For `wrangler dev`, point at a LOCAL Postgres so you never hit a deployed DB from your laptop.
+      "localConnectionString": "postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_dev"
+    }
+  ],
+
+  "env": {
+    "staging": {
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "API_VERSION": "v1",
+        "CORS_ALLOWED_ORIGINS": "https://staging-admin.example.com,https://staging-shop.example.com,http://localhost:4200",
+        "ASSET_PUBLIC_BASE_URL": "",
+        "MAX_UPLOAD_BYTES": "15728640",
+        "LOG_LEVEL": "info",
+        "STORAGE_DRIVER": "s3",
+        "S3_BUCKET": "REPLACE_WITH_STAGING_BUCKET",
+        "S3_REGION": "REPLACE_WITH_REGION"
+      },
+      "hyperdrive": [
+        { "binding": "HYPERDRIVE", "id": "0000000000000000000000000staging" }
+      ]
+    },
+    "production": {
+      "vars": {
+        "ENVIRONMENT": "production",
+        "API_VERSION": "v1",
+        "CORS_ALLOWED_ORIGINS": "https://admin.example.com,https://shop.example.com,http://localhost:4200",
+        "ASSET_PUBLIC_BASE_URL": "",
+        "MAX_UPLOAD_BYTES": "15728640",
+        "LOG_LEVEL": "warn",
+        "STORAGE_DRIVER": "r2"
+      },
+      "hyperdrive": [
+        { "binding": "HYPERDRIVE", "id": "9cd1b962a64f425ab5b47da985012480" }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "PERSONALIZATION_ASSETS",
+          "bucket_name": "zb-personalization-assets-production"
+        }
+      ]
+    }
+  }
+}

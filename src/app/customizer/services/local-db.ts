@@ -6,8 +6,30 @@
  */
 
 export const DB_NAME = 'zb-personalizer';
-const DB_VERSION = 1;
-export type StoreName = 'assets' | 'configs' | 'drafts';
+// v2 adds two stores for cloud integration (additive, non-destructive): `cloud-cache` (a read-through
+// cache / offline fallback of cloud records) and `sync` (per-record migration + sync status). Existing
+// `assets` / `configs` / `drafts` data is untouched by the upgrade.
+// v3 adds `mappings` (template-to-product links) and `markups` (the reusable area/artwork library),
+// again additive.
+const DB_VERSION = 3;
+export type StoreName =
+  | 'assets'
+  | 'configs'
+  | 'drafts'
+  | 'cloud-cache'
+  | 'sync'
+  | 'mappings'
+  | 'markups';
+
+const STORE_NAMES: readonly StoreName[] = [
+  'assets',
+  'configs',
+  'drafts',
+  'cloud-cache',
+  'sync',
+  'mappings',
+  'markups',
+];
 
 let opening: Promise<IDBDatabase> | null = null;
 
@@ -20,7 +42,7 @@ export function openLocalDb(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      for (const name of ['assets', 'configs', 'drafts'] as const) {
+      for (const name of STORE_NAMES) {
         if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
       }
     };

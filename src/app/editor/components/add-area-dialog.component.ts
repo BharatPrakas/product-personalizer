@@ -1,4 +1,6 @@
+import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, computed, inject, signal } from '@angular/core';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { ShapeSpec } from '../../customizer/models/product.models';
 import { HEART_SHAPE, isSafePathData, parseSvgMask } from '../../customizer/util/geometry';
 import { DialogComponent } from '../../ui/dialog.component';
@@ -9,8 +11,8 @@ type Kind = 'rect' | 'ellipse' | 'path';
 
 interface Option {
   id: Kind;
-  title: string;
-  description: string;
+  title: MessageKey;
+  description: MessageKey;
   icon: IconName;
 }
 
@@ -20,17 +22,17 @@ interface Option {
  */
 @Component({
   selector: 'app-add-area-dialog',
-  imports: [DialogComponent, IconComponent],
+  imports: [DialogComponent, IconComponent, TranslatePipe],
   template: `
     <app-dialog
       [open]="store.addAreaDialogOpen()"
-      title="Add printable area"
-      description="Choose the shape of the region that gets printed. You will draw it on the product photo."
+      [title]="'addarea.title' | t"
+      [description]="'addarea.description' | t"
       [width]="540"
       (closed)="close()"
     >
       <fieldset class="stack stack--tight">
-        <legend class="sr-only">Shape</legend>
+        <legend class="sr-only">{{ 'addarea.shape' | t }}</legend>
         <div class="option-grid">
           @for (o of options; track o.id) {
             <label class="option-card" [class.is-selected]="kind() === o.id">
@@ -43,8 +45,8 @@ interface Option {
                 (change)="kind.set(o.id)"
               />
               <app-icon [name]="o.icon" [size]="22" />
-              <span class="option-card__title">{{ o.title }}</span>
-              <span class="option-card__text">{{ o.description }}</span>
+              <span class="option-card__title">{{ o.title | t }}</span>
+              <span class="option-card__text">{{ o.description | t }}</span>
             </label>
           }
         </div>
@@ -55,7 +57,7 @@ interface Option {
           <div class="row">
             <label class="btn btn--sm">
               <app-icon name="upload" [size]="16" />
-              <span>Upload SVG mask</span>
+              <span>{{ 'addarea.upload-svg' | t }}</span>
               <input
                 class="sr-only"
                 type="file"
@@ -63,10 +65,12 @@ interface Option {
                 (change)="onSvg($event)"
               />
             </label>
-            <button type="button" class="btn btn--sm" (click)="useHeart()">Heart</button>
+            <button type="button" class="btn btn--sm" (click)="useHeart()">
+              {{ 'addarea.heart' | t }}
+            </button>
           </div>
           <label class="field">
-            <span class="field-label">Or paste SVG path data</span>
+            <span class="field-label">{{ 'addarea.paste' | t }}</span>
             <textarea
               class="input"
               rows="3"
@@ -85,11 +89,11 @@ interface Option {
                 class="shape-preview"
                 [attr.viewBox]="'0 0 ' + c.viewBox[0] + ' ' + c.viewBox[1]"
                 role="img"
-                aria-label="Preview of the custom shape"
+                [attr.aria-label]="'addarea.preview-aria' | t"
               >
                 <path [attr.d]="c.d" />
               </svg>
-              <span class="field-hint">Preview. The shape scales to the area you draw.</span>
+              <span class="field-hint">{{ 'addarea.preview-hint' | t }}</span>
             </div>
           }
         </div>
@@ -98,42 +102,45 @@ interface Option {
       @if (!store.mockup()) {
         <p class="notice notice--warning">
           <app-icon name="alert" />
-          <span
-            >Printable areas are placed on a product photo. Add a mockup first, then come back
-            here.</span
-          >
+          <span>{{ 'addarea.need-mockup' | t }}</span>
         </p>
       }
 
       <ng-container dialogActions>
-        <button type="button" class="btn" (click)="close()">Cancel</button>
+        <button type="button" class="btn" (click)="close()">{{ 'common.cancel' | t }}</button>
         <button type="button" class="btn" [disabled]="!ready()" (click)="placeAtCentre()">
-          Place in the centre
+          {{ 'addarea.centre' | t }}
         </button>
         <button type="button" class="btn btn--primary" [disabled]="!ready()" (click)="draw()">
-          <app-icon name="pen" [size]="16" /> Draw on mockup
+          <app-icon name="pen" [size]="16" /> {{ 'addarea.draw' | t }}
         </button>
       </ng-container>
     </app-dialog>
   `,
 })
 export class AddAreaDialogComponent {
+  private readonly i18n = inject(I18n);
   protected readonly store = inject(EditorStore);
 
   protected readonly options: Option[] = [
     {
       id: 'rect',
-      title: 'Rectangle',
-      description: 'Labels, chest prints, photo panels',
+      title: 'addarea.opt.rect.title',
+      description: 'addarea.opt.rect.desc',
       icon: 'square',
     },
     {
       id: 'ellipse',
-      title: 'Circle or ellipse',
-      description: 'Round coasters, caps, badges',
+      title: 'addarea.opt.ellipse.title',
+      description: 'addarea.opt.ellipse.desc',
       icon: 'circle',
     },
-    { id: 'path', title: 'Custom shape', description: 'Any outline from an SVG', icon: 'vector' },
+    {
+      id: 'path',
+      title: 'addarea.opt.path.title',
+      description: 'addarea.opt.path.desc',
+      icon: 'vector',
+    },
   ];
 
   protected readonly kind = signal<Kind>('rect');
@@ -155,9 +162,7 @@ export class AddAreaDialogComponent {
     const mask = parseSvgMask(await file.text());
     if (!mask) {
       this.custom.set(null);
-      this.pathProblem.set(
-        'That SVG has no usable outline. It needs a viewBox and a path, polygon, circle, ellipse or rect.',
-      );
+      this.pathProblem.set(this.i18n.t('addarea.error.svg'));
       return;
     }
     this.pathProblem.set(null);
@@ -174,9 +179,7 @@ export class AddAreaDialogComponent {
     }
     if (!isSafePathData(text)) {
       this.custom.set(null);
-      this.pathProblem.set(
-        'Path data must start with M and use only SVG path commands and numbers.',
-      );
+      this.pathProblem.set(this.i18n.t('addarea.error.path'));
       return;
     }
     this.pathProblem.set(null);

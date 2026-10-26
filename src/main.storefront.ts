@@ -64,5 +64,3 @@ export function registerProductCustomizer(): Promise<void> {
   });
   return ready;
 }
-
-void registerProductCustomizer();
