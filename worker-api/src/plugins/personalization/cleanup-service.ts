@@ -23,7 +23,6 @@ import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
 import { type ObjectStorage, customizationKeyPrefix } from '../../storage/object-storage';
-import { STORAGE_FOLDER } from './types';
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -196,7 +195,7 @@ export class CleanupService {
     let failed = 0;
     for (const asset of claimed.rows) {
       try {
-        if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id, STORAGE_FOLDER))) {
+        if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id))) {
           throw new Error('object key is outside the private customization prefix');
         }
         await this.ctx.storage().delete(asset.object_key);

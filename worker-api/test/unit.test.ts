@@ -21,32 +21,25 @@ describe('image-sniff', () => {
 });
 
 describe('object key generation', () => {
-  it('lays assets out as stores/<store>/<plugin-folder>/assets/<uuid>.<ext>', () => {
-    const a = generateObjectKey({ storageFolder: 'product-personalization', storeId: 'store_x', type: 'image/png' });
-    const b = generateObjectKey({ storageFolder: 'product-personalization', storeId: 'store_x', type: 'image/png' });
+  it('lays assets out as stores/<store>/product-personalization/assets/<uuid>.<ext>', () => {
+    const a = generateObjectKey({ storeId: 'store_x', type: 'image/png' });
+    const b = generateObjectKey({ storeId: 'store_x', type: 'image/png' });
     expect(a).toMatch(/^stores\/store_x\/product-personalization\/assets\/[0-9a-f-]{36}\.png$/);
     expect(a).not.toEqual(b);
-    expect(a.startsWith(assetKeyPrefix('store_x', 'product-personalization'))).toBe(true);
+    expect(a.startsWith(assetKeyPrefix('store_x'))).toBe(true);
   });
 
-  it('keeps two plugins and two stores in separate prefixes', () => {
-    const forms = generateObjectKey({ storageFolder: 'custom-forms', storeId: 'store_x', type: 'image/jpeg' });
-    expect(forms.startsWith('stores/store_x/custom-forms/assets/')).toBe(true);
-    expect(forms.startsWith(assetKeyPrefix('store_x', 'product-personalization'))).toBe(false);
-    expect(forms.startsWith(assetKeyPrefix('store_y', 'custom-forms'))).toBe(false);
+  it('keeps two stores in separate prefixes', () => {
+    const key = generateObjectKey({ storeId: 'store_x', type: 'image/jpeg' });
+    expect(key.startsWith(assetKeyPrefix('store_x'))).toBe(true);
+    expect(key.startsWith(assetKeyPrefix('store_y'))).toBe(false);
   });
 
   it('sanitizes a hostile store id so it cannot climb the tree', () => {
-    const key = generateObjectKey({ storageFolder: 'product-personalization', storeId: '../../etc/passwd', type: 'image/jpeg' });
+    const key = generateObjectKey({ storeId: '../../etc/passwd', type: 'image/jpeg' });
     expect(key.startsWith('stores/')).toBe(true);
     expect(key.includes('..')).toBe(false);
     expect(key.includes('/etc/')).toBe(false);
-  });
-
-  it('rejects an invalid plugin storage folder', () => {
-    for (const folder of ['../x', 'Bad_Folder', 'a/b', '', 'x']) {
-      expect(() => generateObjectKey({ storageFolder: folder, storeId: 's', type: 'image/png' })).toThrow();
-    }
   });
 });
 

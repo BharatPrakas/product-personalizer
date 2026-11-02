@@ -30,7 +30,6 @@ import { PersonalizationRepository, type AssetRow, type ConfigRow, type ConfigVe
 import { signAsset, upgradeLegacyAssetUrls } from './asset-signature';
 import { validateProductConfig } from './validation';
 import {
-  STORAGE_FOLDER,
   type AssetDto,
   type ConfigRecordDto,
   type ConfigVersionDto,
@@ -144,7 +143,7 @@ export class PersonalizationService {
 
   /** Refuse to touch any object outside this store's own asset prefix. */
   private assertOwnKey(objectKey: string): void {
-    if (!objectKey.startsWith(assetKeyPrefix(this.ctx.storeId, STORAGE_FOLDER))) {
+    if (!objectKey.startsWith(assetKeyPrefix(this.ctx.storeId))) {
       throw new Error('Asset key is outside this store\'s asset prefix.');
     }
   }
@@ -406,11 +405,7 @@ export class PersonalizationService {
       configDbId = config?.id ?? null;
     }
 
-    const objectKey = generateObjectKey({
-      storageFolder: STORAGE_FOLDER,
-      storeId: this.ctx.storeId,
-      type: sniffed.type,
-    });
+    const objectKey = generateObjectKey({ storeId: this.ctx.storeId, type: sniffed.type });
     await this.ctx.storage.put(objectKey, input.bytes, {
       contentType: sniffed.type,
       sha256: checksum,

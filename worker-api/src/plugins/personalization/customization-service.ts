@@ -39,7 +39,7 @@ import {
 import { issueCustomerToken, verifyCustomerToken } from './customer-token';
 import type { ResolvedStore } from './storefront-service';
 import { StorefrontRepository } from './storefront-repository';
-import { STORAGE_FOLDER, type CursorPageMeta } from './types';
+import type { CursorPageMeta } from './types';
 
 export interface CustomizationContext {
   db: Database;
@@ -201,11 +201,7 @@ export class CustomizationService {
     const checksum = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
     const storage = this.ctx.storage();
-    const objectKey = generateCustomizationObjectKey({
-      storageFolder: STORAGE_FOLDER,
-      storeId: store.storeId,
-      type: sniffed.type,
-    });
+    const objectKey = generateCustomizationObjectKey({ storeId: store.storeId, type: sniffed.type });
     await storage.put(objectKey, input.bytes, { contentType: sniffed.type, sha256: checksum, storeId: store.storeId });
     let row: CustomerAssetRow;
     try {
@@ -399,7 +395,7 @@ export class CustomizationService {
   }
 
   private async openAsset(asset: CustomerAssetRow) {
-    if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id, STORAGE_FOLDER))) {
+    if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id))) {
       throw new NotFoundError('That file was not found.');
     }
     const object = await this.ctx.storage().get(asset.object_key);

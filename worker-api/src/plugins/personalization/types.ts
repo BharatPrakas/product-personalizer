@@ -7,9 +7,6 @@
  * model. `ProductConfigLike` captures only what the backend touches.
  */
 
-/** Folder under `stores/<store>/` for this service's assets (artwork, customer images, mockups). */
-export const STORAGE_FOLDER = 'product-personalization';
-
 /** The subset of ProductConfig the backend reads. The rest is preserved verbatim. */
 export interface ProductConfigLike {
   schemaVersion: number;

@@ -22,7 +22,7 @@ import {
   collectAssetLocators,
   rewriteAssetReferences,
 } from './storefront-assets';
-import { STORAGE_FOLDER, type MappingScope, type ProductConfigLike } from './types';
+import type { MappingScope, ProductConfigLike } from './types';
 import { STORE_KEY_PATTERN } from './validation';
 
 export interface StorefrontContext {
@@ -129,7 +129,7 @@ export class StorefrontService {
     }
     asset ??= await this.repo.getServableAsset(id);
     if (!asset) return null;
-    if (!asset.object_key.startsWith(assetKeyPrefix(asset.store_id, STORAGE_FOLDER))) return null;
+    if (!asset.object_key.startsWith(assetKeyPrefix(asset.store_id))) return null;
     const store = await this.resolveStore(asset.store_id);
     return store ? { asset, store, signed } : null;
   }

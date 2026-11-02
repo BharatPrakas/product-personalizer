@@ -28,40 +28,31 @@ function safeSegment(value: string): string {
 /**
  * Storage layout (one bucket per environment):
  *
- *   plugins/<plugin-folder>/...                       plugin code bundles (storefront.js, store-admin.js)
- *   stores/<store>/<plugin-folder>/assets/<file>      per-store, per-plugin assets (this module)
+ *   stores/<store>/product-personalization/assets/<file>           merchant assets (this module)
+ *   stores/<store>/product-personalization/customizations/<file>   PRIVATE customer files
  *
- * Every plugin writes only under its own `<plugin-folder>`, inside the tenant's `stores/<store>/` prefix,
- * so artwork and customer images of one plugin never mix with another plugin's or another store's.
+ * Everything sits inside the tenant's `stores/<store>/` prefix, so one store's files never mix with
+ * another's. The `product-personalization` segment namespaces this service inside a bucket that may be
+ * shared with other services; every stored `object_key` already carries it, so it must not change.
  */
-const FOLDER_PATTERN = /^[a-z][a-z0-9-]{1,62}$/;
-
-/** A plugin's storage folder is a developer-defined constant, so it is validated, not hashed. */
-export function assertStorageFolder(folder: string): string {
-  if (!FOLDER_PATTERN.test(folder)) {
-    throw new Error(`Invalid plugin storage folder "${folder}". Use lowercase letters, digits and hyphens.`);
-  }
-  return folder;
-}
+const NAMESPACE = 'product-personalization';
 
 export interface KeyParts {
-  /** The plugin's storage folder, e.g. `product-personalization`. */
-  storageFolder: string;
   storeId: string;
   type: DetectedImageType;
 }
 
-/** `stores/<store>/<plugin-folder>/assets/` — everything one plugin stores for one store. */
-export function assetKeyPrefix(storeId: string, storageFolder: string): string {
-  return `stores/${safeSegment(storeId)}/${assertStorageFolder(storageFolder)}/assets/`;
+/** `stores/<store>/product-personalization/assets/` — every merchant asset of one store. */
+export function assetKeyPrefix(storeId: string): string {
+  return `stores/${safeSegment(storeId)}/${NAMESPACE}/assets/`;
 }
 
 /**
- * `stores/<store>/<plugin-folder>/assets/<uuid>.<ext>`. Built from sanitized, tenant-scoped parts so a
- * client can never influence the key or climb the tree.
+ * `stores/<store>/product-personalization/assets/<uuid>.<ext>`. Built from sanitized, tenant-scoped
+ * parts so a client can never influence the key or climb the tree.
  */
-export function generateObjectKey({ storageFolder, storeId, type }: KeyParts): string {
-  const key = `${assetKeyPrefix(storeId, storageFolder)}${crypto.randomUUID()}.${EXTENSION[type]}`;
+export function generateObjectKey({ storeId, type }: KeyParts): string {
+  const key = `${assetKeyPrefix(storeId)}${crypto.randomUUID()}.${EXTENSION[type]}`;
   if (key.includes('..') || key.startsWith('/') || key.includes('//')) {
     throw new Error('Refusing to build an unsafe object key.');
   }
@@ -69,17 +60,17 @@ export function generateObjectKey({ storageFolder, storeId, type }: KeyParts): s
 }
 
 /**
- * `stores/<store>/<plugin-folder>/customizations/` — PRIVATE customer files (uploaded artwork, rendered
- * previews). Deliberately a sibling of `assets/`, never beneath it: the public asset route only serves
- * keys under `assets/`, so a customer file can never be delivered through it.
+ * `stores/<store>/product-personalization/customizations/` — PRIVATE customer files (uploaded artwork,
+ * rendered previews). Deliberately a sibling of `assets/`, never beneath it: the public asset route only
+ * serves keys under `assets/`, so a customer file can never be delivered through it.
  */
-export function customizationKeyPrefix(storeId: string, storageFolder: string): string {
-  return `stores/${safeSegment(storeId)}/${assertStorageFolder(storageFolder)}/customizations/`;
+export function customizationKeyPrefix(storeId: string): string {
+  return `stores/${safeSegment(storeId)}/${NAMESPACE}/customizations/`;
 }
 
-/** `stores/<store>/<plugin-folder>/customizations/<uuid>.<ext>`, built from sanitized parts only. */
-export function generateCustomizationObjectKey({ storageFolder, storeId, type }: KeyParts): string {
-  const key = `${customizationKeyPrefix(storeId, storageFolder)}${crypto.randomUUID()}.${EXTENSION[type]}`;
+/** `stores/<store>/product-personalization/customizations/<uuid>.<ext>`, built from sanitized parts only. */
+export function generateCustomizationObjectKey({ storeId, type }: KeyParts): string {
+  const key = `${customizationKeyPrefix(storeId)}${crypto.randomUUID()}.${EXTENSION[type]}`;
   if (key.includes('..') || key.startsWith('/') || key.includes('//')) {
     throw new Error('Refusing to build an unsafe object key.');
   }

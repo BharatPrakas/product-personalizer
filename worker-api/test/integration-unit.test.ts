@@ -116,12 +116,12 @@ describe('customer tokens', () => {
 
 describe('customer object keys', () => {
   it('live in a private prefix that is a sibling of — never under — the public assets prefix', () => {
-    const priv = customizationKeyPrefix('store_a', 'product-personalization');
-    const pub = assetKeyPrefix('store_a', 'product-personalization');
+    const priv = customizationKeyPrefix('store_a');
+    const pub = assetKeyPrefix('store_a');
     expect(priv).toBe('stores/store_a/product-personalization/customizations/');
     expect(priv.startsWith(pub)).toBe(false);
     expect(pub.startsWith(priv)).toBe(false);
-    const k = generateCustomizationObjectKey({ storageFolder: 'product-personalization', storeId: 'store_a', type: 'image/png' });
+    const k = generateCustomizationObjectKey({ storeId: 'store_a', type: 'image/png' });
     expect(k.startsWith(priv)).toBe(true);
     expect(k.endsWith('.png')).toBe(true);
   });
