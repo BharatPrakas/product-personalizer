@@ -22,7 +22,7 @@ import {
   type NewMapping,
 } from './mapping-repository';
 import { decodeCursor, encodeCursor } from './pagination';
-import { type PluginContext, stamp, writeAudit } from './support';
+import { type StoreContext, stamp, writeAudit } from './support';
 import type {
   ConfigLifecycleStatus,
   CursorPageMeta,
@@ -95,7 +95,7 @@ function mappingConflict(existing: MappingConflictDto['existing']): ApiError {
 export class MappingService {
   private readonly repo: MappingRepository;
 
-  constructor(private readonly ctx: PluginContext) {
+  constructor(private readonly ctx: StoreContext) {
     this.repo = new MappingRepository(ctx.db);
   }
 

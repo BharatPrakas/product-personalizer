@@ -203,7 +203,7 @@ describe('mappings', () => {
     const m = (await json(await mapTo('cfg-aud', 'product', 'p-aud'))).data;
     await call(`${ADMIN}/mappings/${m.id}`, { method: 'DELETE' });
     const rows = await queryDb<{ action: string; resource_type: string }>(
-      `SELECT action, resource_type FROM platform.audit_logs WHERE action LIKE 'mapping.%' ORDER BY created_at`,
+      `SELECT action, resource_type FROM personalization.audit_logs WHERE action LIKE 'mapping.%' ORDER BY created_at`,
     );
     expect(rows.map((r) => r.action)).toEqual(['mapping.create', 'mapping.delete']);
     expect(rows[0].resource_type).toBe('mapping');

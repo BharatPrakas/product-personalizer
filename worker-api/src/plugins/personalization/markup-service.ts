@@ -7,7 +7,7 @@
 import type { SqlExecutor } from '../../database/connection';
 import { ApiError, NotFoundError, ValidationError } from '../../shared/errors';
 import { decodeCursor, encodeCursor, type Cursor } from './pagination';
-import { type PluginContext, isUniqueViolation, stamp, writeAudit } from './support';
+import { type StoreContext, isUniqueViolation, stamp, writeAudit } from './support';
 import type { CursorPageMeta, MarkupDto, MarkupKind } from './types';
 import { validateMarkupPayload } from './validation';
 
@@ -115,7 +115,7 @@ export class MarkupRepository {
 export class MarkupService {
   private readonly repo: MarkupRepository;
 
-  constructor(private readonly ctx: PluginContext) {
+  constructor(private readonly ctx: StoreContext) {
     this.repo = new MarkupRepository(ctx.db);
   }
 

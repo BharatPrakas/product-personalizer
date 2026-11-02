@@ -1,6 +1,6 @@
 /**
- * HTTP handlers for the personalization plugin. Keeps transport concerns (parsing, status codes,
- * streaming) out of the service, which stays pure business logic. Each handler builds a
+ * HTTP handlers for configurations, versions and merchant assets. Keeps transport concerns (parsing,
+ * status codes, streaming) out of the service, which stays pure business logic. Each handler builds a
  * request-scoped `PersonalizationService` from the typed context.
  */
 

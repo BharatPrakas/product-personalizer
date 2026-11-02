@@ -1,9 +1,9 @@
 /**
  * Server-to-server integration endpoints.
  *
- *  - `POST /api/v1/integrations/personalization/events`  signed order events from ZenBasket (contract v1).
- *  - `/plugins/personalization/integration/credentials`         merchant-authenticated credential
- *    management (create / list / rotate / revoke the per-store signing secrets).
+ *  - `POST /events` (integration routes)   signed order events from ZenBasket (contract v1).
+ *  - `/integration/credentials` (merchant routes)   merchant-authenticated credential management
+ *    (create / list / rotate / revoke the per-store signing secrets).
  *
  * The callback is unauthenticated by Bearer token on purpose: its authentication IS the HMAC signature
  * over the exact request body. The store is taken from the credential that signed it, never from the
@@ -22,7 +22,6 @@ import {
 } from '../../shared/errors';
 import { created, noContent, ok } from '../../shared/responses';
 import type { RateLimiter } from '../../shared/rate-limit';
-import { StorePluginsRepository } from '../../platform/plugin-permissions/repository';
 import {
   DEFAULT_ROTATION_GRACE_SECONDS,
   IntegrationCredentialsService,
@@ -30,7 +29,6 @@ import {
 import { checkTimestamp, signatureMatches } from '../../platform/integration-credentials/signature';
 import { recordAudit } from '../../platform/tenant-management/audit';
 import { OrderCallbackService, type OrderEvent } from './order-callback-service';
-import { PLUGIN_ID } from './types';
 import {
   MAX_CALLBACK_BODY_BYTES,
   ORDER_EVENT_TYPE_CONFIRMED,
@@ -42,7 +40,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function credentialsFor(c: Context<AppEnv>): IntegrationCredentialsService {
-  return new IntegrationCredentialsService(c.get('db'), PLUGIN_ID, c.get('config').integrationEncryptionKey);
+  return new IntegrationCredentialsService(c.get('db'), c.get('config').integrationEncryptionKey);
 }
 
 /**
@@ -109,9 +107,6 @@ export function orderEvents(limiter: RateLimiter) {
     if (event.type !== ORDER_EVENT_TYPE_CONFIRMED) {
       throw new ApiError(422, 'unsupported_event_type', `Only "${ORDER_EVENT_TYPE_CONFIRMED}" events are accepted.`);
     }
-    if (!(await new StorePluginsRepository(c.get('db')).isEnabled(credential.storeId, PLUGIN_ID))) {
-      throw new ForbiddenError(`The "${PLUGIN_ID}" plugin is not enabled for this store.`);
-    }
 
     const result = await new OrderCallbackService({
       db: c.get('db'),
@@ -147,7 +142,6 @@ async function audit(c: Context<AppEnv>, action: string, credentialId: string): 
     await recordAudit(c.get('db'), {
       requestId: c.get('requestId'),
       storeId: c.get('tenant').storeId,
-      pluginId: PLUGIN_ID,
       actor: auth.subject ?? auth.tokenType,
       action,
       resourceType: 'integration_credential',

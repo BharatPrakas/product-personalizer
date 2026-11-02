@@ -1,5 +1,5 @@
 /**
- * Data access for the personalization plugin. EVERY query is scoped by `store_id`, so a store can
+ * Data access for configurations, versions and merchant assets. EVERY query is scoped by `store_id`, so a store can
  * never reach another store's row by guessing an id. The repository is constructed with an
  * `SqlExecutor`, which is either the request database or an open transaction — so the service layer
  * can run multi-statement operations (publish, delete-with-cleanup) atomically.
@@ -37,7 +37,6 @@ export interface ConfigVersionRow {
 export interface AssetRow {
   id: string;
   store_id: string;
-  plugin_id: string;
   config_id: string | null;
   object_key: string;
   original_filename: string | null;
@@ -56,7 +55,7 @@ const CONFIG_COLS = `id, store_id, client_config_id, name, schema_version, draft
   created_at_ms, updated_at_ms, published_at_ms, archived_at_ms,
   (SELECT count(*)::int FROM personalization.mappings mp
      WHERE mp.config_id = configs.id AND mp.store_id = configs.store_id) AS mapping_count`;
-const ASSET_COLS = `id, store_id, plugin_id, config_id, object_key, original_filename, content_type,
+const ASSET_COLS = `id, store_id, config_id, object_key, original_filename, content_type,
   size_bytes, width, height, checksum_sha256, status, client_ref, created_at_ms, updated_at_ms`;
 
 export class PersonalizationRepository {

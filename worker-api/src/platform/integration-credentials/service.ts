@@ -57,7 +57,6 @@ export class IntegrationCredentialsService {
 
   constructor(
     private readonly db: Database,
-    private readonly pluginId: string,
     /** Raw `INTEGRATION_ENCRYPTION_KEY`, or null when it is not configured. */
     private readonly encryptionKey: string | null,
     private readonly now: () => Date = () => new Date(),
@@ -79,7 +78,6 @@ export class IntegrationCredentialsService {
     const row = await this.repo.insert({
       id,
       storeId,
-      pluginId: this.pluginId,
       label,
       secretEncrypted: encryptSecret(key, storeId, id, secret),
       createdBy,
@@ -88,7 +86,7 @@ export class IntegrationCredentialsService {
   }
 
   async list(storeId: string): Promise<CredentialMetadataDto[]> {
-    return (await this.repo.list(storeId, this.pluginId)).map(toMetadata);
+    return (await this.repo.list(storeId)).map(toMetadata);
   }
 
   /**
@@ -107,28 +105,27 @@ export class IntegrationCredentialsService {
     const secret = generateSecret();
     const { fresh, previous } = await runInTransaction(this.db, async (tx) => {
       const repo = new IntegrationCredentialsRepository(tx);
-      const current = await repo.get(storeId, this.pluginId, id);
+      const current = await repo.get(storeId, id);
       if (!current) throw new NotFoundError('That credential was not found.');
       if (current.status !== 'active') throw new ConflictError('That credential is already revoked.');
       const inserted = await repo.insert({
         id: newId,
         storeId,
-        pluginId: this.pluginId,
         label: current.label,
         secretEncrypted: encryptSecret(key, storeId, newId, secret),
         createdBy,
       });
-      if (graceSeconds <= 0) await repo.revoke(storeId, this.pluginId, id, at);
-      else await repo.setExpiry(storeId, this.pluginId, id, new Date(at.getTime() + graceSeconds * 1000));
-      return { fresh: inserted, previous: (await repo.get(storeId, this.pluginId, id))! };
+      if (graceSeconds <= 0) await repo.revoke(storeId, id, at);
+      else await repo.setExpiry(storeId, id, new Date(at.getTime() + graceSeconds * 1000));
+      return { fresh: inserted, previous: (await repo.get(storeId, id))! };
     });
     return { credential: { ...toMetadata(fresh), secret }, previous: toMetadata(previous) };
   }
 
   async revoke(storeId: string, id: string): Promise<void> {
-    const revoked = await this.repo.revoke(storeId, this.pluginId, id, this.now());
+    const revoked = await this.repo.revoke(storeId, id, this.now());
     if (revoked) return;
-    const existing = await this.repo.get(storeId, this.pluginId, id);
+    const existing = await this.repo.get(storeId, id);
     // Revoking an already-revoked credential is a no-op success; an unknown id is a 404.
     if (!existing) throw new NotFoundError('That credential was not found.');
   }
@@ -139,7 +136,7 @@ export class IntegrationCredentialsService {
    */
   async resolveForVerification(id: string): Promise<VerifiedCredential | null> {
     const key = this.masterKey();
-    const row = await this.repo.findForVerification(this.pluginId, id, this.now());
+    const row = await this.repo.findForVerification(id, this.now());
     if (!row) return null;
     try {
       return { id: row.id, storeId: row.store_id, secret: decryptSecret(key, row.store_id, row.id, row.secret_encrypted) };

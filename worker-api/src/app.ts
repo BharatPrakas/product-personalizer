@@ -15,7 +15,6 @@ import { cors } from './middleware/cors';
 import { withDatabase } from './middleware/database';
 import { authenticate } from './middleware/authentication';
 import { tenantContext } from './middleware/tenant-context';
-import { requirePluginEnabled } from './middleware/authorization';
 import { onError, notFound } from './middleware/error-handler';
 import { health } from './platform/controller';
 import * as controller from './plugins/personalization/controller';
@@ -23,7 +22,6 @@ import * as customizations from './plugins/personalization/customization-control
 import * as integration from './plugins/personalization/integration-controller';
 import * as mappings from './plugins/personalization/mapping-controller';
 import * as storefront from './plugins/personalization/storefront-controller';
-import { PLUGIN_ID } from './plugins/personalization/types';
 import { ok } from './shared/responses';
 import { RateLimiter, type RateLimitStore } from './shared/rate-limit';
 
@@ -37,7 +35,6 @@ export interface AppDependencies {
 /** Merchant routes. Mounted behind authentication and tenant resolution; the store comes from the token. */
 function merchantRoutes(): Hono<AppEnv> {
   const router = new Hono<AppEnv>();
-  router.use('*', requirePluginEnabled(PLUGIN_ID));
 
   // Configurations
   router.get('/configs', controller.listConfigs);

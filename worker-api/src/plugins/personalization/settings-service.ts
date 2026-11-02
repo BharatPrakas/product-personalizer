@@ -1,23 +1,14 @@
 /**
- * Per-store plugin settings, kept in the platform's existing `store_plugins.settings` jsonb (no new
- * column). Currently one setting: `storefrontOrigins`, the browser origins allowed to call the
- * PUBLIC storefront routes cross-origin. Empty (the default) means no cross-origin access.
+ * Per-store settings. Currently one setting: `storefrontOrigins`, the browser origins allowed to call
+ * the PUBLIC storefront routes cross-origin. Empty (the default) means no cross-origin access.
  */
 
-import { StorePluginsRepository } from '../../platform/plugin-permissions/repository';
-import { NotFoundError, ValidationError, type FieldIssue } from '../../shared/errors';
-import { type PluginContext, writeAudit } from './support';
-import { PLUGIN_ID } from './types';
+import { StoreSettingsRepository } from '../../modules/store-settings/repository';
+import { ValidationError, type FieldIssue } from '../../shared/errors';
+import { type StoreContext, writeAudit } from './support';
 
 export interface StorefrontSettingsDto {
   storefrontOrigins: string[];
-}
-
-/** Read the stored list defensively: the jsonb is not guaranteed to hold what we wrote. */
-export function originsFromSettings(settings: Record<string, unknown> | undefined): string[] {
-  const raw = settings?.['storefrontOrigins'];
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((o): o is string => typeof o === 'string').map((o) => o.toLowerCase());
 }
 
 /** `https://Shop.example.com` -> `https://shop.example.com`; null if it is not a bare http(s) origin. */
@@ -35,15 +26,15 @@ export function normalizeOrigin(value: string): string | null {
 }
 
 export class SettingsService {
-  private readonly repo: StorePluginsRepository;
+  private readonly repo: StoreSettingsRepository;
 
-  constructor(private readonly ctx: PluginContext) {
-    this.repo = new StorePluginsRepository(ctx.db);
+  constructor(private readonly ctx: StoreContext) {
+    this.repo = new StoreSettingsRepository(ctx.db);
   }
 
   async getStorefront(): Promise<StorefrontSettingsDto> {
-    const record = await this.repo.get(this.ctx.storeId, PLUGIN_ID);
-    return { storefrontOrigins: originsFromSettings(record?.settings) };
+    const settings = await this.repo.get(this.ctx.storeId);
+    return { storefrontOrigins: settings?.storefrontOrigins ?? [] };
   }
 
   async setStorefrontOrigins(input: string[]): Promise<StorefrontSettingsDto> {
@@ -63,9 +54,8 @@ export class SettingsService {
     if (issues.length > 0) throw new ValidationError(issues);
 
     const storefrontOrigins = [...origins];
-    const record = await this.repo.updateSettings(this.ctx.storeId, PLUGIN_ID, { storefrontOrigins });
-    if (!record) throw new NotFoundError('The plugin is not installed for this store.');
-    await writeAudit(this.ctx, 'settings.update', 'settings', PLUGIN_ID, { storefrontOrigins: storefrontOrigins.length });
+    await this.repo.setStorefrontOrigins(this.ctx.storeId, storefrontOrigins);
+    await writeAudit(this.ctx, 'settings.update', 'settings', this.ctx.storeId, { storefrontOrigins: storefrontOrigins.length });
     return { storefrontOrigins };
   }
 }

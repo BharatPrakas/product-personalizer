@@ -141,7 +141,7 @@ describe('markups', () => {
     await call(`${ADMIN}/markups/${m.id}`, { method: 'PUT', body: { name: 'n2' } });
     await call(`${ADMIN}/markups/${m.id}`, { method: 'DELETE' });
     const rows = await queryDb<{ action: string }>(
-      `SELECT action FROM platform.audit_logs WHERE action LIKE 'markup.%' ORDER BY created_at, action`,
+      `SELECT action FROM personalization.audit_logs WHERE action LIKE 'markup.%' ORDER BY created_at, action`,
     );
     expect(rows.map((r) => r.action).sort()).toEqual(['markup.create', 'markup.delete', 'markup.update']);
   });

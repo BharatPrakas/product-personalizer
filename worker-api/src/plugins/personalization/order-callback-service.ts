@@ -25,7 +25,6 @@ import { ApiError, ConflictError, NotFoundError } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
 import { recordAudit } from '../../platform/tenant-management/audit';
 import { CustomizationRepository } from './customization-repository';
-import { PLUGIN_ID } from './types';
 
 export interface OrderEventLine {
   id: string;
@@ -91,7 +90,6 @@ export class OrderCallbackService {
           await recordAudit(this.ctx.db, {
             requestId: this.ctx.requestId,
             storeId: args.storeId,
-            pluginId: PLUGIN_ID,
             actor: `integration:${args.credentialId}`,
             action: 'order.link',
             resourceType: 'customization',

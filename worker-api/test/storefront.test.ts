@@ -193,16 +193,6 @@ describe('storefront tenancy and unknown stores', () => {
     }
     expect(unknown.headers.get('etag')).toBe(known.headers.get('etag'));
   });
-
-  it('does not serve a store whose plugin is not enabled', async () => {
-    await seedPublished('cfg-off', STORE_A);
-    await mapTo('cfg-off', 'product', 'prod-off');
-    await (await import('./helpers')).queryDb(
-      `UPDATE platform.store_plugins SET status = 'disabled' WHERE store_id = $1`,
-      [STORE_A],
-    );
-    expect(await data(await pub(cfgUrl('prod-off', STORE_A)))).toEqual({ personalizable: false });
-  });
 });
 
 describe('storefront caching', () => {

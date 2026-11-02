@@ -34,7 +34,3 @@ export interface AppEnv {
   Bindings: Env;
   Variables: AppVariables;
 }
-
-export function hasScope(auth: AuthPrincipal, scope: string): boolean {
-  return auth.scopes.includes(scope) || auth.scopes.includes('*');
-}

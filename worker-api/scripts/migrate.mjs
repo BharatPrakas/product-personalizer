@@ -4,12 +4,14 @@
  *
  * Runs from a trusted machine or CI — NEVER inside a Worker request (no destructive schema change
  * happens on the hot path). It applies every `migrations/NNNN_*.sql` file in order, each inside its
- * own transaction, and records it in `platform.schema_migrations` with a checksum.
+ * own transaction, and records it in `personalization.schema_migrations` with a checksum.
  *
  * Guarantees:
  *   - Idempotent: an already-applied migration is skipped.
  *   - Append-only: if a previously-applied file's checksum changed, it refuses to run (you must add a
  *     new migration instead of editing a shipped one).
+ *   - It refuses a database created by the pre-baseline migrations (their ledger lived in the
+ *     `platform` schema): such a database has to be dropped and recreated, not migrated in place.
  *
  * Usage:
  *   DATABASE_URL=postgres://user:pass@host:5432/db node scripts/migrate.mjs           # apply pending
@@ -47,10 +49,21 @@ function loadMigrations() {
     });
 }
 
+async function assertNotPreBaseline(client) {
+  const { rows } = await client.query("SELECT to_regclass('platform.schema_migrations') AS ledger");
+  if (rows[0].ledger) {
+    throw new Error(
+      'This database was created by the pre-baseline migrations (platform.schema_migrations exists). ' +
+        'Drop its "platform" and "personalization" schemas (or recreate the database) and run the migrations again.',
+    );
+  }
+}
+
 async function ensureTracking(client) {
-  await client.query('CREATE SCHEMA IF NOT EXISTS platform');
+  await assertNotPreBaseline(client);
+  await client.query('CREATE SCHEMA IF NOT EXISTS personalization');
   await client.query(`
-    CREATE TABLE IF NOT EXISTS platform.schema_migrations (
+    CREATE TABLE IF NOT EXISTS personalization.schema_migrations (
       version    text PRIMARY KEY,
       checksum   text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now()
@@ -59,7 +72,7 @@ async function ensureTracking(client) {
 }
 
 async function appliedMap(client) {
-  const { rows } = await client.query('SELECT version, checksum FROM platform.schema_migrations');
+  const { rows } = await client.query('SELECT version, checksum FROM personalization.schema_migrations');
   return new Map(rows.map((r) => [r.version, r.checksum]));
 }
 
@@ -98,7 +111,7 @@ async function migrate(client) {
     try {
       await client.query(m.sql);
       await client.query(
-        'INSERT INTO platform.schema_migrations (version, checksum) VALUES ($1, $2)',
+        'INSERT INTO personalization.schema_migrations (version, checksum) VALUES ($1, $2)',
         [m.file, m.checksum],
       );
       await client.query('COMMIT');

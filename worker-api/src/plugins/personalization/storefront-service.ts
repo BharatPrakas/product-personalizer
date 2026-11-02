@@ -3,8 +3,8 @@
  * produce the config the storefront renders (assets rewritten to public, absolute URLs).
  *
  * Nothing here is authenticated, so the rules are deliberately narrow:
- *  - The store is addressed by its public key (the platform's external store id) and must have the
- *    plugin enabled; an unknown / disabled / malformed key behaves exactly like "nothing mapped".
+ *  - The store is addressed by its public key (the platform's external store id) and must be known (it
+ *    has made an authenticated request); an unknown / malformed key behaves exactly like "nothing mapped".
  *  - Only the latest PUBLISHED snapshot of a non-archived configuration is ever returned — never the
  *    draft, never an older version.
  *  - A config that still holds a reference we cannot serve publicly is not served at all.
@@ -13,9 +13,8 @@
 import type { Database } from '../../database/connection';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
-import { StorePluginsRepository } from '../../platform/plugin-permissions/repository';
+import { StoreSettingsRepository } from '../../modules/store-settings/repository';
 import { type ObjectStorage, assetKeyPrefix } from '../../storage/object-storage';
-import { originsFromSettings } from './settings-service';
 import { verifyAssetSignature } from './asset-signature';
 import { StorefrontRepository, type ServableAssetRow } from './storefront-repository';
 import {
@@ -23,7 +22,7 @@ import {
   collectAssetLocators,
   rewriteAssetReferences,
 } from './storefront-assets';
-import { PLUGIN_ID, STORAGE_FOLDER, type MappingScope, type ProductConfigLike } from './types';
+import { STORAGE_FOLDER, type MappingScope, type ProductConfigLike } from './types';
 import { STORE_KEY_PATTERN } from './validation';
 
 export interface StorefrontContext {
@@ -56,19 +55,18 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class StorefrontService {
   private readonly repo: StorefrontRepository;
-  private readonly installs: StorePluginsRepository;
+  private readonly stores: StoreSettingsRepository;
 
   constructor(private readonly ctx: StorefrontContext) {
     this.repo = new StorefrontRepository(ctx.db);
-    this.installs = new StorePluginsRepository(ctx.db);
+    this.stores = new StoreSettingsRepository(ctx.db);
   }
 
-  /** null for a malformed, unknown or disabled store — callers must not distinguish the cases. */
+  /** null for a malformed or unknown store — callers must not distinguish the cases. */
   async resolveStore(storeKey: string): Promise<ResolvedStore | null> {
     if (!STORE_KEY_PATTERN.test(storeKey)) return null;
-    const install = await this.installs.get(storeKey, PLUGIN_ID);
-    if (!install || install.status !== 'enabled') return null;
-    return { storeId: storeKey, allowedOrigins: originsFromSettings(install.settings) };
+    const settings = await this.stores.get(storeKey);
+    return settings ? { storeId: storeKey, allowedOrigins: settings.storefrontOrigins } : null;
   }
 
   async resolveConfig(

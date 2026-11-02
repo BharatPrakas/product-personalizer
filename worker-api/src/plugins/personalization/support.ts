@@ -6,10 +6,9 @@
 import type { Database } from '../../database/connection';
 import type { Logger } from '../../shared/logger';
 import { recordAudit } from '../../platform/tenant-management/audit';
-import { PLUGIN_ID } from './types';
 
 /** Request-scoped context for services that need no object storage. `storeId` comes from the token. */
-export interface PluginContext {
+export interface StoreContext {
   db: Database;
   logger: Logger;
   storeId: string;
@@ -18,7 +17,7 @@ export interface PluginContext {
 }
 
 export async function writeAudit(
-  ctx: PluginContext,
+  ctx: StoreContext,
   action: string,
   resourceType: string,
   resourceId: string,
@@ -28,7 +27,6 @@ export async function writeAudit(
     await recordAudit(ctx.db, {
       requestId: ctx.requestId,
       storeId: ctx.storeId,
-      pluginId: PLUGIN_ID,
       actor: ctx.actor,
       action,
       resourceType,

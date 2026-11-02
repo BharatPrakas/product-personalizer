@@ -1,5 +1,5 @@
 /**
- * Personalization plugin types.
+ * Personalization types.
  *
  * The rendering configuration (`ProductConfig`, schema v2) is defined and owned by the Angular app.
  * The backend treats it as an opaque-but-structured JSON document: it validates the envelope and
@@ -7,8 +7,7 @@
  * model. `ProductConfigLike` captures only what the backend touches.
  */
 
-export const PLUGIN_ID = 'personalization';
-/** Folder under `stores/<store>/` for this plugin's assets (artwork, customer images, mockups). */
+/** Folder under `stores/<store>/` for this service's assets (artwork, customer images, mockups). */
 export const STORAGE_FOLDER = 'product-personalization';
 
 /** The subset of ProductConfig the backend reads. The rest is preserved verbatim. */
@@ -59,7 +58,6 @@ export type AssetStatus = 'pending' | 'stored' | 'deleted';
 export interface AssetDto {
   id: string;
   storeId: string;
-  pluginId: string;
   configId: string | null;
   objectKey: string;
   originalFilename: string | null;

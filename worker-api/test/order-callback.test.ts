@@ -61,11 +61,11 @@ describe('credential management', () => {
     expect(list[0]).not.toHaveProperty('secret');
     expect(list[0]).not.toHaveProperty('secret_encrypted');
 
-    const [row] = await queryDb<{ secret_encrypted: string }>('SELECT secret_encrypted FROM platform.integration_credentials');
+    const [row] = await queryDb<{ secret_encrypted: string }>('SELECT secret_encrypted FROM personalization.integration_credentials');
     expect(row.secret_encrypted).not.toContain(issued.secret);
     expect(row.secret_encrypted.startsWith('v1.')).toBe(true);
     // Not in the audit trail either.
-    const audit = await queryDb<{ metadata: unknown }>("SELECT metadata FROM platform.audit_logs WHERE action LIKE 'integration_credential.%'");
+    const audit = await queryDb<{ metadata: unknown }>("SELECT metadata FROM personalization.audit_logs WHERE action LIKE 'integration_credential.%'");
     expect(audit).toHaveLength(1);
     expect(JSON.stringify(audit)).not.toContain(issued.secret);
   });
@@ -115,7 +115,7 @@ describe('credential management', () => {
     expect((await postOrderEvent(fresh, orderEvent(c2.customizationId, { orderId: 'ORD-2', lineId: 'L2' }))).status).toBe(200);
 
     // After the grace period the old one is rejected; the new one still works.
-    await queryDb("UPDATE platform.integration_credentials SET expires_at = now() - interval '1 second' WHERE id = $1", [credential.id]);
+    await queryDb("UPDATE personalization.integration_credentials SET expires_at = now() - interval '1 second' WHERE id = $1", [credential.id]);
     const c3 = await saveCustomization();
     expect((await postOrderEvent(credential, orderEvent(c3.customizationId, { orderId: 'ORD-3', lineId: 'L3' }))).status).toBe(401);
     expect((await postOrderEvent(fresh, orderEvent(c3.customizationId, { orderId: 'ORD-3', lineId: 'L3' }))).status).toBe(200);
@@ -240,7 +240,7 @@ describe('signed order events — linking', () => {
     const [ev] = await queryDb<any>('SELECT line_count, results FROM personalization.integration_events');
     expect(ev.line_count).toBe(1);
     expect(ev.results).toEqual(body.results);
-    const audit = await queryDb<any>("SELECT actor FROM platform.audit_logs WHERE action = 'order.link'");
+    const audit = await queryDb<any>("SELECT actor FROM personalization.audit_logs WHERE action = 'order.link'");
     expect(audit).toHaveLength(1);
     expect(audit[0].actor).toBe(`integration:${credential.id}`);
 
@@ -264,7 +264,7 @@ describe('signed order events — linking', () => {
     expect(body.results).toEqual(first.results);
     expect(await count('personalization.order_links')).toBe(1);
     expect(await count('personalization.integration_events')).toBe(1);
-    expect(await count("platform.audit_logs WHERE action = 'order.link'")).toBe(1);
+    expect(await count("personalization.audit_logs WHERE action = 'order.link'")).toBe(1);
   });
 
   it('treats a harmless re-serialization of the same event as a repeat', async () => {

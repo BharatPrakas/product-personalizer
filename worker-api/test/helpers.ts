@@ -195,7 +195,6 @@ export async function applyMigrations(): Promise<void> {
   const client = new Client({ connectionString: TEST_DATABASE_URL });
   await client.connect();
   try {
-    await client.query('CREATE SCHEMA IF NOT EXISTS platform');
     const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
     for (const file of files) {
       await client.query(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'));
@@ -215,7 +214,8 @@ export async function truncateAll(): Promise<void> {
                 personalization.configs, personalization.customizations,
                 personalization.customization_assets, personalization.order_links,
                 personalization.integration_events, personalization.cleanup_runs,
-                platform.integration_credentials, platform.store_plugins, platform.audit_logs
+                personalization.integration_credentials, personalization.store_settings,
+                personalization.audit_logs
        RESTART IDENTITY CASCADE`,
     );
   } finally {
@@ -273,7 +273,7 @@ export function tinyPng(): Uint8Array {
 export const ADMIN = '/api/v1/plugins/personalization';
 export const STOREFRONT = '/api/v1/storefront/personalization';
 
-/** Create a draft config for `storeId` (auto-installs the plugin in development) and return it. */
+/** Create a draft config for `storeId` (its first authenticated request makes the store known) and return it. */
 export async function seedDraft(
   id: string,
   storeId: string = STORE_A,

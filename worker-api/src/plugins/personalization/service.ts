@@ -1,7 +1,7 @@
 /**
- * Business logic for the personalization plugin. Coordinates the repository (Postgres), asset
- * storage (R2) and validation, and maps DB rows to the client-facing DTOs that mirror the Angular
- * `ConfigurationRecord`.
+ * Business logic for configurations, versions and merchant assets. Coordinates the repository
+ * (Postgres), asset storage (R2) and validation, and maps DB rows to the client-facing DTOs that
+ * mirror the Angular `ConfigurationRecord`.
  *
  * Invariants kept here (not in SQL):
  *  - Optimistic concurrency: saveDraft only succeeds when the client's `expectedUpdatedAt` still
@@ -30,7 +30,6 @@ import { PersonalizationRepository, type AssetRow, type ConfigRow, type ConfigVe
 import { signAsset, upgradeLegacyAssetUrls } from './asset-signature';
 import { validateProductConfig } from './validation';
 import {
-  PLUGIN_ID,
   STORAGE_FOLDER,
   type AssetDto,
   type ConfigRecordDto,
@@ -99,7 +98,6 @@ export class PersonalizationService {
     return {
       id: row.id,
       storeId: row.store_id,
-      pluginId: row.plugin_id,
       configId: row.config_id,
       objectKey: row.object_key,
       originalFilename: row.original_filename,
@@ -144,10 +142,10 @@ export class PersonalizationService {
     if (!result.ok) throw new ValidationError(result.issues);
   }
 
-  /** Refuse to touch any object outside this plugin's own prefix for this store. */
+  /** Refuse to touch any object outside this store's own asset prefix. */
   private assertOwnKey(objectKey: string): void {
     if (!objectKey.startsWith(assetKeyPrefix(this.ctx.storeId, STORAGE_FOLDER))) {
-      throw new Error('Asset key is outside this plugin\'s storage prefix.');
+      throw new Error('Asset key is outside this store\'s asset prefix.');
     }
   }
 
@@ -155,7 +153,6 @@ export class PersonalizationService {
     return recordAudit(this.ctx.db, {
       requestId: this.ctx.requestId,
       storeId: this.ctx.storeId,
-      pluginId: PLUGIN_ID,
       actor: this.ctx.actor,
       action,
       resourceType: action.startsWith('asset') ? 'asset' : 'config',

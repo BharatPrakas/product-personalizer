@@ -206,7 +206,8 @@ describe('R2 asset flow', () => {
     expect(asset.checksumSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(asset.deliveryUrl).toContain(`/api/v1/storefront/personalization/assets/${asset.id}`);
     expect(sharedBucket.objects.has(asset.objectKey)).toBe(true);
-    // Stored under this store's folder for this plugin.
+    expect(asset).not.toHaveProperty('pluginId');
+    // Stored under this store's asset folder.
     expect(asset.objectKey).toMatch(
       new RegExp(`^stores/${STORE_A}/product-personalization/assets/[0-9a-f-]{36}\\.png$`),
     );

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryRateLimitStore, RateLimiter } from '../src/shared/rate-limit';
 import { decodeCursor, encodeCursor } from '../src/plugins/personalization/pagination';
-import { normalizeOrigin, originsFromSettings } from '../src/plugins/personalization/settings-service';
+import { normalizeOrigin } from '../src/plugins/personalization/settings-service';
 import {
   classifyReference,
   collectAssetLocators,
@@ -260,15 +260,12 @@ describe('helpers', () => {
     expect(() => decodeCursor(btoa("1.11111111-1111-4111-8111-111111111111'; DROP TABLE x"))).toThrow();
   });
 
-  it('normalises origins and reads stored settings defensively', () => {
+  it('normalises origins', () => {
     expect(normalizeOrigin('https://Shop.Example.com/')).toBe('https://shop.example.com');
     expect(normalizeOrigin('http://localhost:3000')).toBe('http://localhost:3000');
     expect(normalizeOrigin('https://x.example/path')).toBeNull();
     expect(normalizeOrigin('https://x.example?q=1')).toBeNull();
     expect(normalizeOrigin('x.example')).toBeNull();
-    expect(originsFromSettings({ storefrontOrigins: ['HTTPS://A.example', 5, null] })).toEqual(['https://a.example']);
-    expect(originsFromSettings({ storefrontOrigins: 'nope' })).toEqual([]);
-    expect(originsFromSettings(undefined)).toEqual([]);
   });
 
   it('validates markup payloads', () => {
