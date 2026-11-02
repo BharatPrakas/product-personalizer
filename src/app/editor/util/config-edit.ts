@@ -402,6 +402,8 @@ export function updateArea(
 
 export function removeArea(config: ProductConfig, id: string): ProductConfig {
   const dropped = new Set(config.artworks.filter((a) => a.printableAreaId === id).map((a) => a.id));
+  // A variant left without an area is moved onto another one; removing the last area leaves it empty.
+  const fallbackId = config.printableAreas.find((a) => a.id !== id)?.id;
   return pruneConditions(
     pruneOrphanFields({
       ...config,
@@ -415,8 +417,7 @@ export function removeArea(config: ProductConfig, id: string): ProductConfig {
         const ids = v.printableAreaIds.filter((a) => a !== id);
         return {
           ...v,
-          printableAreaIds:
-            ids.length > 0 ? ids : [config.printableAreas.find((a) => a.id !== id)!.id],
+          printableAreaIds: ids.length > 0 || fallbackId === undefined ? ids : [fallbackId],
         };
       }),
     }),
