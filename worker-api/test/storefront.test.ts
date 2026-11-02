@@ -379,7 +379,7 @@ describe('storefront assets', () => {
     await call(`${ADMIN}/settings/storefront`, { method: 'PUT', body: { storefrontOrigins: ['https://shop.example.com'] } });
 
     const d = await data(await pub(cfgUrl('prod-asset', STORE_A)));
-    const expected = `http://api.test/api/v1/storefront/personalization/assets/${asset.id}`;
+    const expected = `http://api.test${STOREFRONT}/assets/${asset.id}`;
     expect(d.config.mockups[0].src).toBe(expected);
     expect(d.config.mockups[0].thumbnail).toBe(expected);
     expect(JSON.stringify(d)).not.toContain('/plugins/personalization/assets');
@@ -470,7 +470,7 @@ describe('storefront assets', () => {
     await mapTo('cfg-pubbase', 'product', 'prod-pubbase');
     const res = await pub(cfgUrl('prod-pubbase', STORE_A), { env });
     const d = await data(res);
-    expect(d.config.mockups[0].src).toBe(`http://api.test/api/v1/storefront/personalization/assets/${asset.id}`);
+    expect(d.config.mockups[0].src).toBe(`http://api.test${STOREFRONT}/assets/${asset.id}`);
     // The object key reference also makes the asset publicly servable.
     expect((await pub(`${STOREFRONT}/assets/${asset.id}`, { env })).status).toBe(200);
     expect(sharedBucket.objects.has(asset.objectKey)).toBe(true);

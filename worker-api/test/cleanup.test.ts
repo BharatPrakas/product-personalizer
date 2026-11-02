@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   ADMIN,
+  STOREFRONT,
   STORE_A,
   TEST_DATABASE_URL,
   applyMigrations,
@@ -154,7 +155,7 @@ describe('abandoned customization cleanup', () => {
     const credential = await createCredential();
     const { asset, saved } = await savedWithAsset();
     // The shopper removes the file, then orders within the grace period.
-    const res = await call(`/api/v1/storefront/personalization/customizations/${saved.customizationId}?storeId=${STORE_A}`, {
+    const res = await call(`${STOREFRONT}/customizations/${saved.customizationId}?storeId=${STORE_A}`, {
       method: 'PUT', token: null, headers: { Authorization: `Bearer ${saved.accessToken}` }, body: { data: { v: 2 }, assets: [] },
     });
     expect(res.status).toBe(200);

@@ -5,6 +5,7 @@ import {
   DEV_TOKEN,
   INTEGRATIONS,
   PRODUCT_ID,
+  STOREFRONT,
   STORE_A,
   STORE_B,
   applyMigrations,
@@ -339,7 +340,7 @@ describe('signed order events — linking', () => {
     await seedPersonalizableProduct();
     const credential = await createCredential();
     const cfg = await (await import('./helpers')).storefrontConfig();
-    const saved = await call(`/api/v1/storefront/personalization/customizations?storeId=${STORE_A}`, {
+    const saved = await call(`${STOREFRONT}/customizations?storeId=${STORE_A}`, {
       method: 'POST', token: null,
       body: { productId: PRODUCT_ID, variantId: 'v-red', configId: cfg.configId, configVersion: cfg.version, data: {} },
     });
