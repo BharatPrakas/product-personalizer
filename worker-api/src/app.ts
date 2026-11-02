@@ -146,7 +146,7 @@ export function createApp(deps: AppDependencies = {}): Hono<AppEnv> {
   app.use('*', withDatabase);
 
   // Public, unauthenticated.
-  app.get('/', (c) => ok(c, { name: 'zb-plugin-platform', apiBase: API_BASE }));
+  app.get('/', (c) => ok(c, { name: 'zb-product-personalizer-api', apiBase: API_BASE }));
   app.get(`${API_BASE}/health`, health);
 
   // Registered BEFORE the secured area so its authentication middleware never runs for these routes.

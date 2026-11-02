@@ -1,8 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Shared multi-plugin backend. The Product Personalization plugin is the first tenant of this
-  // Worker; future plugins register inside the same Worker (see src/platform/plugin-registry).
-  "name": "zb-plugin-platform",
+  // Dedicated Worker for Product Personalization: configurations, mappings, the public storefront
+  // routes, customizations and signed order events. It owns its own PostgreSQL database (the
+  // Hyperdrive binding below) and its own object-storage bucket.
+  "name": "zb-product-personalizer-api",
   "main": "src/index.ts",
   // Recent runtime so Hyperdrive + node-postgres (`pg`) work. Do not lower without re-verifying `pg`.
   "compatibility_date": "2025-09-01",
@@ -34,7 +35,7 @@
     "S3_REGION": "us-west-2"
   },
 
-  // --- Hyperdrive: pooled connection to the dedicated PostgreSQL plugin database.
+  // --- Hyperdrive: pooled connection to this Worker's dedicated PostgreSQL database.
   // Create with: wrangler hyperdrive create <name> --connection-string="postgres://..."
   // Replace the placeholder id below with the real one it prints (it is environment-specific, not a secret).
   "hyperdrive": [

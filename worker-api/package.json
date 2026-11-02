@@ -1,7 +1,7 @@
 {
-  "name": "@zb/worker-api",
+  "name": "@zb/product-personalizer-api",
   "version": "1.0.0",
-  "description": "Shared multi-plugin Cloudflare Worker backend for the Product Personalization platform.",
+  "description": "Cloudflare Worker API for Product Personalization: configurations, mappings, storefront routes, customizations and signed order events.",
   "private": true,
   "type": "module",
   "main": "src/index.ts",

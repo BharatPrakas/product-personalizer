@@ -37,7 +37,7 @@ export class Database implements SqlExecutor {
         connectionString: this.connectionString,
         // Hyperdrive terminates TLS to the origin; the Worker<->Hyperdrive hop is internal.
         // For local Postgres over 127.0.0.1 TLS is not used.
-        application_name: 'zb-plugin-platform',
+        application_name: 'zb-product-personalizer-api',
       });
       await client.connect();
       this.client = client;
