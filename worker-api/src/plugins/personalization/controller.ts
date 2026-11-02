@@ -6,11 +6,11 @@
 
 import type { Context } from 'hono';
 import { createObjectStorage } from '../../storage';
+import { ADMIN_SEGMENT, apiPath } from '../../shared/api-paths';
 import type { AppEnv } from '../../shared/context';
 import { BadRequestError } from '../../shared/errors';
 import { created, noContent, ok, paginated } from '../../shared/responses';
 import { PersonalizationService, type ServiceContext } from './service';
-import { PLUGIN_ID } from './types';
 import {
   assetListQuerySchema,
   createConfigSchema,
@@ -42,8 +42,7 @@ function serviceFor(c: Context<AppEnv>): PersonalizationService {
   return new PersonalizationService(ctx);
 }
 
-const basePath = (c: Context<AppEnv>) =>
-  `/api/${c.get('config').apiVersion}/plugins/${PLUGIN_ID}/configs`;
+const basePath = (c: Context<AppEnv>) => `${apiPath(c.get('config').apiVersion, ADMIN_SEGMENT)}/configs`;
 
 export async function listConfigs(c: Context<AppEnv>): Promise<Response> {
   const query = listQuerySchema.parse(c.req.query());

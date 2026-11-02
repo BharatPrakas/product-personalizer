@@ -4,6 +4,7 @@
  */
 
 import type { Context } from 'hono';
+import { ADMIN_SEGMENT, apiPath } from '../../shared/api-paths';
 import type { AppEnv } from '../../shared/context';
 import { BadRequestError, NotFoundError, PayloadTooLargeError } from '../../shared/errors';
 import { created, noContent, ok } from '../../shared/responses';
@@ -11,7 +12,6 @@ import { MappingService } from './mapping-service';
 import { MarkupService } from './markup-service';
 import { SettingsService } from './settings-service';
 import type { PluginContext } from './support';
-import { PLUGIN_ID } from './types';
 import {
   MAX_MARKUP_BODY_BYTES,
   bulkMappingsSchema,
@@ -57,7 +57,7 @@ async function jsonBody(c: Context<AppEnv>, maxBytes?: number): Promise<unknown>
 }
 
 const base = (c: Context<AppEnv>, resource: string) =>
-  `/api/${c.get('config').apiVersion}/plugins/${PLUGIN_ID}/${resource}`;
+  `${apiPath(c.get('config').apiVersion, ADMIN_SEGMENT)}/${resource}`;
 
 // ---- mappings ----
 

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { sniffImage } from '../src/shared/image-sniff';
 import { assetKeyPrefix, generateObjectKey } from '../src/storage/object-storage';
-import { PluginRegistry } from '../src/platform/plugin-registry/registry';
 import { verifyJwtHs256, scopesFromClaims } from '../src/shared/jwt';
 import { validateProductConfig, CONFIG_LIMITS } from '../src/plugins/personalization/validation';
 import { tinyPng, sampleDraft } from './helpers';
@@ -48,22 +47,6 @@ describe('object key generation', () => {
     for (const folder of ['../x', 'Bad_Folder', 'a/b', '', 'x']) {
       expect(() => generateObjectKey({ storageFolder: folder, storeId: 's', type: 'image/png' })).toThrow();
     }
-  });
-});
-
-describe('plugin registry storage folders', () => {
-  const plugin = (id: string, storageFolder: string) => ({
-    id, displayName: id, version: '1.0.0', storageFolder, register() {},
-  });
-
-  it('rejects two plugins that share a storage folder', () => {
-    const registry = new PluginRegistry().register(plugin('a', 'shared-folder'));
-    expect(() => registry.register(plugin('b', 'shared-folder'))).toThrow(/already used/);
-  });
-
-  it('accepts distinct folders', () => {
-    const registry = new PluginRegistry().register(plugin('a', 'plugin-a')).register(plugin('b', 'plugin-b'));
-    expect(registry.all()).toHaveLength(2);
   });
 });
 

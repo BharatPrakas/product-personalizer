@@ -22,7 +22,7 @@ beforeEach(async () => {
   resetBucket();
 });
 
-describe('health & platform', () => {
+describe('health', () => {
   it('health is public and reports a healthy database', async () => {
     const res = await call('/api/v1/health', { token: null });
     expect(res.status).toBe(200);
@@ -33,21 +33,10 @@ describe('health & platform', () => {
     expect(JSON.stringify(body)).not.toContain('personalizer_local_dev');
   });
 
-  it('lists plugins and the personalization plugin is available', async () => {
-    const res = await call('/api/v1/plugins');
-    expect(res.status).toBe(200);
-    const body = await json(res);
-    const ids = body.data.map((p: any) => p.pluginId);
-    expect(ids).toContain('personalization');
-  });
-
-  it('reports plugin status for the store', async () => {
-    // Touch a plugin route first so the dev auto-install happens.
-    await call('/api/v1/plugins/personalization/configs');
-    const res = await call('/api/v1/plugins/personalization/status');
-    const body = await json(res);
-    expect(body.data.pluginId).toBe('personalization');
-    expect(body.data.enabledForStore).toBe(true);
+  it('does not expose a plugin catalogue', async () => {
+    for (const path of ['/api/v1/plugins', '/api/v1/plugins/personalization/status']) {
+      expect((await call(path)).status).toBe(404);
+    }
   });
 });
 

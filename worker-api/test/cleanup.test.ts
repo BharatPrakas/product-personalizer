@@ -22,7 +22,7 @@ import { loadConfig } from '../src/config/environment';
 import { createDatabase } from '../src/database/connection';
 import { Logger } from '../src/shared/logger';
 import { CleanupService } from '../src/plugins/personalization/cleanup-service';
-import { personalizationPlugin } from '../src/plugins/personalization/routes';
+import { runScheduledCleanup } from '../src/scheduled';
 import { R2ObjectStorage } from '../src/storage/r2-storage';
 import type { ObjectStorage } from '../src/storage/object-storage';
 
@@ -291,17 +291,11 @@ describe('failure handling and bookkeeping', () => {
     expect((await cleanup(at(31 * DAY), { batchSize: 2 })).customizationsExpired).toBe(1);
   });
 
-  it('is what the cron trigger runs (plugin.scheduled)', async () => {
+  it('is what the cron trigger runs (runScheduledCleanup)', async () => {
     await seedPersonalizableProduct();
     await uploadCustomerImage();
     await queryDb("UPDATE personalization.customization_assets SET created_at = now() - interval '2 days'");
-    const env = makeEnv();
-    const db = createDatabase(TEST_DATABASE_URL);
-    try {
-      await personalizationPlugin.scheduled!({ env, config: loadConfig(env), db, logger: new Logger('error', { requestId: 'cron' }), trigger: '17 * * * *' });
-    } finally {
-      await db.close();
-    }
+    await runScheduledCleanup(makeEnv(sharedBucket), '17 * * * *');
     const [run] = await queryDb<any>('SELECT trigger, status, uploads_released FROM personalization.cleanup_runs');
     expect(run).toEqual({ trigger: '17 * * * *', status: 'succeeded', uploads_released: 1 });
   });

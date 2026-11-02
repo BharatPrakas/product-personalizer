@@ -3,27 +3,28 @@
  * stored asset reference means and what the storefront serves instead.
  *
  * How references look in stored (draft / published) config JSON:
- *   - the authorized Worker delivery URL   `<origin>/api/<v>/plugins/personalization/assets/<uuid>/content`
+ *   - the authorized Worker delivery URL   `<origin>/api/<v>/<ADMIN_SEGMENT>/assets/<uuid>/content`
  *   - an R2 custom-domain URL              `<ASSET_PUBLIC_BASE_URL>/<object key>`
  *   - any other absolute http(s) URL       (host/CDN hosted; passed through untouched)
  *   - a path relative to `assetBaseUrl`    (resolved against it when that is absolute)
  *   - `idb:` / `data:` / other schemes     (browser-local; can NEVER be served)
  *
  * The storefront rewrites every Worker-managed reference to
- * `<origin>/api/<v>/storefront/personalization/assets/<uuid>` — an absolute URL on the Worker's own
+ * `<origin>/api/<v>/<STOREFRONT_SEGMENT>/assets/<uuid>` — an absolute URL on the Worker's own
  * origin that needs no merchant token — and refuses to serve a config that still holds a reference it
  * cannot make absolute http(s), or one pointing at an asset of ANOTHER store (it is simply not in the
  * store-scoped index). Reference-carrying keys are `src`, `thumbnail` and `thumbnailSrc`, which covers
  * mockups, overlays, fixed-image layers, fonts and artwork choices in schema v2.
  */
 
+import { ADMIN_SEGMENT, STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 import type { ProductConfigLike } from './types';
 
 export const ASSET_REFERENCE_KEYS: ReadonlySet<string> = new Set(['src', 'thumbnail', 'thumbnailSrc']);
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-const ADMIN_ASSET_PATH = new RegExp(`^/api/[^/]+/plugins/personalization/assets/(${UUID})/content$`, 'i');
-const STOREFRONT_ASSET_PATH = new RegExp(`^/api/[^/]+/storefront/personalization/assets/(${UUID})$`, 'i');
+const ADMIN_ASSET_PATH = new RegExp(`^/api/[^/]+/${ADMIN_SEGMENT}/assets/(${UUID})/content$`, 'i');
+const STOREFRONT_ASSET_PATH = new RegExp(`^/api/[^/]+/${STOREFRONT_SEGMENT}/assets/(${UUID})$`, 'i');
 const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f\\]/;
@@ -166,7 +167,7 @@ export interface RewriteResult {
 }
 
 export function storefrontAssetUrl(opts: RewriteOptions, assetId: string): string {
-  return `${opts.publicOrigin}/api/${opts.apiVersion}/storefront/personalization/assets/${assetId}`;
+  return `${opts.publicOrigin}${apiPath(opts.apiVersion, STOREFRONT_SEGMENT)}/assets/${assetId}`;
 }
 
 /**

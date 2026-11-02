@@ -3,7 +3,7 @@
  * cannot carry a Bearer token, and a draft's assets must not be public. So the delivery URL stored in a
  * config carries a signature: HMAC-SHA256 over (store id, asset id) with a server-side secret.
  *
- *   <origin>/api/v1/storefront/personalization/assets/<uuid>?sig=<base64url>
+ *   <origin>/api/<v>/<STOREFRONT_SEGMENT>/assets/<uuid>?sig=<base64url>
  *
  * The signature is a capability: it proves the Worker issued this URL for this store's asset, so it can
  * be stored in the configuration (it never expires) and is useless for any other asset or store. Rotate
@@ -13,6 +13,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { ADMIN_SEGMENT, STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 
 export function signAsset(secret: string, storeId: string, assetId: string): string {
   return createHmac('sha256', secret)
@@ -31,9 +32,11 @@ export function verifyAssetSignature(
   return given.length === expected.length && timingSafeEqual(expected, given);
 }
 
-/** Admin-route URLs saved before signed URLs existed: `<origin>/api/<v>/plugins/personalization/assets/<uuid>/content`. */
-const LEGACY_ASSET_URL =
-  /(https?:\/\/[^"\\/\s]+)\/api\/([^/"\\]+)\/plugins\/personalization\/assets\/([0-9a-fA-F-]{36})\/content/g;
+/** Admin-route URLs saved before signed URLs existed: `<origin>/api/<v>/<ADMIN_SEGMENT>/assets/<uuid>/content`. */
+const LEGACY_ASSET_URL = new RegExp(
+  `(https?://[^"\\\\/\\s]+)/api/([^/"\\\\]+)/${ADMIN_SEGMENT}/assets/([0-9a-fA-F-]{36})/content`,
+  'g',
+);
 
 /**
  * Re-point legacy admin-route asset URLs inside a configuration at the signed public route, so configs
@@ -43,11 +46,11 @@ const LEGACY_ASSET_URL =
 export function upgradeLegacyAssetUrls<T>(config: T, secret: string | null, storeId: string): T {
   if (!secret || config === null || config === undefined) return config;
   const text = JSON.stringify(config);
-  if (!text.includes('/plugins/personalization/assets/')) return config;
+  if (!text.includes(`/${ADMIN_SEGMENT}/assets/`)) return config;
   const rewritten = text.replace(
     LEGACY_ASSET_URL,
     (_match, origin: string, version: string, id: string) =>
-      `${origin}/api/${version}/storefront/personalization/assets/${id}?sig=${signAsset(secret, storeId, id)}`,
+      `${origin}${apiPath(version, STOREFRONT_SEGMENT)}/assets/${id}?sig=${signAsset(secret, storeId, id)}`,
   );
   return JSON.parse(rewritten) as T;
 }

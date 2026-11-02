@@ -15,6 +15,7 @@ import type { Database } from '../../database/connection';
 import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
+import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 import { recordAudit } from '../../platform/tenant-management/audit';
 import { type ObjectStorage, assetKeyPrefix, generateObjectKey } from '../../storage/object-storage';
 import { sniffImage } from '../../shared/image-sniff';
@@ -84,7 +85,7 @@ export class PersonalizationService {
     // token, so the stored reference is a signed URL on the public asset route. The signature binds it
     // to this store and asset, so draft assets stay private. The Bearer-protected `/assets/:id/content`
     // remains for API clients.
-    const base = `${this.ctx.origin}/api/${this.ctx.config.apiVersion}/storefront/${PLUGIN_ID}/assets/${row.id}`;
+    const base = `${this.ctx.origin}${apiPath(this.ctx.config.apiVersion, STOREFRONT_SEGMENT)}/assets/${row.id}`;
     const secret = this.ctx.config.assetSigningSecret;
     return secret ? `${base}?sig=${signAsset(secret, row.store_id, row.id)}` : base;
   }

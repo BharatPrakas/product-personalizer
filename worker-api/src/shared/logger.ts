@@ -1,7 +1,7 @@
 /**
  * Structured logging. One JSON line per event, always carrying the request id and (when known) the
- * plugin id and store id. Sensitive values — tokens, secrets, raw config payloads, file bytes — are
- * never logged; callers pass only identifiers and counts.
+ * store id. Sensitive values — tokens, secrets, raw config payloads, file bytes — are never logged;
+ * callers pass only identifiers and counts.
  */
 
 import type { LogLevel } from '../config/environment';
@@ -10,7 +10,6 @@ const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 
 
 export interface LogFields {
   requestId: string;
-  plugin?: string;
   storeId?: string;
   [key: string]: unknown;
 }

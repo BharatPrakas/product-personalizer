@@ -329,7 +329,7 @@ describe('storefront CORS (per store)', () => {
 describe('storefront rate limiting', () => {
   it('returns 429 with Retry-After after the per-store+IP budget, then recovers', async () => {
     let now = 1_000_000;
-    const application = createApp(undefined, { rateLimitStore: new InMemoryRateLimitStore(), now: () => now });
+    const application = createApp({ rateLimitStore: new InMemoryRateLimitStore(), now: () => now });
     const env = { STOREFRONT_RATE_LIMIT: '3', STOREFRONT_RATE_WINDOW_SECONDS: '60' };
     const hit = (store: string, ip: string) =>
       pub(cfgUrl('p', store), { application, env, headers: { 'CF-Connecting-IP': ip } });
@@ -352,7 +352,7 @@ describe('storefront rate limiting', () => {
   });
 
   it('also protects the asset route', async () => {
-    const application = createApp(undefined, { rateLimitStore: new InMemoryRateLimitStore() });
+    const application = createApp({ rateLimitStore: new InMemoryRateLimitStore() });
     const env = { STOREFRONT_RATE_LIMIT: '1' }; // assets get 5x
     const statuses: number[] = [];
     for (let i = 0; i < 7; i++) {
