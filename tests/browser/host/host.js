@@ -61,9 +61,31 @@ async function blobPixels(blob, points) {
   return out;
 }
 
+// Contract v1: one listener on the document sees every element's `zb:event` (it bubbles, composed).
+const zb = [];
+document.addEventListener('zb:event', (event) => {
+  zb.push({
+    ...event.detail,
+    targetId: event.target?.id ?? '',
+    bubbles: event.bubbles,
+    composed: event.composed,
+  });
+});
+
 window.testHost = {
   recorded,
   saves,
+  zb,
+  async prepare(id) {
+    try {
+      return { ok: true, value: await document.getElementById(id).prepareForCart() };
+    } catch (error) {
+      return { ok: false, message: error.message, name: error.name };
+    }
+  },
+  hostEvent(id, type, data) {
+    document.getElementById(id).dispatchEvent(new CustomEvent('zb:host-event', { detail: { type, data } }));
+  },
   async ready() {
     await customElements.whenDefined('zb-product-customizer');
   },

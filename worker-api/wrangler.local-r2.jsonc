@@ -1,0 +1,29 @@
+{
+  // LOCAL TRYING-OUT ONLY: same Worker as wrangler.jsonc, but customer files go to a LOCAL R2 bucket
+  // (Miniflare, under .wrangler/state) instead of the AWS S3 bucket. No AWS credentials needed.
+  //
+  //   npx wrangler dev -c wrangler.local-r2.jsonc \
+  //     --var DEV_AUTH_TOKEN:zb-local-dev-token --var DEV_STORE_ID:<store id> \
+  //     --var INTEGRATION_ENCRYPTION_KEY:$(openssl rand -base64 32) --var CUSTOMIZATION_TOKEN_SECRET:local-dev-secret
+  "name": "zb-plugin-platform-local-r2",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ENVIRONMENT": "development",
+    "API_VERSION": "v1",
+    // Admin origins (storeadmin). Storefront origins are per store: PUT /plugins/personalization/settings/storefront.
+    "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300",
+    "MAX_UPLOAD_BYTES": "15728640",
+    "LOG_LEVEL": "info",
+    "STORAGE_DRIVER": "r2"
+  },
+  "r2_buckets": [{ "binding": "PERSONALIZATION_ASSETS", "bucket_name": "local-personalization-assets" }],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "9cd1b962a64f425ab5b47da985012480",
+      "localConnectionString": "postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_dev"
+    }
+  ]
+}

@@ -8,7 +8,11 @@
 import type { Hono } from 'hono';
 import type { AppEnv } from '../../shared/context';
 import type { PluginModule } from '../../platform/plugin-registry/registry';
+import { CleanupService } from './cleanup-service';
 import * as controller from './controller';
+import * as customizations from './customization-controller';
+import * as integration from './integration-controller';
+import { createObjectStorage } from '../../storage';
 import * as mappings from './mapping-controller';
 import * as storefront from './storefront-controller';
 import { PLUGIN_ID, STORAGE_FOLDER } from './types';
@@ -57,6 +61,17 @@ export const personalizationPlugin: PluginModule = {
     // Per-store storefront settings (allowed CORS origins)
     router.get('/settings/storefront', mappings.getStorefrontSettings);
     router.put('/settings/storefront', mappings.putStorefrontSettings);
+
+    // Customer customizations (merchant read access; private files stream only through here)
+    router.get('/customizations', customizations.listCustomizations);
+    router.get('/customizations/:id', customizations.getCustomization);
+    router.get('/customizations/:id/assets/:assetId/content', customizations.getCustomizationAssetContent);
+
+    // Per-store signing secrets for the order callback (needs the `integrations:manage` scope)
+    router.get('/integration/credentials', integration.listCredentials);
+    router.post('/integration/credentials', integration.createCredential);
+    router.post('/integration/credentials/:id/rotate', integration.rotateCredential);
+    router.delete('/integration/credentials/:id', integration.revokeCredential);
   },
   registerPublic(router: Hono<AppEnv>, { rateLimiter }): void {
     // Error responses (429, 4xx) from public routes must never be cached by shared caches.
@@ -71,5 +86,23 @@ export const personalizationPlugin: PluginModule = {
     router.options('/products/:externalId/config', storefront.preflight(rateLimiter, 'config'));
     router.get('/assets/:assetId', storefront.getPublicAsset(rateLimiter));
     router.options('/assets/:assetId', storefront.preflight(rateLimiter, 'asset'));
+
+    // Shopper customizations: private uploads, save, and token-gated read / update.
+    const preflight = customizations.customerPreflight(rateLimiter);
+    router.post('/uploads', customizations.uploadCustomerAsset(rateLimiter));
+    router.options('/uploads', preflight);
+    router.post('/customizations', customizations.createCustomization(rateLimiter));
+    router.options('/customizations', preflight);
+    router.get('/customizations/:id', customizations.getCustomizationForShopper(rateLimiter));
+    router.put('/customizations/:id', customizations.updateCustomization(rateLimiter));
+    router.options('/customizations/:id', preflight);
+    router.get('/customizations/:id/assets/:assetId', customizations.getCustomizationAssetForShopper(rateLimiter));
+    router.options('/customizations/:id/assets/:assetId', preflight);
+  },
+  registerIntegration(router: Hono<AppEnv>, { rateLimiter }): void {
+    router.post('/events', integration.orderEvents(rateLimiter));
+  },
+  async scheduled({ env, config, db, logger, trigger }): Promise<void> {
+    await new CleanupService({ db, storage: () => createObjectStorage(env, config), config, logger }).run(trigger);
   },
 };

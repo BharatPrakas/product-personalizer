@@ -32,7 +32,29 @@ function listen(handlers: Handler[], port = 0): Promise<{ server: Server; origin
 }
 
 /** A scriptable stand-in for the personalization API's public storefront endpoint. */
+export interface ShopperRequest {
+  /** `uploads` or `customizations`. */
+  endpoint: 'uploads' | 'customizations';
+  method: string;
+  query: Record<string, string>;
+  contentType: string | undefined;
+  bodySize: number;
+  /** Parsed JSON body (customizations only). */
+  json?: any;
+}
+
+/** Scriptable stand-in for the shopper endpoints (private uploads, save customization). */
+export interface MockShopper {
+  requests: ShopperRequest[];
+  /** Override the next answers; unset = success with sequential ids (`asset-1`, `cz-1`, ...). */
+  uploadAnswer?: { status?: number; body?: unknown };
+  createAnswer?: { status?: number; body?: unknown };
+  /** Delay before answering a customization save (to test concurrent calls). */
+  createDelayMs?: number;
+}
+
 export interface MockApi {
+  shopper: MockShopper;
   /** productId (or '*') -> what the endpoint answers. */
   responses: Map<string, { status?: number; body?: unknown; delayMs?: number }>;
   requests: { method: string; url: string; headers: Record<string, string | string[] | undefined> }[];
@@ -41,14 +63,21 @@ export interface MockApi {
   reset(): void;
 }
 
+const SHOPPER = /^\/api\/v1\/storefront\/personalization\/(uploads|customizations)$/;
 const STOREFRONT = /^\/api\/v1\/storefront\/personalization\/products\/([^/]+)\/config$/;
 
 function createMockApi(): { api: MockApi; handler: Handler } {
+  let assetCounter = 0;
+  let customizationCounter = 0;
   const api: MockApi = {
+    shopper: { requests: [] },
     responses: new Map(),
     requests: [],
     admin: new Map(),
     reset() {
+      assetCounter = 0;
+      customizationCounter = 0;
+      api.shopper = { requests: [] };
       api.responses.clear();
       api.admin.clear();
       api.requests.length = 0;
@@ -70,6 +99,52 @@ function createMockApi(): { api: MockApi; handler: Handler } {
       const answer = api.admin.get(`${req.method} ${url.pathname}`) ?? { status: 404, body: { error: { code: 'not_found' } } };
       res.writeHead(answer.status ?? 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(answer.body ?? { data: [] }));
+      return true;
+    }
+    const shopper = SHOPPER.exec(url.pathname);
+    if (shopper) {
+      const endpoint = shopper[1] as 'uploads' | 'customizations';
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' });
+        res.end();
+        return true;
+      }
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const body = Buffer.concat(chunks);
+        const entry: ShopperRequest = {
+          endpoint,
+          method: req.method ?? 'POST',
+          query: Object.fromEntries(url.searchParams),
+          contentType: req.headers['content-type'],
+          bodySize: body.length,
+        };
+        if (endpoint === 'customizations') entry.json = JSON.parse(body.toString('utf8') || '{}');
+        api.shopper.requests.push(entry);
+        const answer = endpoint === 'uploads' ? api.shopper.uploadAnswer : api.shopper.createAnswer;
+        const reply = () => {
+          if (answer) {
+            res.writeHead(answer.status ?? 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            res.end(JSON.stringify(answer.body ?? {}));
+            return;
+          }
+          const data =
+            endpoint === 'uploads'
+              ? { assetId: `asset-${++assetCounter}`, uploadToken: `utok-${assetCounter}`, kind: entry.query['kind'] }
+              : {
+                  customizationId: `cz-${++customizationCounter}`,
+                  status: 'saved',
+                  accessToken: `atok-${customizationCounter}`,
+                  accessTokenExpiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+                  expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+                };
+          res.writeHead(201, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ data }));
+        };
+        if (endpoint === 'customizations' && api.shopper.createDelayMs) setTimeout(reply, api.shopper.createDelayMs);
+        else reply();
+      });
       return true;
     }
     const match = STOREFRONT.exec(url.pathname);
@@ -289,6 +364,22 @@ export const host = {
       newId,
       props as any,
     ),
+  /** Every `zb:event` the page's document has seen (bubbled from any element), in order. */
+  zbEvents: (page: Page) =>
+    page.evaluate(() => (window as any).testHost.zb) as Promise<
+      Array<{
+        contract: number; extensionId: string; instanceId: string; slot: string; type: string;
+        data: any; ts: number; targetId: string; bubbles: boolean; composed: boolean;
+      }>
+    >,
+  /** Calls the element's `prepareForCart()`; never throws — resolves `{ ok, value | message }`. */
+  prepare: (page: Page, id: string) =>
+    page.evaluate((i) => (window as any).testHost.prepare(i), id) as Promise<
+      { ok: true; value: Record<string, string> } | { ok: false; message: string; name: string }
+    >,
+  /** Dispatches a `zb:host-event` notification on the element. */
+  hostEvent: (page: Page, id: string, type: string, data: unknown = {}) =>
+    page.evaluate((i, t, d) => (window as any).testHost.hostEvent(i, t, d), id, type, data as any),
   waitStatus: (page: Page, id: string, status: string, timeout = 20000) =>
     page.waitForFunction(
       (i, s) => (window as any).testHost.status(i) === s,

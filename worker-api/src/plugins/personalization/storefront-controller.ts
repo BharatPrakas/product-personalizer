@@ -33,9 +33,15 @@ function serviceFor(c: Context<AppEnv>): StorefrontService {
 }
 
 /** CORS headers for one request, from the STORE's own allow-list (empty list = no cross-origin). */
-export function storefrontCorsHeaders(origin: string | undefined, store: ResolvedStore | null): Headers {
+export function storefrontCorsHeaders(
+  origin: string | undefined,
+  store: ResolvedStore | null,
+  /** Extra origins trusted for this response, e.g. the merchant admin origins (asset route only). */
+  trustedOrigins: readonly string[] = [],
+): Headers {
   const headers = new Headers({ Vary: 'Origin' });
-  if (origin && store?.allowedOrigins.includes(origin.toLowerCase())) {
+  const normalized = origin?.toLowerCase();
+  if (origin && normalized && store && (store.allowedOrigins.includes(normalized) || trustedOrigins.includes(normalized))) {
     headers.set('Access-Control-Allow-Origin', origin);
     headers.set('Access-Control-Expose-Headers', 'ETag, X-Request-Id');
   }
@@ -134,12 +140,14 @@ export function getPublicAsset(limiter: RateLimiter) {
   return async (c: Context<AppEnv>): Promise<Response> => {
     await enforceRateLimit(c, limiter, `asset:${clientIp(c)}`, ASSET_LIMIT_FACTOR);
     const service = serviceFor(c);
-    const resolved = await service.resolveAsset(c.req.param('assetId') ?? '');
+    const resolved = await service.resolveAsset(c.req.param('assetId') ?? '', c.req.query('sig') ?? null);
     if (!resolved) throw new NotFoundError('That asset was not found.');
-    const { asset, store } = resolved;
+    const { asset, store, signed } = resolved;
 
-    const headers = storefrontCorsHeaders(c.req.header('origin'), store);
-    headers.set('Cache-Control', CACHE_ASSET);
+    // The merchant admin app (listed in CORS_ALLOWED_ORIGINS) loads these URLs from saved configs.
+    const headers = storefrontCorsHeaders(c.req.header('origin'), store, c.get('config').corsAllowedOrigins);
+    // A signed URL can expose a draft asset, so keep it out of shared caches.
+    headers.set('Cache-Control', signed ? 'private, max-age=3600' : CACHE_ASSET);
     headers.set('X-Content-Type-Options', 'nosniff');
     // Images/fonts are embedded by third-party storefront pages and drawn onto canvases.
     headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -171,9 +179,10 @@ export function preflight(limiter: RateLimiter, target: 'config' | 'asset') {
       const key = c.req.query('storeId');
       store = key ? await service.resolveStore(key) : null;
     } else {
-      store = (await service.resolveAsset(c.req.param('assetId') ?? ''))?.store ?? null;
+      store = (await service.resolveAsset(c.req.param('assetId') ?? '', c.req.query('sig') ?? null))?.store ?? null;
     }
-    const headers = storefrontCorsHeaders(c.req.header('origin'), store);
+    const trusted = target === 'asset' ? c.get('config').corsAllowedOrigins : [];
+    const headers = storefrontCorsHeaders(c.req.header('origin'), store, trusted);
     if (headers.has('Access-Control-Allow-Origin')) {
       headers.set('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
       headers.set('Access-Control-Allow-Headers', c.req.header('access-control-request-headers') ?? 'If-None-Match');

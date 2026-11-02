@@ -9,6 +9,9 @@
  */
 
 import type { Hono } from 'hono';
+import type { AppConfig, Env } from '../../config/environment';
+import type { Database } from '../../database/connection';
+import type { Logger } from '../../shared/logger';
 import type { AppEnv } from '../../shared/context';
 import type { RateLimiter } from '../../shared/rate-limit';
 import { assertStorageFolder } from '../../storage/object-storage';
@@ -16,6 +19,16 @@ import { assertStorageFolder } from '../../storage/object-storage';
 /** Shared infrastructure handed to a plugin's PUBLIC (unauthenticated) routes. */
 export interface PublicRouteDeps {
   rateLimiter: RateLimiter;
+}
+
+/** What a plugin's scheduled (cron) job receives. The database connection is closed by the caller. */
+export interface ScheduledDeps {
+  env: Env;
+  config: AppConfig;
+  db: Database;
+  logger: Logger;
+  /** The cron expression that fired, or 'manual'. */
+  trigger: string;
 }
 
 export interface PluginModule {
@@ -36,6 +49,14 @@ export interface PluginModule {
    * and never trust it to select data outside what is meant to be public.
    */
   registerPublic?(router: Hono<AppEnv>, deps: PublicRouteDeps): void;
+  /**
+   * Optional SERVER-TO-SERVER routes, mounted under `/api/<version>/integrations/<id>` with no Bearer
+   * authentication or tenant middleware: each handler authenticates the caller itself (for example by
+   * verifying a request signature) and derives the store from that proof, never from the request body.
+   */
+  registerIntegration?(router: Hono<AppEnv>, deps: PublicRouteDeps): void;
+  /** Optional job run by the Worker's cron trigger (cleanup, reconciliation, ...). */
+  scheduled?(deps: ScheduledDeps): Promise<void>;
 }
 
 export class PluginRegistry {

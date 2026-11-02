@@ -26,6 +26,7 @@ import {
   ValidationError,
 } from '../../shared/errors';
 import { PersonalizationRepository, type AssetRow, type ConfigRow, type ConfigVersionRow } from './repository';
+import { signAsset, upgradeLegacyAssetUrls } from './asset-signature';
 import { validateProductConfig } from './validation';
 import {
   PLUGIN_ID,
@@ -65,8 +66,8 @@ export class PersonalizationService {
   private toRecord(row: ConfigRow): ConfigRecordDto {
     return {
       id: row.client_config_id,
-      draft: row.draft,
-      published: row.published,
+      draft: this.withSignedAssetUrls(row.draft),
+      published: this.withSignedAssetUrls(row.published),
       createdAt: Number(row.created_at_ms),
       updatedAt: Number(row.updated_at_ms),
       publishedAt: toNum(row.published_at_ms),
@@ -79,7 +80,18 @@ export class PersonalizationService {
     if (this.ctx.config.assetPublicBaseUrl) {
       return `${this.ctx.config.assetPublicBaseUrl}/${row.object_key}`;
     }
-    return `${this.ctx.origin}/api/${this.ctx.config.apiVersion}/plugins/${PLUGIN_ID}/assets/${row.id}/content`;
+    // The renderer loads images with plain browser requests (<img>, fetch), which cannot carry a Bearer
+    // token, so the stored reference is a signed URL on the public asset route. The signature binds it
+    // to this store and asset, so draft assets stay private. The Bearer-protected `/assets/:id/content`
+    // remains for API clients.
+    const base = `${this.ctx.origin}/api/${this.ctx.config.apiVersion}/storefront/${PLUGIN_ID}/assets/${row.id}`;
+    const secret = this.ctx.config.assetSigningSecret;
+    return secret ? `${base}?sig=${signAsset(secret, row.store_id, row.id)}` : base;
+  }
+
+  /** Configs saved before signed URLs hold Bearer-only URLs; re-point them so they still load. */
+  private withSignedAssetUrls<T>(config: T): T {
+    return upgradeLegacyAssetUrls(config, this.ctx.config.assetSigningSecret, this.ctx.storeId);
   }
 
   private toAsset(row: AssetRow): AssetDto {
@@ -315,6 +327,17 @@ export class PersonalizationService {
       const candidates = await repo.assetsForConfig(this.ctx.storeId, current.id);
       await repo.deleteByClientId(this.ctx.storeId, clientId);
       return { candidates };
+    }).catch((error: unknown) => {
+      // Customizations pin a published version (FK ... ON DELETE RESTRICT): a configuration that
+      // shoppers designed against or ordered cannot be deleted. Archiving it is the safe alternative.
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === '23503' || code === '23001') {
+        throw new ConflictError(
+          'This configuration has customer customizations and cannot be deleted. Archive it instead.',
+          { reason: 'config_has_customizations' },
+        );
+      }
+      throw error;
     });
     if (!outcome) throw new NotFoundError(`Configuration "${clientId}" was not found.`);
 

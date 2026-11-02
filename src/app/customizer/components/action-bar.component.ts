@@ -34,7 +34,7 @@ export interface PriceView {
 
     @if (blockers().length > 0) {
       <div class="blockers">
-        <p class="blockers-title">Before you can save:</p>
+        <p class="blockers-title">{{ blockersTitle() }}</p>
         <ul>
           @for (blocker of blockers(); track blocker) {
             <li>{{ blocker }}</li>
@@ -64,15 +64,17 @@ export interface PriceView {
         }
       </div>
       <div class="btn-row">
-        <button
-          type="button"
-          class="btn primary"
-          part="primary-button"
-          [disabled]="saveDisabled()"
-          (click)="save.emit()"
-        >
-          {{ saveLabel() }}
-        </button>
+        @if (showSave()) {
+          <button
+            type="button"
+            class="btn primary"
+            part="primary-button"
+            [disabled]="saveDisabled()"
+            (click)="save.emit()"
+          >
+            {{ saveLabel() }}
+          </button>
+        }
         <button
           type="button"
           class="btn secondary"
@@ -95,6 +97,9 @@ export class ActionBarComponent {
   readonly message = input<string | null>(null);
   readonly saveDisabled = input.required<boolean>();
   readonly resetDisabled = input.required<boolean>();
+  /** False when the host page owns the primary action (Add to cart), so no second Save button is shown. */
+  readonly showSave = input(true);
+  readonly blockersTitle = input('Before you can save:');
 
   readonly save = output<void>();
   readonly reset = output<void>();

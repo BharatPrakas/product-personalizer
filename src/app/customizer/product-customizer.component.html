@@ -150,6 +150,8 @@
               [message]="save.message()"
               [saveDisabled]="saveDisabled()"
               [resetDisabled]="resetDisabled()"
+              [showSave]="!hideSave()"
+              [blockersTitle]="hideSave() ? 'Before you can add to cart:' : 'Before you can save:'"
               (save)="onSave()"
               (reset)="onReset()"
             />

@@ -1,0 +1,28 @@
+{
+  "development": {
+    "storeadmin": {
+      "elementName": "zb-personalization-admin",
+      "script": "http://localhost:4600/main.js",
+      "styles": [
+        "http://localhost:4600/styles.css"
+      ]
+    },
+    "storefront": {
+      "elementName": "zb-personalization-storefront",
+      "script": "http://localhost:4600/main.js",
+     "styles": [
+        "http://localhost:4600/styles.css"
+      ]
+    }
+  },
+  "production": {
+    "storeadmin": {
+      "elementName": "zb-personalization-admin",
+      "file": "main-IANLJLTN.js"
+    },
+    "storefront": {
+      "elementName": "zb-personalization-storefront",
+      "file": "main-M65YF5AB.js"
+    }
+  }
+}

@@ -73,6 +73,32 @@ describe('S3ObjectStorage', () => {
     expect((error as Error).message).not.toContain('AKID');
   });
 
+  it('includes the S3 error code in the failure so the cause is diagnosable', async () => {
+    mockFetch(
+      () =>
+        new Response('<?xml version="1.0"?><Error><Code>InvalidAccessKeyId</Code><Message>secret detail</Message></Error>', {
+          status: 403,
+        }),
+    );
+    const error = await new S3ObjectStorage(SETTINGS)
+      .put('k.png', new ArrayBuffer(1), { contentType: 'image/png', storeId: 's' })
+      .catch((e: unknown) => e);
+    expect((error as Error).message).toBe('Object storage put failed with HTTP 403 (InvalidAccessKeyId).');
+    expect((error as Error).message).not.toContain('secret detail');
+  });
+
+  it('sends the session token when temporary credentials are used', async () => {
+    const calls = mockFetch(() => new Response(null, { status: 404 }));
+    await new S3ObjectStorage({ ...SETTINGS, sessionToken: 'TEMP-TOKEN' }).head('a.png');
+    expect(calls[0].headers.get('x-amz-security-token')).toBe('TEMP-TOKEN');
+  });
+
+  it('sends no session token for long-term keys', async () => {
+    const calls = mockFetch(() => new Response(null, { status: 404 }));
+    await new S3ObjectStorage(SETTINGS).head('a.png');
+    expect(calls[0].headers.has('x-amz-security-token')).toBe(false);
+  });
+
   it('HEAD returns null for a missing object', async () => {
     mockFetch(() => new Response(null, { status: 404 }));
     expect(await new S3ObjectStorage(SETTINGS).head('missing.png')).toBeNull();

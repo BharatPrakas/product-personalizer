@@ -17,8 +17,26 @@ export interface S3StorageSettings {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Required with temporary credentials (access key id starting `ASIA`); omit for long-term keys. */
+  sessionToken?: string | null;
   /** Optional S3-compatible endpoint, e.g. `http://127.0.0.1:9000`. Omit for AWS. */
   endpoint?: string | null;
+}
+
+/**
+ * Builds the error for a failed S3 call, including S3's error code (`<Code>` in the XML body, e.g.
+ * `InvalidAccessKeyId`, `SignatureDoesNotMatch`, `AccessDenied`). The code names the cause and is not
+ * sensitive; the rest of the body (which can echo request details) is discarded.
+ */
+async function failure(operation: string, response: Response): Promise<StorageRequestError> {
+  let code: string | undefined;
+  try {
+    const text = (await response.text()).slice(0, 4096);
+    code = /<Code>([A-Za-z0-9]+)<\/Code>/.exec(text)?.[1];
+  } catch {
+    // No readable body (for example a HEAD response).
+  }
+  return new StorageRequestError(operation, response.status, code);
 }
 
 /** Encodes each path segment but keeps the `/` separators that the key format relies on. */
@@ -35,6 +53,7 @@ export class S3ObjectStorage implements ObjectStorage {
     this.client = new AwsClient({
       accessKeyId: settings.accessKeyId,
       secretAccessKey: settings.secretAccessKey,
+      ...(settings.sessionToken ? { sessionToken: settings.sessionToken } : {}),
       service: 's3',
       region: settings.region,
       // aws4fetch retries 5xx/429 up to 10 times with exponential backoff by default, which could hold
@@ -69,7 +88,7 @@ export class S3ObjectStorage implements ObjectStorage {
       headers,
       body: body as BodyInit,
     });
-    if (!response.ok) throw new StorageRequestError('put', response.status);
+    if (!response.ok) throw await failure('put', response);
     const size = await this.sizeOf(key, body);
     return { size, etag: response.headers.get('etag') ?? '' };
   }
@@ -84,7 +103,7 @@ export class S3ObjectStorage implements ObjectStorage {
   async head(key: string): Promise<StoredObject | null> {
     const response = await this.client.fetch(this.url(key), { method: 'HEAD' });
     if (response.status === 404) return null;
-    if (!response.ok) throw new StorageRequestError('head', response.status);
+    if (!response.ok) throw await failure('head', response);
     return {
       size: Number(response.headers.get('content-length') ?? '0'),
       etag: response.headers.get('etag') ?? '',
@@ -94,7 +113,7 @@ export class S3ObjectStorage implements ObjectStorage {
   async get(key: string): Promise<FetchedObject | null> {
     const response = await this.client.fetch(this.url(key), { method: 'GET' });
     if (response.status === 404) return null;
-    if (!response.ok || !response.body) throw new StorageRequestError('get', response.status);
+    if (!response.ok || !response.body) throw await failure('get', response);
     return {
       body: response.body,
       size: Number(response.headers.get('content-length') ?? '0'),
@@ -106,6 +125,6 @@ export class S3ObjectStorage implements ObjectStorage {
   async delete(key: string): Promise<void> {
     const response = await this.client.fetch(this.url(key), { method: 'DELETE' });
     // S3 returns 204 for a delete, and 204 also for a missing key. 404 is treated as already gone.
-    if (!response.ok && response.status !== 404) throw new StorageRequestError('delete', response.status);
+    if (!response.ok && response.status !== 404) throw await failure('delete', response);
   }
 }

@@ -286,7 +286,7 @@ the API is not asked.
 
 ### Events
 
-Plain `CustomEvent`s dispatched on the element. They do **not** bubble; listen on the element.
+Plain `CustomEvent`s dispatched on the element. The `customizer-*` events below do **not** bubble; listen on the element. (The contract-v1 `zb:event`, next section, does bubble.)
 
 | Event | `event.detail` |
 |---|---|
@@ -297,6 +297,24 @@ Plain `CustomEvent`s dispatched on the element. They do **not** bubble; listen o
 
 Error codes: `invalid-config`, `config-conflict`, `config-load-failed`, `font-load-failed`, `asset-load-failed`,
 `asset-cors`, `asset-missing`, `restore-mismatch`, `export-failed`, `unexpected`.
+
+#### Extension mode (ZenBasket Extension Platform Contract v1)
+
+When the element resolves its template from the product (`product-id` + `api-base-url` + `store-id`) it can run as a
+platform **extension**: it never touches the cart or order APIs, talks to its host through one generic envelope, and
+saves the design to the personalization API itself. Everything above keeps working unchanged. Full contract:
+[`docs/extension-platform-contract-v1.md`](docs/extension-platform-contract-v1.md); reference host bridge and demo
+page: `integration-demo/extension-bridge.js`, `integration-demo/storefront-cart.html`.
+
+| Surface | What |
+|---|---|
+| attributes / properties | `instance-id` (generated if absent), `placement` (host label), `hide-save` (hide the element's own Save button: the host's Add to cart is the primary action) |
+| event `zb:event` | `bubbles` + `composed`. `detail = { contract: 1, extensionId, instanceId, slot, type, data, ts }` with standard types `ready {available}`, `rendered`, `gate {allowed, reason?}`, `error {code, recoverable}` (no message) and the custom `personalization.saved {customizationId, templateId, templateVersion}` |
+| method `prepareForCart()` | Call on Add to cart, **after** `await customElements.whenDefined('zb-product-customizer')`. Saves the design (photo, print-ready artwork per area, previews, then the customization) and resolves `{ customizationId }`, or `{}` for a product with no personalization; rejects with a shopper-safe `Error` to cancel the add. Concurrent calls share one save; an unchanged design reuses its customization |
+| host event `zb:host-event` | Dispatch `{ type: 'cart.line-added' }` on the element after the line is created, so the next add saves a fresh customization |
+
+Put only the returned `customizationId` on the cart line (as a line extension, namespace `personalization`). The
+element keeps its access token to itself; the id alone cannot read or change anything.
 
 Type declarations ship in `dist/product-personalization/types/` (`index.d.ts`, plus global `HTMLElementTagNameMap` entries so
 `document.createElement('zb-product-customizer')` and `('zb-personalization-admin')` are typed).
@@ -454,6 +472,9 @@ Then replace local ids (`local-…`) with durable references of your own, and an
   JSON (`print`), so call it *artwork export*, not universally print-ready output.
 
 ### Cart line-item convention
+
+(Standalone hosts that persist the design themselves from `customizer-save`. In extension mode the line carries the
+`personalization` line extension instead; see above.)
 
 The element never implements cart or checkout. Attach your own record id to the cart line so the order can be
 tied back to the saved design:

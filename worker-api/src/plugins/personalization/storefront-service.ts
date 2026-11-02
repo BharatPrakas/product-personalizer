@@ -16,6 +16,7 @@ import type { Logger } from '../../shared/logger';
 import { StorePluginsRepository } from '../../platform/plugin-permissions/repository';
 import { type ObjectStorage, assetKeyPrefix } from '../../storage/object-storage';
 import { originsFromSettings } from './settings-service';
+import { verifyAssetSignature } from './asset-signature';
 import { StorefrontRepository, type ServableAssetRow } from './storefront-repository';
 import {
   type AssetIndex,
@@ -110,13 +111,29 @@ export class StorefrontService {
   }
 
   /** The asset row plus its store's CORS settings, or null when it must not be served. */
-  async resolveAsset(assetId: string): Promise<{ asset: ServableAssetRow; store: ResolvedStore } | null> {
+  async resolveAsset(
+    assetId: string,
+    signature: string | null = null,
+  ): Promise<{ asset: ServableAssetRow; store: ResolvedStore; signed: boolean } | null> {
     if (!UUID.test(assetId)) return null;
-    const asset = await this.repo.getServableAsset(assetId.toLowerCase());
+    const id = assetId.toLowerCase();
+    // A valid signature (issued by this Worker for this store's asset) serves drafts too; otherwise the
+    // asset must be referenced by the store's published configuration.
+    let asset: ServableAssetRow | null = null;
+    let signed = false;
+    const secret = this.ctx.config.assetSigningSecret;
+    if (signature && secret) {
+      const stored = await this.repo.getStoredAsset(id);
+      if (stored && verifyAssetSignature(secret, stored.store_id, stored.id, signature)) {
+        asset = stored;
+        signed = true;
+      }
+    }
+    asset ??= await this.repo.getServableAsset(id);
     if (!asset) return null;
     if (!asset.object_key.startsWith(assetKeyPrefix(asset.store_id, STORAGE_FOLDER))) return null;
     const store = await this.resolveStore(asset.store_id);
-    return store ? { asset, store } : null;
+    return store ? { asset, store, signed } : null;
   }
 
   openAsset(asset: ServableAssetRow) {

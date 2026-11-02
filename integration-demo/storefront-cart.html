@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Product page with an extension slot</title>
+    <style>
+      body { margin: 0; font-family: system-ui, sans-serif; color: #1c1c28; background: #fafafa; line-height: 1.4; }
+      main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; gap: 24px; grid-template-columns: 1fr; }
+      @media (min-width: 900px) { main { grid-template-columns: 1.4fr 1fr; } }
+      h1 { margin: 0 0 4px; font-size: 1.4rem; }
+      h2 { margin: 0 0 8px; font-size: 1.1rem; }
+      p { margin: 0 0 8px; }
+      button { min-height: 44px; padding: 6px 16px; font-size: 1rem; cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: 0.55; }
+      #add { background: #3b30d9; color: #fff; border: 0; border-radius: 6px; }
+      #notice { color: #b00020; min-height: 1.4em; }
+      #reason { color: #5a5a6a; min-height: 1.4em; }
+      pre { background: #101018; color: #e8e8f0; padding: 12px; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 320px; }
+      .panel { background: #fff; border: 1px solid #e2e2ea; border-radius: 8px; padding: 16px; }
+      zb-product-customizer { display: block; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Demo product <small id="product-label"></small></h1>
+        <p>
+          A product page with ONE extension slot. The page knows nothing about personalization: a generic
+          <em>bridge</em> (<code>extension-bridge.js</code>) listens for <code>zb:event</code>, keeps Add to cart
+          disabled while the extension says so, and on click asks the extension to prepare, then puts the
+          returned values on the cart line.
+        </p>
+        <p id="setup"></p>
+        <!-- The slot. `data-zb-slot` is only a marker for the page; the manifest decides which tag it may host. -->
+        <div data-zb-slot="storefront.product.detail.block" id="slot" class="panel"></div>
+        <p><button id="add" type="button" disabled>Add to cart</button></p>
+        <p id="reason" role="status"></p>
+        <p id="notice" role="alert"></p>
+      </section>
+      <section>
+        <div class="panel">
+          <h2>Cart (simulated)</h2>
+          <pre id="cart">[]</pre>
+          <h2>What the order event would carry</h2>
+          <p>
+            After payment, the platform sends this to the extension’s backend (signed; see
+            <code>docs/extension-platform-contract-v1.md</code>, section 7). It is built only from the cart line.
+          </p>
+          <pre id="event">—</pre>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      import { createExtensionBridge } from './extension-bridge.js';
+
+      // Demo configuration (query string): ?api=http://127.0.0.1:8787&store=<store key>&product=<product id>&bundle=../storefront.js
+      const q = new URLSearchParams(location.search);
+      const api = q.get('api') ?? 'http://127.0.0.1:8787';
+      const store = q.get('store') ?? 'demo-store';
+      const product = q.get('product') ?? 'demo-product';
+      const variant = q.get('variant');
+      const bundle = q.get('bundle') ?? '../storefront.js';
+      document.getElementById('product-label').textContent = `(${product})`;
+      document.getElementById('setup').textContent =
+        `Store "${store}" · API ${api}. Publish a template and map it to product "${product}" first (store-admin demo).`;
+
+      // In the platform this comes from the plugin catalog (the extension's manifest).
+      const manifests = {
+        personalization: {
+          tag: 'zb-product-customizer',
+          permissions: ['cart.line-extensions:write', 'order.events:receive'],
+          lineExtensionKeys: ['customizationId'],
+        },
+      };
+
+      const addButton = document.getElementById('add');
+      const reason = document.getElementById('reason');
+      const notice = document.getElementById('notice');
+      const cartView = document.getElementById('cart');
+      const eventView = document.getElementById('event');
+      const cart = [];
+      window.testCart = cart; // for the browser tests
+
+      // Add to cart waits for the slot's extension to report in. A bundle that never loads must not block
+      // the page (contract section 9): after 10 s the slot is treated as empty.
+      let settled = false;
+      setTimeout(() => { settled = true; refresh(); }, 10_000);
+
+      const refresh = () => {
+        if (bridge.instances().length > 0) settled = true;
+        const blocked = bridge.addToCartBlocked();
+        addButton.disabled = !settled || blocked;
+        reason.textContent = blocked ? (bridge.blockedReason() ?? '') : '';
+        // An extension with nothing to show for this product collapses its slot.
+        for (const s of bridge.instances()) s.element.hidden = s.ready?.available === false;
+      };
+      const bridge = createExtensionBridge({ manifests, onChange: refresh });
+      window.testBridge = bridge;
+
+      // Disabled until an extension instance has reported; the bridge enables it as soon as nothing blocks.
+      addButton.addEventListener('click', async () => {
+        notice.textContent = '';
+        addButton.disabled = true;
+        try {
+          const lineExtensions = await bridge.collectLineExtensions(); // may reject with a shopper-safe message
+          const line = { id: `L${cart.length + 1}`, productId: product, variantId: variant, quantity: 1, lineExtensions };
+          cart.push(line);
+          bridge.notifyLineAdded({ lineId: line.id, quantity: line.quantity });
+          cartView.textContent = JSON.stringify(cart, null, 2);
+          // The generic order-event line: only this extension's namespace, keys without the prefix.
+          const mine = (id) => Object.fromEntries(lineExtensions.filter((e) => e.extensionId === id).map((e) => [e.key, e.value]));
+          eventView.textContent = JSON.stringify(
+            {
+              contract: 1, eventId: 'evt-…', type: 'order.confirmed', occurredAt: new Date().toISOString(), storeId: store,
+              order: { id: 'ORD-…' },
+              lines: cart.filter((l) => Object.keys(mine('personalization')).length).map((l) => ({
+                id: l.id, productId: l.productId, ...(l.variantId ? { variantId: l.variantId } : {}), quantity: l.quantity, extensions: mine('personalization'),
+              })),
+            },
+            null, 2,
+          );
+        } catch (error) {
+          notice.textContent = error instanceof Error ? error.message : 'The item could not be added.';
+        } finally {
+          refresh();
+        }
+      });
+
+      // Load the extension bundle (a module) and mount it in the slot, configured only through attributes.
+      await import(bundle);
+      const el = document.createElement('zb-product-customizer');
+      el.setAttribute('product-id', product);
+      el.setAttribute('store-id', store);
+      el.setAttribute('api-base-url', api);
+      el.setAttribute('placement', 'product-detail');
+      el.setAttribute('hide-save', '');
+      if (variant) el.setAttribute('variant-id', variant);
+      document.getElementById('slot').append(el);
+      window.testPageReady = true;
+    </script>
+  </body>
+</html>

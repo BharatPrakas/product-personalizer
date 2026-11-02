@@ -29,6 +29,7 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdr
 - [Database schema](#database-schema)
 - [API reference](#api-reference)
 - [Mappings, markups & the public storefront route](#mappings-markups--the-public-storefront-route)
+- [Customizations, order callback & cleanup](#customizations-order-callback--cleanup)
 - [Authentication & tenancy](#authentication--tenancy)
 - [R2 asset workflow](#r2-asset-workflow)
 - [End-to-end with the Angular elements](#end-to-end-with-the-angular-elements)
@@ -55,16 +56,17 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdr
 ```
 worker-api/
 ├── src/
-│   ├── index.ts                 # Worker entry (fetch handler)
+│   ├── index.ts                 # Worker entry (fetch + scheduled/cron handlers)
 │   ├── app.ts                   # Hono app assembly + plugin mounting
 │   ├── config/environment.ts    # Env bindings + parsed AppConfig
 │   ├── middleware/              # request-id, cors, database, auth, tenant, authorization, errors
-│   ├── platform/                # shared platform: plugin registry, installations, audit, controller
+│   ├── platform/                # shared platform: plugin registry, installations, audit, integration credentials, controller
 │   ├── plugins/personalization/ # the first plugin: routes/controller/service/repository/validation/types
 │   ├── database/                # pg-over-Hyperdrive connection + transaction helpers
 │   ├── storage/r2-storage.ts    # R2 object storage + safe key generation
 │   └── shared/                  # errors, responses, logger, jwt, image-sniff, Hono context types
 ├── migrations/                  # version-controlled SQL (platform + personalization)
+├── docs/zenbasket-integration.md # API contract for the ZenBasket backend team
 ├── scripts/migrate.mjs          # migration runner (trusted machine / CI, not in a request)
 ├── test/                        # vitest: unit + full HTTP integration (real Postgres + in-memory R2)
 ├── wrangler.jsonc               # Worker config, bindings, environments
@@ -190,6 +192,20 @@ The migration also adds a unique index `configs (id, store_id)` (needed by the c
 follow the existing convention (`*_ms` epoch-millisecond bigints, plus `created_at` / `updated_at`
 timestamptz). Per-store storefront CORS origins need **no new column**: they live in the existing
 `platform.store_plugins.settings` jsonb (`storefrontOrigins`).
+
+### `platform` / `personalization` additions (migrations `0004` and `0005`)
+
+| Table | Purpose |
+|---|---|
+| `platform.integration_credentials` | Per-store, per-plugin HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. FK to `store_plugins`. |
+| `customizations` | A shopper's saved design: pins `(config_id, store_id, config_version)` through a composite FK to `config_versions` (`ON DELETE RESTRICT`), records the ZenBasket `product_external_id` / `variant_external_id` and the mapping that matched, `data` jsonb, `status` (`saved` → `ordered` \| `expired`) with a CHECK tying status to its timestamps, and `expires_at` for the 30-day inactivity expiry. |
+| `customization_assets` | Customer files (private object-storage prefix `…/customizations/`): `kind` upload/preview, `status` uploaded → attached → released → deleting → deleted, `delete_after` (grace period), retry bookkeeping. Owner FK `(customization_id, store_id)`. Kept apart from `assets` so merchant-asset logic and public delivery can never touch customer files. |
+| `order_links` | The ZenBasket order line a customization was bought on. `UNIQUE (customization_id)` and `UNIQUE (store_id, external_order_id, external_line_id)` give the idempotency/conflict guarantees. |
+| `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per delivered event (it may carry several order lines); `results` (jsonb, migration `0006`) stores the per-line outcome so a replay answers identically. Written in the same transaction as the links. |
+| `cleanup_runs` | One row per scheduled cleanup run with its counts and outcome. |
+
+ZenBasket identifiers (store, product, variant, order, line) are plain `text`; there are **no foreign keys
+to ZenBasket's MySQL database**.
 
 Design rationale: the configuration is already a structured JSON document, so it is stored as JSONB
 and only lifecycle/ownership/versioning metadata is relational. Every row carries `store_id` and
@@ -348,6 +364,41 @@ Over the limit -> `429` with `Retry-After`. The counter store is injectable (`cr
 **per isolate, in memory** - best-effort only. In production also add Cloudflare WAF **rate-limiting rules** (or the Rate Limiting binding) for
 `/api/v1/storefront/*`; without a `CF-Connecting-IP` header (local dev) all clients share one bucket.
 
+## Customizations, order callback & cleanup
+
+The shopper-to-order flow — the storefront element saves a customization when the shopper adds to cart,
+ZenBasket carries its id on the cart line and order line, and confirms the order with a signed
+server-to-server event — is specified for the ZenBasket team in
+**[docs/zenbasket-integration.md](docs/zenbasket-integration.md)**, which implements the platform-wide
+**[Extension Platform Contract v1](../docs/extension-platform-contract-v1.md)**. Summary of the guarantees:
+
+- **Event auth:** HMAC-SHA256 over `"<timestamp>.<exact body>"`, per-store encrypted secrets, a
+  configurable timestamp window, constant-time comparison, and rotation with an overlap period. The store
+  comes from the credential, never the body.
+- **Generic envelope, per-line outcome:** `POST /api/v1/integrations/personalization/events` takes the
+  contract-v1 envelope (`order`, `lines[].extensions`). The whole event is ONE PostgreSQL transaction (event-id
+  dedup → per line, under a savepoint: row lock → product/variant check → link → `saved`→`ordered`). A line that
+  breaks a business rule is `rejected` in the per-line `results` (HTTP 200) without undoing or blocking the
+  others; a replay returns the *stored* results; the same `eventId` with a different payload is a 409; a
+  different order/line for an ordered customization is a rejected line; a zero-row conditional update triggers a
+  state re-read rather than a blind failure.
+- **Privacy:** the `customizationId` authorizes nothing by itself. Shoppers use a scoped, expiring token;
+  merchants are store-scoped; customer files sit in a private prefix streamed only after an access check.
+- **Cleanup:** an hourly cron (`scheduled()` → `CleanupService`) expires inactive `saved` customizations
+  (30 days), releases abandoned uploads, deletes released files after a grace period, and purges empty
+  tombstones. `ordered` customizations are never touched. Runs are recorded in `personalization.cleanup_runs`.
+
+Verification status: covered by node integration tests against real Postgres (including concurrent
+deliveries and mutation-checked safety guards) and exercised end to end on the real `workerd` runtime via
+`wrangler dev` with local R2: the storefront element in Chrome (via the reference bridge page) saves a design
+(photo, print-ready artwork and previews uploaded privately), the cart line carries only `customizationId`, a
+signed contract-v1 `order.confirmed` links it to the order line, a replay returns the stored result, and
+re-ordering it is rejected; the cron handler was checked via `--test-scheduled`.
+Known gap: the per-line savepoint is only exercised by rejections that happen before any write in that line, so
+no test proves a *partial write* inside a rejected line is rolled back (the case is defensive).
+Not verified without a live Cloudflare account: the deployed cron trigger, Hyperdrive behaviour under load,
+and real R2/S3 deletes of customer files (tests use an in-memory bucket).
+
 ## Authentication & tenancy
 
 The store/tenant identity is derived **only** from a verified credential — never from a client header,
@@ -391,6 +442,30 @@ stores/
 - Existing rows keep whatever key they were stored with. Assets uploaded under the earlier
   `personalization/<store>/<yyyy>/<mm>/` layout (local test data only) will be refused by the prefix
   check; re-upload them or clear the dev data.
+
+## Signed asset URLs
+
+The editor draws saved images with plain browser requests (`<img>`, `fetch`), which cannot send a Bearer
+token, and a draft's assets must not be public. So the delivery URL stored in a configuration is a
+signed URL on the public asset route:
+
+```
+<origin>/api/v1/storefront/personalization/assets/<uuid>?sig=<signature>
+```
+
+- `sig` is an HMAC-SHA256 over the store id and asset id, keyed by `ASSET_SIGNING_SECRET` (falls back to
+  `JWT_SIGNING_SECRET`). It never expires, so it can live in the configuration, and it only works for
+  that asset.
+- A valid signature serves the asset even while it is a draft (`Cache-Control: private`). Without one,
+  the route serves only assets referenced by the store's published configuration, as before.
+- The admin origins in `CORS_ALLOWED_ORIGINS` may load these URLs cross-origin, in addition to the
+  store's own storefront origins.
+- Configurations saved earlier with the Bearer-only URL (`/plugins/personalization/assets/<id>/content`)
+  are re-pointed at the signed URL whenever they are read, so no data migration is needed.
+- Set the secret per deployed environment: `wrangler secret put ASSET_SIGNING_SECRET --env production`
+  (and `--env staging`). Changing it later invalidates the URLs already saved in configurations, so
+  treat it as a long-lived value.
+- The Bearer-protected `GET /assets/:id/content` still exists for API clients.
 
 ## Storage backends
 
@@ -541,6 +616,8 @@ wrangler r2 bucket create zb-personalization-assets-production
 
 # 3. Set secrets (never in source):
 wrangler secret put JWT_SIGNING_SECRET --env production
+wrangler secret put INTEGRATION_ENCRYPTION_KEY --env production   # openssl rand -base64 32 — back it up!
+wrangler secret put CUSTOMIZATION_TOKEN_SECRET --env production
 #    (DEV_AUTH_TOKEN / DEV_STORE_ID are NOT set in production.)
 
 # 4. Apply migrations against the production database from CI/bastion:
@@ -609,7 +686,18 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 - **Publish fidelity during migration:** the Worker publishes the current draft, so a config with
   pending unpublished changes migrates with the cloud published snapshot reflecting the draft rather
   than the older published copy. Configs with no pending changes migrate faithfully.
-- **Abandoned-upload cleanup** relies on the reference check at delete time plus config-delete cleanup;
-  a scheduled sweep for orphaned `pending`/unreferenced assets is left as future work.
+- **Merchant-asset cleanup** (`personalization.assets`) still relies on the reference check at delete time
+  plus config-delete cleanup; the scheduled sweep covers *customer* files only.
+- **Ordered-customization retention is undefined.** Nothing deletes `ordered` customizations or their
+  files; define the business retention policy (and a purge) before this grows unbounded.
+- **Customer-upload abuse** is bounded by per-IP limits (in-memory, per isolate — add Cloudflare rate-limit
+  rules), the upload size cap, per-file image sniffing and the 24 h unattached-upload sweep; there is no
+  per-store quota on pending customizations or stored bytes yet.
+- **`customization.data` is validated structurally only** (object, ≤256 KB, bounded depth). It is not
+  checked against the config's fields/limits server-side.
+- **`INTEGRATION_ENCRYPTION_KEY` rotation** (re-encrypting stored secrets under a new master key) has no
+  tooling yet; the recovery path is to issue new credentials.
+- **Callback scope:** only `order.confirmed` is supported. Order cancellation/refund events do not change a
+  customization's state.
 - Server-side config validation is structural + limits + minimal publish-readiness; the authoritative
   deep/business validation remains the shared Angular validator.

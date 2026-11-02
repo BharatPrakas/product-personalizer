@@ -7,6 +7,8 @@ import type { SqlExecutor } from '../../database/connection';
 import type { ProductConfigLike } from './types';
 
 export interface ResolvedMappingRow {
+  /** Internal configuration uuid (what customizations reference). */
+  config_uuid: string;
   scope: 'product' | 'variant' | 'collection';
   external_id: string;
   client_config_id: string;
@@ -36,7 +38,7 @@ export class StorefrontRepository {
     target: { externalId: string; variantId: string | null; collectionIds: readonly string[] },
   ): Promise<ResolvedMappingRow | null> {
     const { rows } = await this.db.query<ResolvedMappingRow>(
-      `SELECT m.scope, m.external_id, c.client_config_id, c.published
+      `SELECT c.id AS config_uuid, m.scope, m.external_id, c.client_config_id, c.published
          FROM personalization.mappings m
          JOIN personalization.configs c ON c.id = m.config_id AND c.store_id = m.store_id
         WHERE m.store_id = $1
@@ -67,6 +69,16 @@ export class StorefrontRepository {
       [storeId, ids, keys],
     );
     return rows;
+  }
+
+  /** A stored asset by id, whether or not it is published. Callers must verify a signature first. */
+  async getStoredAsset(assetId: string): Promise<ServableAssetRow | null> {
+    const { rows } = await this.db.query<ServableAssetRow>(
+      `SELECT id, store_id, object_key, content_type, size_bytes, checksum_sha256
+         FROM personalization.assets WHERE id = $1 AND status = 'stored'`,
+      [assetId],
+    );
+    return rows[0] ?? null;
   }
 
   /**

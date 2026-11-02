@@ -16,6 +16,7 @@ export type CustomizerErrorCode =
   | 'asset-missing'
   | 'restore-mismatch'
   | 'export-failed'
+  | 'save-failed'
   | 'unexpected';
 
 /** Acknowledgement the host assigns to `saveResult`. */

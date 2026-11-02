@@ -81,6 +81,13 @@ export class RateLimitError extends ApiError {
   }
 }
 
+/** A feature whose required secret / binding is not configured on this environment. */
+export class ServiceUnavailableError extends ApiError {
+  constructor(code = 'service_unavailable', message = 'This feature is not available right now.') {
+    super(503, code, message);
+  }
+}
+
 export class InternalError extends ApiError {
   constructor(cause?: unknown) {
     super(500, 'internal_error', 'An unexpected error occurred.', undefined, false);

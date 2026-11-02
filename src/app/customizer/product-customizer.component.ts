@@ -1,6 +1,7 @@
 import {
   Component,
   DestroyRef,
+  ElementRef,
   ViewEncapsulation,
   computed,
   effect,
@@ -26,8 +27,11 @@ import {
   CustomizerSaveDetail,
   SaveResult,
 } from './models/events.models';
+import { LineExtensionValues, PERSONALIZATION_EXTENSION_ID } from './models/extension-contract';
 import { AssetStore } from './services/asset-store.service';
-import { CustomizerError } from './services/errors';
+import { CustomizationPersistence, PersistKind, UploadedFile } from './services/customization-persistence.service';
+import { ExtensionChannel, newInstanceId } from './services/extension-channel';
+import { CustomizerError, PrepareError, isAbortError } from './services/errors';
 import { ExportService } from './services/export.service';
 import { LoadOutcome, LoadPipeline, LoadRequest } from './services/load-pipeline.service';
 import { SaveCoordinator } from './services/save-coordinator.service';
@@ -47,6 +51,22 @@ export { coerceBoolean as coerceDisabled };
 function coerceTheme(value: unknown): 'light' | 'dark' | 'auto' {
   return value === 'dark' || value === 'auto' ? value : 'light';
 }
+
+/**
+ * Where the component publishes `prepareForCart` on its host element; `main.storefront.ts` exposes it
+ * as the element's public `prepareForCart()` method (Angular Elements has no method export).
+ */
+export const PREPARE_HOOK = Symbol.for('zb-product-customizer.prepareForCart');
+
+/** A prepared customization stays reusable for the same design until the host reports the line added. */
+interface Prepared {
+  key: string;
+  customizationId: string;
+  /** Epoch ms after which the server-side customization may have expired. */
+  validUntil: number;
+}
+
+const FALLBACK_REUSE_MS = 60 * 60 * 1000;
 
 type Resolution =
   | { kind: 'idle' }
@@ -85,7 +105,7 @@ function isSaveResult(value: unknown): value is SaveResult {
     ArtworkFieldComponent,
     ActionBarComponent,
   ],
-  providers: [AssetStore, StateService, SaveCoordinator, LoadPipeline, StorefrontResolver],
+  providers: [AssetStore, StateService, SaveCoordinator, LoadPipeline, StorefrontResolver, CustomizationPersistence],
   encapsulation: ViewEncapsulation.ShadowDom,
   templateUrl: './product-customizer.component.html',
   styleUrl: './product-customizer.component.scss',
@@ -120,6 +140,17 @@ export class ProductCustomizerComponent {
   /** Public storefront key of the store; not a secret. */
   readonly storeId = input<string | null>(null);
 
+  // ---- extension contract (docs/extension-platform-contract-v1.md) ------------------------------
+  /** Assigned by the host (attribute `instance-id`); generated once per element when absent. */
+  readonly instanceId = input<string | null>(null);
+  /** Host-defined label of where the element sits (attribute `placement`), echoed by the host, not by events. */
+  readonly placement = input<string | null>(null);
+  /**
+   * Hides this element's own Save button because the host's Add to cart is the primary action
+   * (attribute `hide-save`). The host then calls `prepareForCart()`.
+   */
+  readonly hideSave = input<boolean, unknown>(false, { transform: coerceBoolean });
+
   // ---- public outputs (aliases are the DOM event names) ----------------------------------
   readonly customizerReady = output<CustomizerReadyDetail>({ alias: 'customizer-ready' });
   readonly customizerChange = output<CustomizerChangeDetail>({ alias: 'customizer-change' });
@@ -131,6 +162,13 @@ export class ProductCustomizerComponent {
   private readonly pipeline = inject(LoadPipeline);
   private readonly exporter = inject(ExportService);
   private readonly resolver = inject(StorefrontResolver);
+  private readonly persistence = inject(CustomizationPersistence);
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
+  private readonly generatedInstanceId = newInstanceId();
+  private readonly channel = new ExtensionChannel(
+    this.hostElement,
+    () => this.instanceId() || this.generatedInstanceId,
+  );
 
   protected readonly failure = signal<{ message: string; issues: readonly ConfigIssue[] } | null>(
     null,
@@ -144,6 +182,11 @@ export class ProductCustomizerComponent {
   private destroyed = false;
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private lastChangeKey = '';
+  private lastGateKey = '';
+  private renderedSent = false;
+  private prepared: Prepared | null = null;
+  private preparing: Promise<LineExtensionValues> | null = null;
+  private prepareAbort: AbortController | null = null;
 
   // ---- derived view state ----------------------------------------------------------------
   protected readonly hostDisabled = this.disabled;
@@ -221,6 +264,27 @@ export class ProductCustomizerComponent {
 
   /** A transient failure while asking the API which template is mapped can be retried. */
   protected readonly canRetry = computed(() => this.resolution().kind === 'failed');
+
+  /**
+   * What the host should know about adding to cart. Only meaningful when the element resolves its own
+   * template from the product (the extension mode); a host that supplies a config manages its own flow.
+   */
+  private readonly gateState = computed<{ allowed: boolean; reason?: string } | null>(() => {
+    if (!this.productMode()) return null;
+    const resolution = this.resolution();
+    if (resolution.kind === 'unmapped') return { allowed: true }; // nothing to personalize here
+    if (resolution.kind === 'failed') {
+      return { allowed: false, reason: 'Personalization is temporarily unavailable. Please try again.' };
+    }
+    if (resolution.kind !== 'mapped' || this.state.status() !== 'ready') {
+      return { allowed: false, reason: 'Personalization is still loading.' };
+    }
+    if (this.hostDisabled()) return { allowed: false, reason: 'Personalization is unavailable right now.' };
+    if (!this.state.valid() || this.state.busy().size > 0) {
+      return { allowed: false, reason: this.blockers()[0] ?? 'Please complete the personalization.' };
+    }
+    return { allowed: true };
+  });
 
   /** True when the host asks for resolution by product rather than supplying a configuration. */
   private readonly productMode = computed(
@@ -308,7 +372,33 @@ export class ProductCustomizerComponent {
       untracked(() => this.scheduleChange(snapshot));
     });
 
-    inject(DestroyRef).onDestroy(() => this.teardown());
+    // `gate`: the host disables Add to cart while the design cannot be added yet.
+    effect(() => {
+      const gate = this.gateState();
+      if (!gate) return;
+      untracked(() => this.sendGate(gate));
+    });
+
+    // `rendered`: once per instance, after the first design is on screen.
+    effect(() => {
+      if (this.state.status() !== 'ready' || this.renderedSent) return;
+      this.renderedSent = true;
+      untracked(() => requestAnimationFrame(() => !this.destroyed && this.channel.emit('rendered', {})));
+    });
+
+    // The host reports the line was added: this customization is now spoken for (one customization is
+    // ordered at most once), so the next add must save a fresh one.
+    const stopHostEvents = this.channel.onHostEvent((type) => {
+      if (type === 'cart.line-added') this.prepared = null;
+    });
+
+    (this.hostElement as unknown as Record<symbol, unknown>)[PREPARE_HOOK] = () => this.prepareForCart();
+
+    inject(DestroyRef).onDestroy(() => {
+      stopHostEvents();
+      delete (this.hostElement as unknown as Record<symbol, unknown>)[PREPARE_HOOK];
+      this.teardown();
+    });
   }
 
   // ---- template helpers -------------------------------------------------------------------
@@ -399,6 +489,135 @@ export class ProductCustomizerComponent {
 
   protected onReset(): void {
     this.state.resetAll();
+  }
+
+  // ---- host command: prepare for cart (contract v1, section 5.2) --------------------------------
+
+  /**
+   * Called by the host when the shopper adds to cart. Saves the design to the personalization API and
+   * resolves with the line extension values (`{ customizationId }`) the platform attaches to the cart
+   * line. Rejects with a shopper-safe message to cancel the add. Concurrent calls share one save, and
+   * the same unchanged design reuses its customization.
+   */
+  prepareForCart(): Promise<LineExtensionValues> {
+    if (this.destroyed) return Promise.reject(new Error('The personalization is no longer available.'));
+    if (!this.productMode()) {
+      return Promise.reject(new Error('Personalization is not set up for this page.'));
+    }
+    const resolution = this.resolution();
+    if (resolution.kind === 'unmapped') return Promise.resolve({}); // nothing to attach
+    if (resolution.kind !== 'mapped' || this.state.status() !== 'ready') {
+      return Promise.reject(new Error('Personalization is still loading. Please wait a moment.'));
+    }
+    if (this.hostDisabled()) {
+      return Promise.reject(new Error('Personalization is unavailable right now.'));
+    }
+    if (!this.state.valid() || this.state.busy().size > 0) {
+      return Promise.reject(
+        new Error(this.blockers()[0] ?? 'Please complete the personalization before adding to cart.'),
+      );
+    }
+    this.preparing ??= this.runPrepare().finally(() => (this.preparing = null));
+    return this.preparing;
+  }
+
+  private async runPrepare(): Promise<LineExtensionValues> {
+    const target = { apiBaseUrl: this.apiBaseUrl()!, storeId: this.storeId()! };
+    const controller = new AbortController();
+    this.prepareAbort = controller;
+    try {
+      // A shopper editing mid-save would otherwise get a customization of a design they have left.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const config = this.state.config();
+        const evaluation = this.state.evaluation();
+        const customization = this.state.customization();
+        const composites = this.state.composites();
+        if (!config || !evaluation || !customization || composites.length === 0) {
+          throw new PrepareError('Personalization is still loading. Please wait a moment.');
+        }
+        const valuesKey = this.state.currentKey();
+        const variant = this.variantId() ?? '';
+        const key = `${config.id}@${config.version}|${variant}|${valuesKey}`;
+        if (this.prepared && this.prepared.key === key && this.prepared.validUntil > Date.now()) {
+          return { customizationId: this.prepared.customizationId };
+        }
+
+        const exported = await this.exporter.export({
+          scenes: evaluation.areas,
+          composites,
+          customization,
+          localAssets: this.state.assets.localAssets(),
+        });
+        const files: Array<{ kind: PersistKind; blob: Blob; filename: string }> = [
+          ...exported.assets.map((a) => ({ kind: 'upload' as const, blob: a.blob, filename: a.assetId })),
+          ...exported.artworks.map((a) => ({ kind: 'artwork' as const, blob: a.blob, filename: a.printableAreaId })),
+          ...exported.previews.map((p) => ({ kind: 'preview' as const, blob: p.blob, filename: p.mockupId })),
+        ];
+        const uploaded: UploadedFile[] = [];
+        for (const file of files) {
+          uploaded.push(await this.persistence.upload(target, file, controller.signal));
+        }
+        const refs = (offset: number, count: number) => uploaded.slice(offset, offset + count).map((u) => u.assetId);
+        const uploadRefs = refs(0, exported.assets.length);
+        const artworkRefs = refs(exported.assets.length, exported.artworks.length);
+        const previewRefs = refs(exported.assets.length + exported.artworks.length, exported.previews.length);
+
+        const created = await this.persistence.create(
+          target,
+          {
+            productId: this.productId()!,
+            variantId: this.variantId(),
+            collectionIds: this.collectionIds(),
+            configId: config.id,
+            configVersion: config.version,
+            // What the merchant needs to fulfil the order: the values, and which stored file is which.
+            data: {
+              schema: 1,
+              template: { id: config.id, version: config.version },
+              customization,
+              files: {
+                uploads: exported.assets.map((a, i) => ({
+                  assetId: a.assetId, ref: uploadRefs[i], mimeType: a.mimeType, width: a.width, height: a.height,
+                })),
+                artworks: exported.artworks.map((a, i) => ({
+                  printableAreaId: a.printableAreaId, artworkId: a.artworkId, width: a.width, height: a.height, ref: artworkRefs[i],
+                })),
+                previews: exported.previews.map((p, i) => ({ mockupId: p.mockupId, ref: previewRefs[i] })),
+              },
+            },
+            assets: uploaded,
+          },
+          controller.signal,
+        );
+
+        if (this.state.currentKey() !== valuesKey) continue; // the design changed while saving: save the new one
+        const expires = Date.parse(created.expiresAt);
+        this.prepared = {
+          key,
+          customizationId: created.customizationId,
+          validUntil: Number.isFinite(expires) ? expires - 60_000 : Date.now() + FALLBACK_REUSE_MS,
+        };
+        this.channel.emit(`${PERSONALIZATION_EXTENSION_ID}.saved`, {
+          customizationId: created.customizationId,
+          templateId: config.id,
+          templateVersion: config.version,
+        });
+        return { customizationId: created.customizationId };
+      }
+      throw new PrepareError('Your design changed while it was being saved. Please try again.');
+    } catch (error) {
+      // Only messages we wrote for shoppers leave this method; everything else is made generic.
+      if (error instanceof PrepareError) throw error;
+      if (error instanceof CustomizerError) {
+        this.emitError({ code: error.code, message: error.message, recoverable: error.recoverable });
+        throw new PrepareError(error.message);
+      }
+      if (isAbortError(error)) throw new PrepareError('Saving was cancelled.');
+      this.emitError({ code: 'save-failed', message: 'The design could not be saved.', recoverable: true });
+      throw new PrepareError('Your design could not be saved. Please try again.');
+    } finally {
+      if (this.prepareAbort === controller) this.prepareAbort = null;
+    }
   }
 
   // ---- load lifecycle -------------------------------------------------------------------
@@ -596,7 +815,10 @@ export class ProductCustomizerComponent {
   }
 
   private emitReady(detail: CustomizerReadyDetail): void {
-    if (!this.destroyed) this.customizerReady.emit(detail);
+    if (this.destroyed) return;
+    this.customizerReady.emit(detail);
+    // Contract v1 `ready`: `available: false` tells the host to collapse the slot.
+    this.channel.emit('ready', { available: detail.personalizable !== false });
   }
 
   private emitSave(detail: CustomizerSaveDetail): void {
@@ -604,13 +826,24 @@ export class ProductCustomizerComponent {
   }
 
   private emitError(detail: CustomizerErrorDetail): void {
-    if (!this.destroyed) this.customizerError.emit(detail);
+    if (this.destroyed) return;
+    this.customizerError.emit(detail);
+    // `message` is deliberately not forwarded: contract v1 `error` carries a code only.
+    this.channel.emit('error', { code: detail.code, recoverable: detail.recoverable });
+  }
+
+  private sendGate(gate: { allowed: boolean; reason?: string }): void {
+    const key = `${gate.allowed}|${gate.reason ?? ''}`;
+    if (key === this.lastGateKey || this.destroyed) return;
+    this.lastGateKey = key;
+    this.channel.emit('gate', gate);
   }
 
   private teardown(): void {
     this.destroyed = true;
     this.abort?.abort();
     this.resolveAbort?.abort();
+    this.prepareAbort?.abort();
     this.cancelPendingChange();
     this.save.cancel();
     this.state.dispose();

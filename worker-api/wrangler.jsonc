@@ -15,6 +15,9 @@
 
   // --- Non-secret vars. Secrets (DB password inside the Hyperdrive connection string, JWT signing
   // --- key) are NEVER placed here; set them with `wrangler secret put` / `.dev.vars`. See README.
+  // Hourly cleanup of abandoned customizations and customer files (see CleanupService).
+  "triggers": { "crons": ["17 * * * *"] },
+
   "vars": {
     "ENVIRONMENT": "development",
     "API_VERSION": "v1",
@@ -45,6 +48,7 @@
 
   "env": {
     "staging": {
+      "triggers": { "crons": ["17 * * * *"] },
       "vars": {
         "ENVIRONMENT": "staging",
         "API_VERSION": "v1",
@@ -61,6 +65,7 @@
       ]
     },
     "production": {
+      "triggers": { "crons": ["17 * * * *"] },
       "vars": {
         "ENVIRONMENT": "production",
         "API_VERSION": "v1",

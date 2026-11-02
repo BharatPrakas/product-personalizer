@@ -215,7 +215,7 @@ describe('R2 asset flow', () => {
     expect(asset.contentType).toBe('image/png');
     expect(asset.sizeBytes).toBe(tinyPng().byteLength);
     expect(asset.checksumSha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(asset.deliveryUrl).toContain(`/assets/${asset.id}/content`);
+    expect(asset.deliveryUrl).toContain(`/api/v1/storefront/personalization/assets/${asset.id}`);
     expect(sharedBucket.objects.has(asset.objectKey)).toBe(true);
     // Stored under this store's folder for this plugin.
     expect(asset.objectKey).toMatch(
@@ -230,6 +230,67 @@ describe('R2 asset flow', () => {
 
     const list = await json(await call('/api/v1/plugins/personalization/assets'));
     expect(list.data.length).toBe(1);
+  });
+
+  const pathAndQuery = (url: string) => {
+    const u = new URL(url);
+    return `${u.pathname}${u.search}`;
+  };
+
+  it('serves the stored delivery URL with no token, even for an unpublished (draft) asset', async () => {
+    const asset = (await json(await upload())).data;
+    expect(asset.deliveryUrl).toContain('?sig=');
+
+    const res = await call(pathAndQuery(asset.deliveryUrl), { token: null });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('image/png');
+    expect(res.headers.get('Cache-Control')).toContain('private');
+    expect(new Uint8Array(await res.arrayBuffer()).byteLength).toBe(tinyPng().byteLength);
+  });
+
+  it('refuses a draft asset without a valid signature', async () => {
+    const asset = (await json(await upload())).data;
+    const path = new URL(asset.deliveryUrl).pathname;
+
+    expect((await call(path, { token: null })).status).toBe(404);
+    expect((await call(`${path}?sig=not-a-real-signature`, { token: null })).status).toBe(404);
+    // A signature for a different asset id does not transfer.
+    const other = (await json(await upload())).data;
+    const otherSig = new URL(other.deliveryUrl).search;
+    expect((await call(`${path}${otherSig}`, { token: null })).status).toBe(404);
+  });
+
+  it('lets the admin origin load the delivery URL cross-origin, and not a stranger', async () => {
+    const asset = (await json(await upload())).data;
+    const url = pathAndQuery(asset.deliveryUrl);
+
+    const admin = await call(url, { token: null, origin: 'http://localhost:4200' });
+    expect(admin.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:4200');
+
+    const preflight = await call(url, { method: 'OPTIONS', token: null, origin: 'http://localhost:4200' });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:4200');
+
+    const stranger = await call(url, { token: null, origin: 'http://evil.example' });
+    expect(stranger.headers.get('Access-Control-Allow-Origin')).toBeNull();
+  });
+
+  it('re-points a config saved with the old Bearer-only URL at the signed URL when it is read', async () => {
+    const asset = (await json(await upload())).data;
+    const legacy = `http://api.test/api/v1/plugins/personalization/assets/${asset.id}/content`;
+    await call('/api/v1/plugins/personalization/configs', {
+      method: 'POST',
+      body: {
+        clientConfigId: 'cfg-legacy',
+        draft: sampleDraft({ id: 'cfg-legacy', mockups: [{ id: 'm1', name: 'Front', src: legacy, placements: [] }] }),
+      },
+    });
+
+    const record = (await json(await call('/api/v1/plugins/personalization/configs/cfg-legacy'))).data;
+    const src: string = record.draft.mockups[0].src;
+    expect(src).toBe(asset.deliveryUrl);
+    const res = await call(pathAndQuery(src), { token: null });
+    expect(res.status).toBe(200);
   });
 
   it('rejects a file whose bytes are not a supported image', async () => {

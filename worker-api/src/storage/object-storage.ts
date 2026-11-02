@@ -68,6 +68,24 @@ export function generateObjectKey({ storageFolder, storeId, type }: KeyParts): s
   return key;
 }
 
+/**
+ * `stores/<store>/<plugin-folder>/customizations/` — PRIVATE customer files (uploaded artwork, rendered
+ * previews). Deliberately a sibling of `assets/`, never beneath it: the public asset route only serves
+ * keys under `assets/`, so a customer file can never be delivered through it.
+ */
+export function customizationKeyPrefix(storeId: string, storageFolder: string): string {
+  return `stores/${safeSegment(storeId)}/${assertStorageFolder(storageFolder)}/customizations/`;
+}
+
+/** `stores/<store>/<plugin-folder>/customizations/<uuid>.<ext>`, built from sanitized parts only. */
+export function generateCustomizationObjectKey({ storageFolder, storeId, type }: KeyParts): string {
+  const key = `${customizationKeyPrefix(storeId, storageFolder)}${crypto.randomUUID()}.${EXTENSION[type]}`;
+  if (key.includes('..') || key.startsWith('/') || key.includes('//')) {
+    throw new Error('Refusing to build an unsafe object key.');
+  }
+  return key;
+}
+
 export interface PutOptions {
   contentType: string;
   /** Hex SHA-256 of the bytes, recorded in the database for integrity checks. */
@@ -102,9 +120,12 @@ export class StorageRequestError extends Error {
   constructor(
     readonly operation: string,
     readonly status: number,
+    /** The backend's error code (for example S3's `AccessDenied`), when it returned one. */
+    readonly code?: string,
   ) {
-    // Status and operation only: no URLs, keys or credentials reach logs or responses.
-    super(`Object storage ${operation} failed with HTTP ${status}.`);
+    // Operation, status and the backend's error code only: no URLs, keys or credentials reach logs or
+    // responses. Clients still see an opaque 500.
+    super(`Object storage ${operation} failed with HTTP ${status}${code ? ` (${code})` : ''}.`);
     this.name = 'StorageRequestError';
   }
 }

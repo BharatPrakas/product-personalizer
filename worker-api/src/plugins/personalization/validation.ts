@@ -253,3 +253,115 @@ export const storefrontConfigQuerySchema = z.object({
   variantId: externalIdSchema.optional(),
   collectionIds: z.string().max(4000).optional(),
 });
+
+// ---- customizations, uploads, order callback ----------------------------------------------------------
+
+export const MAX_CUSTOMIZATION_DATA_BYTES = 256 * 1024;
+export const MAX_CUSTOMIZATION_ASSETS = 20;
+/** The callback body is a handful of short strings; anything larger is refused before parsing. */
+export const MAX_CALLBACK_BODY_BYTES = 16 * 1024;
+export const ORDER_EVENT_TYPE_CONFIRMED = 'order.confirmed';
+
+const uuidSchema = z.string().trim().pipe(z.uuid());
+
+/** Every public customer route is addressed to a store by its public key, in the query string. */
+export const customerStoreQuerySchema = z.object({
+  storeId: z.string().trim().min(1).max(256),
+});
+
+export const customerUploadQuerySchema = customerStoreQuerySchema.extend({
+  kind: z.enum(['upload', 'preview', 'artwork']).default('upload'),
+  filename: z.string().trim().max(255).optional(),
+});
+
+const assetRefSchema = z.object({
+  assetId: uuidSchema,
+  /** Required to attach a new upload; omitted for assets already attached to this customization. */
+  uploadToken: z.string().min(1).max(2048).optional(),
+});
+
+const customizationDataSchema = z.unknown().superRefine((value, ctx) => {
+  const result = validateCustomizationData(value);
+  for (const issue of result.issues) ctx.addIssue({ code: 'custom', message: issue.message, path: [] });
+});
+
+export const createCustomizationSchema = z.object({
+  productId: externalIdSchema,
+  variantId: externalIdSchema.optional(),
+  collectionIds: z.array(externalIdSchema).max(MAX_COLLECTION_IDS).optional(),
+  /** The configuration the storefront rendered (`configId` / `version` of the config response). */
+  configId: clientIdSchema,
+  configVersion: z.number().int().min(1),
+  data: customizationDataSchema,
+  assets: z.array(assetRefSchema).max(MAX_CUSTOMIZATION_ASSETS).default([]),
+});
+
+export const updateCustomizationSchema = z.object({
+  data: customizationDataSchema,
+  assets: z.array(assetRefSchema).max(MAX_CUSTOMIZATION_ASSETS).default([]),
+});
+
+/** A customization payload must be a JSON object, bounded in size and nesting. */
+export function validateCustomizationData(raw: unknown): ConfigValidation {
+  const issues: FieldIssue[] = [];
+  const add = (code: string, message: string) => issues.push({ path: 'data', code, message });
+  if (!isPlainObject(raw)) {
+    add('not_object', 'data must be a JSON object.');
+    return { ok: false, issues };
+  }
+  if (jsonDepth(raw) > MAX_MARKUP_DEPTH) add('too_deep', `data is nested deeper than ${MAX_MARKUP_DEPTH} levels.`);
+  const size = new TextEncoder().encode(JSON.stringify(raw)).length;
+  if (size > MAX_CUSTOMIZATION_DATA_BYTES) add('too_large', `data exceeds ${MAX_CUSTOMIZATION_DATA_BYTES} bytes.`);
+  return { ok: issues.length === 0, issues };
+}
+
+/**
+ * The signed order-event envelope (Extension Platform Contract v1, section 7). Strict: unknown keys are
+ * rejected so a typo in the integration (e.g. `order_id`) fails loudly instead of being silently ignored.
+ * `lines` holds only the order lines that carry this extension's line extensions.
+ */
+const orderLineSchema = z
+  .object({
+    id: externalIdSchema,
+    productId: externalIdSchema,
+    /** Optional: the purchased variant. When present and the customization recorded one, they must match. */
+    variantId: externalIdSchema.optional(),
+    quantity: z.number().int().min(1).max(1_000_000).optional(),
+    /** The extension's own namespace, keys without the prefix, e.g. `{ customizationId }`. */
+    extensions: z.record(z.string().min(1).max(40), z.string().max(512)).default({}),
+  })
+  .strict();
+
+export const MAX_ORDER_EVENT_LINES = 100;
+
+export const orderEventSchema = z
+  .object({
+    contract: z.literal(1),
+    eventId: z.string().trim().min(1).max(128),
+    type: z.string().trim().min(1).max(64),
+    occurredAt: z.iso.datetime({ offset: true }),
+    storeId: z.string().trim().min(1).max(256),
+    order: z.object({ id: externalIdSchema }).strict(),
+    lines: z.array(orderLineSchema).min(1).max(MAX_ORDER_EVENT_LINES),
+  })
+  .strict()
+  .refine((event) => new Set(event.lines.map((l) => l.id)).size === event.lines.length, {
+    message: 'Line ids must be unique within an event.',
+    path: ['lines'],
+  });
+
+export const credentialCreateSchema = z.object({
+  label: z.string().trim().max(120).default(''),
+});
+
+export const credentialRotateSchema = z
+  .object({ gracePeriodSeconds: z.number().int().min(0).max(7 * 24 * 60 * 60).optional() })
+  .default({});
+
+export const customizationListQuerySchema = z.object({
+  status: z.enum(['saved', 'ordered', 'expired']).optional(),
+  orderId: externalIdSchema.optional(),
+  productId: externalIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().trim().min(1).max(256).optional(),
+});

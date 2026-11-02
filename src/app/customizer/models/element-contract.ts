@@ -6,6 +6,7 @@
 import type { CustomizerConfig } from './config.models';
 import type { ProductConfig } from './product.models';
 import type { AssetMapInput, Customization } from './draft.models';
+import type { LineExtensionValues, ZbEvent } from './extension-contract';
 import type {
   CustomizerChangeDetail,
   CustomizerErrorDetail,
@@ -18,6 +19,12 @@ export const CUSTOMIZER_TAG = 'zb-product-customizer';
 
 /** Event name -> `event.detail` type. Events do not bubble; listen on the element itself. */
 export interface ZbProductCustomizerEventMap {
+  /**
+   * Extension Platform Contract v1 envelope (`ready`, `rendered`, `gate`, `error`, `personalization.saved`).
+   * Unlike the `customizer-*` events below it BUBBLES and is composed, so a host bridge can listen once on
+   * `document`. See `extension-contract.ts` and docs/extension-platform-contract-v1.md.
+   */
+  'zb:event': CustomEvent<ZbEvent>;
   'customizer-ready': CustomEvent<CustomizerReadyDetail>;
   'customizer-change': CustomEvent<CustomizerChangeDetail>;
   'customizer-save': CustomEvent<CustomizerSaveDetail>;
@@ -59,6 +66,20 @@ export interface ZbProductCustomizerElement extends HTMLElement {
   variantId: string | null;
   /** Collections the product belongs to (property: string[]; attribute `collection-ids`: comma separated). */
   collectionIds: readonly string[];
+  /** Assigned by the host (attribute `instance-id`); the element generates one when absent. Echoed in every `zb:event`. */
+  instanceId: string | null;
+  /** Host-defined label of where the element sits, e.g. `product-detail` (attribute `placement`). */
+  placement: string | null;
+  /** Hides the element's own Save button: the host's Add to cart is the primary action (attribute `hide-save`). */
+  hideSave: boolean;
+  /**
+   * Host command (contract v1, section 5.2): call when the shopper adds to cart. Saves the design to the
+   * personalization API and resolves with the cart line extension values, `{ customizationId }`; resolves
+   * `{}` when the product has no personalization. Rejects with an `Error` whose message is safe to show to
+   * the shopper (the add should then be cancelled). Concurrent calls share one save; an unchanged design
+   * reuses its customization until the host dispatches `zb:host-event` `cart.line-added`.
+   */
+  prepareForCart(): Promise<LineExtensionValues>;
   /** Base URL of the personalization API (attribute `api-base-url`). */
   apiBaseUrl: string | null;
   /** Public storefront key of the store (attribute `store-id`); identifies the store, grants nothing. */

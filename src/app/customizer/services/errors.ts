@@ -20,6 +20,14 @@ export class UploadError extends Error {
   }
 }
 
+/** Thrown by `prepareForCart` with a message that is safe to show the shopper as-is. */
+export class PrepareError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PrepareError';
+  }
+}
+
 export function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }

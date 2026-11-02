@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { createApp } from '../src/app';
+import { signBody } from '../src/platform/integration-credentials/signature';
 import type { Env } from '../src/config/environment';
 
 const { Client } = pg;
@@ -21,6 +22,8 @@ export const TEST_DATABASE_URL =
   'postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_test';
 
 export const DEV_TOKEN = 'test-dev-token';
+/** 32 bytes, base64 — the test master key for integration secrets. */
+export const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 export const STORE_A = 'store_alpha';
 export const STORE_B = 'store_beta';
 
@@ -109,6 +112,11 @@ export function makeEnv(bucket: InMemoryR2 = new InMemoryR2()): Env & { bucket: 
     LOG_LEVEL: 'error',
     DEV_AUTH_TOKEN: DEV_TOKEN,
     DEV_STORE_ID: STORE_A,
+    ASSET_SIGNING_SECRET: 'test-asset-signing-secret',
+    INTEGRATION_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+    CUSTOMIZATION_TOKEN_SECRET: 'test-customization-token-secret',
+    STOREFRONT_WRITE_RATE_LIMIT: '100000',
+    ORDER_CALLBACK_RATE_LIMIT: '100000',
     bucket,
   };
 }
@@ -204,7 +212,10 @@ export async function truncateAll(): Promise<void> {
   try {
     await client.query(
       `TRUNCATE personalization.config_versions, personalization.assets, personalization.markups,
-                personalization.configs, platform.store_plugins, platform.audit_logs
+                personalization.configs, personalization.customizations,
+                personalization.customization_assets, personalization.order_links,
+                personalization.integration_events, personalization.cleanup_runs,
+                platform.integration_credentials, platform.store_plugins, platform.audit_logs
        RESTART IDENTITY CASCADE`,
     );
   } finally {
@@ -314,4 +325,181 @@ export async function queryDb<T = Record<string, unknown>>(text: string, params:
   } finally {
     await client.end();
   }
+}
+
+
+// ---- customization / order-callback fixtures ----
+
+export const INTEGRATIONS = '/api/v1/integrations/personalization';
+export const PRODUCT_ID = 'zb-prod-1';
+
+/** Publish a config for `storeId`, map it to `productId`, and return the config id. */
+export async function seedPersonalizableProduct(
+  storeId: string = STORE_A,
+  productId: string = PRODUCT_ID,
+  configId = 'cfg-cz1',
+): Promise<string> {
+  await seedPublished(configId, storeId);
+  const res = await mapTo(configId, 'product', productId, storeId);
+  if (res.status !== 201) throw new Error(`mapTo failed: ${res.status} ${await res.text()}`);
+  return configId;
+}
+
+/** What the storefront element renders from: the config response for a product. */
+export async function storefrontConfig(storeId: string = STORE_A, productId: string = PRODUCT_ID): Promise<any> {
+  const res = await call(`${STOREFRONT}/products/${productId}/config?storeId=${storeId}`, { token: null });
+  return (await json(res)).data;
+}
+
+export async function uploadCustomerImage(
+  storeId: string = STORE_A,
+  kind: 'upload' | 'preview' = 'upload',
+  env?: Partial<Env>,
+): Promise<any> {
+  const res = await call(`${STOREFRONT}/uploads?storeId=${storeId}&kind=${kind}`, {
+    method: 'POST',
+    token: null,
+    rawBody: tinyPng(),
+    headers: { 'Content-Type': 'image/png' },
+    env,
+  });
+  if (res.status !== 201) throw new Error(`uploadCustomerImage failed: ${res.status} ${await res.text()}`);
+  return (await json(res)).data;
+}
+
+export interface SavedCustomization {
+  customizationId: string;
+  accessToken: string;
+  expiresAt: string;
+}
+
+/** Save a customization the way the storefront does; returns its id and access token. */
+export async function saveCustomization(
+  options: {
+    storeId?: string;
+    productId?: string;
+    data?: Record<string, unknown>;
+    assets?: Array<{ assetId: string; uploadToken: string }>;
+    env?: Partial<Env>;
+  } = {},
+): Promise<SavedCustomization> {
+  const storeId = options.storeId ?? STORE_A;
+  const productId = options.productId ?? PRODUCT_ID;
+  const cfg = await storefrontConfig(storeId, productId);
+  const res = await call(`${STOREFRONT}/customizations?storeId=${storeId}`, {
+    method: 'POST',
+    token: null,
+    env: options.env,
+    body: {
+      productId,
+      configId: cfg.configId,
+      configVersion: cfg.version,
+      data: options.data ?? { fields: { name: 'Ada' } },
+      assets: options.assets ?? [],
+    },
+  });
+  if (res.status !== 201) throw new Error(`saveCustomization failed: ${res.status} ${await res.text()}`);
+  return (await json(res)).data;
+}
+
+export async function createCredential(storeId: string = STORE_A): Promise<{ id: string; secret: string }> {
+  const res = await call(`${ADMIN}/integration/credentials`, { method: 'POST', storeId, body: { label: 'test' } });
+  if (res.status !== 201) throw new Error(`createCredential failed: ${res.status} ${await res.text()}`);
+  return (await json(res)).data;
+}
+
+export interface OrderEventLineBody {
+  id: string;
+  productId: string;
+  variantId?: string;
+  quantity?: number;
+  extensions: Record<string, string>;
+}
+
+/** The contract-v1 order event envelope (docs/extension-platform-contract-v1.md, section 7). */
+export interface OrderEventBody {
+  contract: 1;
+  eventId: string;
+  type: string;
+  occurredAt: string;
+  storeId: string;
+  order: { id: string };
+  lines: OrderEventLineBody[];
+}
+
+/** One line of an event: a customization on an order line. */
+export function orderLine(customizationId: string, overrides: Partial<OrderEventLineBody> = {}): OrderEventLineBody {
+  return {
+    id: 'LINE-1',
+    productId: PRODUCT_ID,
+    quantity: 1,
+    extensions: { customizationId },
+    ...overrides,
+  };
+}
+
+/** A whole event with the given lines. */
+export function orderEventWith(lines: OrderEventLineBody[], overrides: Partial<OrderEventBody> = {}): OrderEventBody {
+  return {
+    contract: 1,
+    eventId: `evt-${crypto.randomUUID()}`,
+    type: 'order.confirmed',
+    occurredAt: new Date().toISOString(),
+    storeId: STORE_A,
+    order: { id: 'ORD-1001' },
+    lines,
+    ...overrides,
+  };
+}
+
+/**
+ * Single-line convenience: `orderId` / `lineId` / `productId` / `variantId` / `quantity` override the
+ * line and order; every other key overrides the envelope.
+ */
+export function orderEvent(
+  customizationId: string,
+  overrides: Partial<OrderEventBody> & {
+    orderId?: string;
+    lineId?: string;
+    productId?: string;
+    variantId?: string;
+    quantity?: number;
+  } = {},
+): OrderEventBody {
+  const { orderId, lineId, productId, variantId, quantity, ...envelope } = overrides;
+  return orderEventWith(
+    [
+      orderLine(customizationId, {
+        ...(lineId !== undefined ? { id: lineId } : {}),
+        ...(productId !== undefined ? { productId } : {}),
+        ...(variantId !== undefined ? { variantId } : {}),
+        ...(quantity !== undefined ? { quantity } : {}),
+      }),
+    ],
+    { ...(orderId !== undefined ? { order: { id: orderId } } : {}), ...envelope },
+  );
+}
+
+/** POST a signed order callback (signed exactly as the integration contract documents). */
+export async function postOrderEvent(
+  credential: { id: string; secret: string },
+  event: OrderEventBody | string,
+  options: { timestamp?: number; signWith?: string; env?: Partial<Env>; headers?: Record<string, string> } = {},
+): Promise<Response> {
+  const body = typeof event === 'string' ? event : JSON.stringify(event);
+  const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
+  const signature = signBody(options.signWith ?? credential.secret, timestamp, body);
+  return call(`${INTEGRATIONS}/events`, {
+    method: 'POST',
+    token: null,
+    rawBody: new TextEncoder().encode(body),
+    env: options.env,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-ZB-Key-Id': credential.id,
+      'X-ZB-Timestamp': String(timestamp),
+      'X-ZB-Signature': signature,
+      ...options.headers,
+    },
+  });
 }

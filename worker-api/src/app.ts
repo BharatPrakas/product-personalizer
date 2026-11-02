@@ -62,6 +62,19 @@ export function createApp(
     app.route(`${API_BASE}/storefront/${plugin.id}`, publicRouter);
   }
 
+  // Server-to-server plugin routes (signed callbacks). Each handler authenticates the caller itself.
+  for (const plugin of registry.all()) {
+    if (!plugin.registerIntegration) continue;
+    const integrationRouter = new Hono<AppEnv>();
+    integrationRouter.use('*', async (c, next) => {
+      await next();
+      c.res.headers.set('Cache-Control', 'no-store');
+    });
+    plugin.registerIntegration(integrationRouter, { rateLimiter });
+    app.route(`${API_BASE}/integrations/${plugin.id}`, integrationRouter);
+  }
+  app.all(`${API_BASE}/integrations/*`, notFound);
+
   // Anything else under the public prefix is a plain 404 (not a 401 from the secured area below).
   app.all(`${API_BASE}/storefront/*`, notFound);
 

@@ -12,11 +12,14 @@ import type {
   CustomizerErrorDetail,
   CustomizerSaveDetail,
   Customization,
+  LineExtensionValues,
   MappingChangedDetail,
   ProductMapping,
   ProductRef,
   SaveResult,
   ViewChangeDetail,
+  ZbEvent,
+  ZbStandardEventData,
   ZbPersonalizationAdminElement,
   ZbProductCustomizerElement,
 } from '../../dist/product-personalization/types/index';
@@ -188,3 +191,34 @@ void badMapping;
 admin.persistence = 'edge';
 // @ts-expect-error unknown admin event detail field
 admin.addEventListener('admin-error', (event) => void event.detail.stack);
+
+// ---- Extension Platform Contract v1 -------------------------------------------------------------------
+
+// `zb:event` is typed on the element, with the generic envelope.
+element.addEventListener('zb:event', (event) => {
+  const envelope: ZbEvent = event.detail;
+  const id: string = envelope.instanceId;
+  void id;
+  if (envelope.type === 'gate') {
+    const gate = envelope.data as ZbStandardEventData['gate'];
+    const allowed: boolean = gate.allowed;
+    void allowed;
+  }
+});
+
+// context attributes as properties
+element.instanceId = 'inst-1';
+element.placement = 'product-detail';
+element.hideSave = true;
+// @ts-expect-error instanceId is a string or null
+element.instanceId = 42;
+
+// the host command resolves line extension values (string -> string), never arbitrary data
+const values: Promise<LineExtensionValues> = element.prepareForCart();
+void values;
+void values.then((v) => {
+  const customizationId: string | undefined = v['customizationId'];
+  void customizationId;
+  // @ts-expect-error values are read-only strings
+  v['customizationId'] = 'x';
+});
