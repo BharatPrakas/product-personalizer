@@ -3,7 +3,7 @@
  * the PUBLIC storefront routes cross-origin. Empty (the default) means no cross-origin access.
  */
 
-import { StoreSettingsRepository } from '../../modules/store-settings/repository';
+import { StoreSettingsRepository } from '../store-settings/repository';
 import { ValidationError, type FieldIssue } from '../../shared/errors';
 import { type StoreContext, writeAudit } from './support';
 

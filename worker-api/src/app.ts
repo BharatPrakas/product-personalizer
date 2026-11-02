@@ -16,12 +16,12 @@ import { withDatabase } from './middleware/database';
 import { authenticate } from './middleware/authentication';
 import { tenantContext } from './middleware/tenant-context';
 import { onError, notFound } from './middleware/error-handler';
-import { health } from './platform/controller';
-import * as controller from './plugins/personalization/controller';
-import * as customizations from './plugins/personalization/customization-controller';
-import * as integration from './plugins/personalization/integration-controller';
-import * as mappings from './plugins/personalization/mapping-controller';
-import * as storefront from './plugins/personalization/storefront-controller';
+import { health } from './modules/health/controller';
+import * as controller from './modules/personalization/controller';
+import * as customizations from './modules/personalization/customization-controller';
+import * as integration from './modules/personalization/integration-controller';
+import * as mappings from './modules/personalization/mapping-controller';
+import * as storefront from './modules/personalization/storefront-controller';
 import { ok } from './shared/responses';
 import { RateLimiter, type RateLimitStore } from './shared/rate-limit';
 

@@ -25,9 +25,9 @@ import type { RateLimiter } from '../../shared/rate-limit';
 import {
   DEFAULT_ROTATION_GRACE_SECONDS,
   IntegrationCredentialsService,
-} from '../../platform/integration-credentials/service';
-import { checkTimestamp, signatureMatches } from '../../platform/integration-credentials/signature';
-import { recordAudit } from '../../platform/tenant-management/audit';
+} from '../integration-credentials/service';
+import { checkTimestamp, signatureMatches } from '../integration-credentials/signature';
+import { recordAudit } from '../audit/audit';
 import { OrderCallbackService, type OrderEvent } from './order-callback-service';
 import {
   MAX_CALLBACK_BODY_BYTES,

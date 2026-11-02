@@ -4,8 +4,8 @@
  */
 
 import type { Context } from 'hono';
-import type { AppEnv } from '../shared/context';
-import { ok } from '../shared/responses';
+import type { AppEnv } from '../../shared/context';
+import { ok } from '../../shared/responses';
 
 export async function health(c: Context<AppEnv>): Promise<Response> {
   const config = c.get('config');

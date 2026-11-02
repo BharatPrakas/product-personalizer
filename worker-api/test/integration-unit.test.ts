@@ -6,9 +6,9 @@ import {
   encryptSecret,
   generateSecret,
   parseMasterKey,
-} from '../src/platform/integration-credentials/crypto';
-import { checkTimestamp, signBody, signatureMatches } from '../src/platform/integration-credentials/signature';
-import { issueCustomerToken, verifyCustomerToken } from '../src/plugins/personalization/customer-token';
+} from '../src/modules/integration-credentials/crypto';
+import { checkTimestamp, signBody, signatureMatches } from '../src/modules/integration-credentials/signature';
+import { issueCustomerToken, verifyCustomerToken } from '../src/modules/personalization/customer-token';
 import { customizationKeyPrefix, assetKeyPrefix, generateCustomizationObjectKey } from '../src/storage/object-storage';
 import { TEST_ENCRYPTION_KEY } from './helpers';
 

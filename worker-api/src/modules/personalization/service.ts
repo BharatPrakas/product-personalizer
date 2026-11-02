@@ -16,7 +16,7 @@ import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
 import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
-import { recordAudit } from '../../platform/tenant-management/audit';
+import { recordAudit } from '../audit/audit';
 import { type ObjectStorage, assetKeyPrefix, generateObjectKey } from '../../storage/object-storage';
 import { sniffImage } from '../../shared/image-sniff';
 import {

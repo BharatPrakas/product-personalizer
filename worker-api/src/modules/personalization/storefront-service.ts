@@ -13,7 +13,7 @@
 import type { Database } from '../../database/connection';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
-import { StoreSettingsRepository } from '../../modules/store-settings/repository';
+import { StoreSettingsRepository } from '../store-settings/repository';
 import { type ObjectStorage, assetKeyPrefix } from '../../storage/object-storage';
 import { verifyAssetSignature } from './asset-signature';
 import { StorefrontRepository, type ServableAssetRow } from './storefront-repository';

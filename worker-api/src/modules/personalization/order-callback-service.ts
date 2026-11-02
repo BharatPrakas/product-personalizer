@@ -23,7 +23,7 @@ import type { Database, SqlExecutor } from '../../database/connection';
 import { runInTransaction } from '../../database/transactions';
 import { ApiError, ConflictError, NotFoundError } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
-import { recordAudit } from '../../platform/tenant-management/audit';
+import { recordAudit } from '../audit/audit';
 import { CustomizationRepository } from './customization-repository';
 
 export interface OrderEventLine {

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryRateLimitStore, RateLimiter } from '../src/shared/rate-limit';
-import { decodeCursor, encodeCursor } from '../src/plugins/personalization/pagination';
-import { normalizeOrigin } from '../src/plugins/personalization/settings-service';
+import { decodeCursor, encodeCursor } from '../src/modules/personalization/pagination';
+import { normalizeOrigin } from '../src/modules/personalization/settings-service';
 import {
   classifyReference,
   collectAssetLocators,
   rewriteAssetReferences,
   type AssetIndex,
-} from '../src/plugins/personalization/storefront-assets';
-import { etagMatches, storefrontCorsHeaders } from '../src/plugins/personalization/storefront-controller';
-import { validateMarkupPayload } from '../src/plugins/personalization/validation';
-import type { ProductConfigLike } from '../src/plugins/personalization/types';
+} from '../src/modules/personalization/storefront-assets';
+import { etagMatches, storefrontCorsHeaders } from '../src/modules/personalization/storefront-controller';
+import { validateMarkupPayload } from '../src/modules/personalization/validation';
+import type { ProductConfigLike } from '../src/modules/personalization/types';
 
 const ID_A = '11111111-1111-4111-8111-111111111111';
 const ID_B = '22222222-2222-4222-8222-222222222222';

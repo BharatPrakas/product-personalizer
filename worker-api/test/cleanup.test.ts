@@ -21,7 +21,7 @@ import {
 import { loadConfig } from '../src/config/environment';
 import { createDatabase } from '../src/database/connection';
 import { Logger } from '../src/shared/logger';
-import { CleanupService } from '../src/plugins/personalization/cleanup-service';
+import { CleanupService } from '../src/modules/personalization/cleanup-service';
 import { runScheduledCleanup } from '../src/scheduled';
 import { R2ObjectStorage } from '../src/storage/r2-storage';
 import type { ObjectStorage } from '../src/storage/object-storage';

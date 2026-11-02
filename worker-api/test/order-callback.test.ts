@@ -21,7 +21,7 @@ import {
   seedPersonalizableProduct,
   truncateAll,
 } from './helpers';
-import { signBody } from '../src/platform/integration-credentials/signature';
+import { signBody } from '../src/modules/integration-credentials/signature';
 
 beforeAll(async () => {
   await applyMigrations();

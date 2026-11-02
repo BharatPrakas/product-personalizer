@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { sniffImage } from '../src/shared/image-sniff';
 import { assetKeyPrefix, generateObjectKey } from '../src/storage/object-storage';
 import { verifyJwtHs256, scopesFromClaims } from '../src/shared/jwt';
-import { validateProductConfig, CONFIG_LIMITS } from '../src/plugins/personalization/validation';
+import { validateProductConfig, CONFIG_LIMITS } from '../src/modules/personalization/validation';
 import { tinyPng, sampleDraft } from './helpers';
 
 describe('image-sniff', () => {

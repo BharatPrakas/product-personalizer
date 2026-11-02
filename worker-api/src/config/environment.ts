@@ -57,7 +57,7 @@ export interface Env {
    */
   JWT_SIGNING_SECRET?: string;
   /**
-   * Key for signed asset URLs (see plugins/personalization/asset-signature.ts). Falls back to
+   * Key for signed asset URLs (see modules/personalization/asset-signature.ts). Falls back to
    * JWT_SIGNING_SECRET when unset; set it separately so rotating one does not break the other.
    */
   ASSET_SIGNING_SECRET?: string;

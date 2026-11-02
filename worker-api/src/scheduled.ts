@@ -5,7 +5,7 @@
 
 import { loadConfig, type Env } from './config/environment';
 import { createDatabase } from './database/connection';
-import { CleanupService } from './plugins/personalization/cleanup-service';
+import { CleanupService } from './modules/personalization/cleanup-service';
 import { createObjectStorage } from './storage';
 import { Logger } from './shared/logger';
 

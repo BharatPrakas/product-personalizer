@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { createApp } from '../src/app';
-import { signBody } from '../src/platform/integration-credentials/signature';
+import { signBody } from '../src/modules/integration-credentials/signature';
 import type { Env } from '../src/config/environment';
 
 const { Client } = pg;

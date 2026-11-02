@@ -18,7 +18,7 @@ import {
   truncateAll,
   uploadCustomerImage,
 } from './helpers';
-import { issueCustomerToken } from '../src/plugins/personalization/customer-token';
+import { issueCustomerToken } from '../src/modules/personalization/customer-token';
 
 beforeAll(async () => {
   await applyMigrations();
