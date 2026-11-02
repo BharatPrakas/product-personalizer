@@ -347,7 +347,7 @@ secret is scoped to one (store, extension) pair and rotatable.
 | Storefront element: `zb:event` (bubbling, composed) with `ready` / `rendered` / `gate` / `error` and `personalization.saved`; `instance-id`, `placement`, `hide-save`; `prepareForCart()`; saves to the Worker itself | **implemented** (element). The original `customizer-*` events and the `customizer-save` flow are unchanged |
 | Reference host bridge + demo product page (`integration-demo/extension-bridge.js`, `storefront-cart.html`) | **implemented** — generic, manifest-driven, covered by browser tests |
 | Admin token | Worker verifies HS256 (`JWT_SIGNING_SECRET`) or a dev token. EdDSA/RS256 via JWKS **not yet** (waiting on decision 2) |
-| Install / uninstall lifecycle endpoint | **not yet**; production needs a `store_plugins` row created some other way |
+| Install / uninstall lifecycle endpoint | **not yet**. The Worker has no install state: a store is registered by its first authenticated request and there is no enable/disable flag until this endpoint exists |
 | `context` object, `locale` attribute | **not yet** (attributes cover the personalization needs) |
 | Storeadmin hosting | POC branch with a hardcoded route and menu entry; manifest-driven `/app/apps/:extensionId` is the platform team's |
 | Storefront hosting: slot renderer, module loader, bridge in the product page, `lineExtensions` in the cart API and order lines, webhook dispatcher | **platform teams** (decisions 3, 5, 6) |

@@ -1,9 +1,10 @@
-# ZB Plugin Platform — Cloudflare Worker backend
+# Product Personalization API — Cloudflare Worker backend
 
-A shared, multi-plugin Cloudflare Worker that provides cloud persistence for the Product
-Personalization application. **Product Personalization is the first plugin**; the platform is built so
-additional, independent plugins can be added to the same Worker and database without rewriting
-authentication, tenant handling, storage or migrations.
+The dedicated Cloudflare Worker that provides cloud persistence for the Product Personalization
+application: configurations and versions, assets, product mappings, the public storefront routes,
+customer customizations and signed order events. It has its own PostgreSQL database and its own
+object-storage bucket, and nothing else runs on it. Which extensions exist, and whether a store has this
+one installed, is the hosting platform's concern, not this Worker's.
 
 ```
 Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdrive ──▶ PostgreSQL (dedicated)
@@ -57,15 +58,20 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdr
 worker-api/
 ├── src/
 │   ├── index.ts                 # Worker entry (fetch + scheduled/cron handlers)
-│   ├── app.ts                   # Hono app assembly + plugin mounting
+│   ├── app.ts                   # Hono app assembly: middleware pipeline + the three route groups
+│   ├── scheduled.ts             # the hourly cleanup job run by the cron trigger
 │   ├── config/environment.ts    # Env bindings + parsed AppConfig
-│   ├── middleware/              # request-id, cors, database, auth, tenant, authorization, errors
-│   ├── platform/                # shared platform: plugin registry, installations, audit, integration credentials, controller
-│   ├── plugins/personalization/ # the first plugin: routes/controller/service/repository/validation/types
+│   ├── middleware/              # request-id, cors, database, auth, tenant (registers the store), errors
+│   ├── modules/
+│   │   ├── personalization/     # configs, assets, mappings, markups, storefront, customizations, order events, cleanup
+│   │   ├── integration-credentials/  # per-store encrypted HMAC secrets + signature checks
+│   │   ├── store-settings/      # per-store settings (storefront CORS origins); a row makes a store "known"
+│   │   ├── audit/               # append-only audit log
+│   │   └── health/              # GET /health
 │   ├── database/                # pg-over-Hyperdrive connection + transaction helpers
-│   ├── storage/r2-storage.ts    # R2 object storage + safe key generation
-│   └── shared/                  # errors, responses, logger, jwt, image-sniff, Hono context types
-├── migrations/                  # version-controlled SQL (platform + personalization)
+│   ├── storage/                 # object storage (R2 or S3) + safe key generation
+│   └── shared/                  # api-paths (URL contract), errors, responses, logger, jwt, image-sniff, rate-limit, Hono context types
+├── migrations/                  # version-controlled SQL (one baseline so far)
 ├── docs/zenbasket-integration.md # API contract for the ZenBasket backend team
 ├── scripts/migrate.mjs          # migration runner (trusted machine / CI, not in a request)
 ├── test/                        # vitest: unit + full HTTP integration (real Postgres + in-memory R2)
@@ -73,11 +79,10 @@ worker-api/
 └── package.json
 ```
 
-The shared platform (auth, tenant, DB, storage, plugin registry) is independent of any plugin's
-business logic. A plugin is a `PluginModule` (`src/platform/plugin-registry/registry.ts`) that mounts
-its own routes; `src/app.ts` guards each plugin with the shared middleware and mounts it under
-`/api/v1/plugins/<id>`. **Adding a plugin = append a module to `buildRegistry()` and add its
-migration.**
+`src/app.ts` is the endpoint inventory: it mounts the storefront (public), integration (signed
+server-to-server) and merchant (Bearer token) route groups directly. Their URL prefixes are defined once
+in `src/shared/api-paths.ts` and are a stable contract: saved configurations embed signed asset URLs, and
+the element bundles and the ZenBasket team call these paths.
 
 ## Local development
 
@@ -114,6 +119,10 @@ DATABASE_URL="postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/pers
 
 DATABASE_URL="..." npm run migrate:status   # show applied / pending
 ```
+
+A database created before the baseline migration (it has a `platform.schema_migrations` table) is refused
+with a message: drop its `platform` and `personalization` schemas (or recreate the database) and migrate
+again.
 
 ### 4. Local dev secrets
 
@@ -162,46 +171,43 @@ With no such config the Angular app stays on IndexedDB (local) — unchanged.
 
 ## Database schema
 
-Two schemas keep platform-owned and plugin-owned data separate.
+One schema, `personalization`, holds everything, including the migration ledger (`schema_migrations`,
+created by the runner). The baseline migration `0001_baseline.sql` creates it.
 
-### `platform` (migration `0001_platform.sql`)
+### Stores, audit and credentials
 
 | Table | Purpose |
 |---|---|
-| `plugin_registry` | Catalogue of plugins (`plugin_id`, display name, version, status). |
-| `store_plugins` | Which plugins are enabled for a store (tenant). `store_id` is the **external** ZenBasket id — no local users/stores table. |
+| `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. `storefront_origins` (`text[]`) holds the store's allowed CORS origins. |
 | `audit_logs` | Append-only log of privileged operations (identifiers + small metadata only; never secrets or payloads). |
-| `schema_migrations` | Applied-migration tracking (created by the runner). |
+| `integration_credentials` | Per-store HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. |
 
-### `personalization` (migration `0002_personalization.sql`)
+### Configurations and assets
 
 | Table | Purpose |
 |---|---|
 | `configs` | One row per managed configuration. `draft` and `published` are **JSONB** (the renderer's `ProductConfig` is stored verbatim — never flattened). `updated_at_ms` is the optimistic-concurrency token. `client_config_id` is unique per store (stable local↔cloud id + idempotent migration). |
 | `config_versions` | Immutable publish history (one row per publish). |
-| `assets` | Metadata for every binary in R2: `object_key`, verified `content_type`, `size_bytes`, dimensions, `checksum_sha256`, `status`, and the client's `idb:` ref for dedupe. |
+| `assets` | Metadata for every binary in object storage: `object_key`, verified `content_type`, `size_bytes`, dimensions, `checksum_sha256`, `status`, and the client's `idb:` ref for dedupe. |
 
-### `personalization` additions (migration `0003_mappings_markups.sql`)
+### Mappings and markups
 
 | Table | Purpose |
 |---|---|
 | `mappings` | Links a host product / variant / collection (`scope`, `external_id`) to one configuration, per store. `UNIQUE (store_id, scope, external_id)`; index `(store_id, config_id)`. `(config_id, store_id)` is a composite FK to `configs (id, store_id)` with `ON DELETE CASCADE`, so deleting a config removes its mappings and the database itself refuses a cross-store mapping. `label` (<= 200) caches the host product title for the admin UI. |
 | `markups` | Reusable merchant-authored snippets: `kind` (`area` \| `artwork`), `name` (1..120), `payload` jsonb (must be an object; <= 256 KB enforced by the API). `UNIQUE (store_id, kind, lower(name))`; index `(store_id, kind)`. |
 
-The migration also adds a unique index `configs (id, store_id)` (needed by the composite FK). Timestamps
-follow the existing convention (`*_ms` epoch-millisecond bigints, plus `created_at` / `updated_at`
-timestamptz). Per-store storefront CORS origins need **no new column**: they live in the existing
-`platform.store_plugins.settings` jsonb (`storefrontOrigins`).
+Timestamps follow one convention: `*_ms` epoch-millisecond bigints, plus `created_at` / `updated_at`
+timestamptz.
 
-### `platform` / `personalization` additions (migrations `0004` and `0005`)
+### Customizations, order events and cleanup
 
 | Table | Purpose |
 |---|---|
-| `platform.integration_credentials` | Per-store, per-plugin HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. FK to `store_plugins`. |
 | `customizations` | A shopper's saved design: pins `(config_id, store_id, config_version)` through a composite FK to `config_versions` (`ON DELETE RESTRICT`), records the ZenBasket `product_external_id` / `variant_external_id` and the mapping that matched, `data` jsonb, `status` (`saved` → `ordered` \| `expired`) with a CHECK tying status to its timestamps, and `expires_at` for the 30-day inactivity expiry. |
-| `customization_assets` | Customer files (private object-storage prefix `…/customizations/`): `kind` upload/preview, `status` uploaded → attached → released → deleting → deleted, `delete_after` (grace period), retry bookkeeping. Owner FK `(customization_id, store_id)`. Kept apart from `assets` so merchant-asset logic and public delivery can never touch customer files. |
+| `customization_assets` | Customer files (private object-storage prefix `…/customizations/`): `kind` upload / preview / artwork (the print-ready file of a printable area), `status` uploaded → attached → released → deleting → deleted, `delete_after` (grace period), retry bookkeeping. Owner FK `(customization_id, store_id)`. Kept apart from `assets` so merchant-asset logic and public delivery can never touch customer files. |
 | `order_links` | The ZenBasket order line a customization was bought on. `UNIQUE (customization_id)` and `UNIQUE (store_id, external_order_id, external_line_id)` give the idempotency/conflict guarantees. |
-| `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per delivered event (it may carry several order lines); `results` (jsonb, migration `0006`) stores the per-line outcome so a replay answers identically. Written in the same transaction as the links. |
+| `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per processed event (it may carry several order lines); `results` (jsonb) stores the per-line outcome so a replay answers identically, and `line_count` the number of lines. Written in the same transaction as the links. |
 | `cleanup_runs` | One row per scheduled cleanup run with its counts and outcome. |
 
 ZenBasket identifiers (store, product, variant, order, line) are plain `text`; there are **no foreign keys
@@ -224,15 +230,13 @@ All routes are under `/api/v1`. Responses use a consistent envelope:
 { "error": { "code": "...", "message": "...", "requestId": "...", "details"?: {...} } }
 ```
 
-### Platform
+### Health
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/health` | Public. Liveness + shallow DB check. No secrets. |
-| GET | `/plugins` | Plugin catalogue + per-store enabled flag. |
-| GET | `/plugins/:pluginId/status` | Install/enable status for the store. |
 
-### Personalization — configurations
+### Configurations
 
 | Method | Path |
 |---|---|
@@ -248,7 +252,7 @@ All routes are under `/api/v1`. Responses use a consistent envelope:
 | GET | `/plugins/personalization/configs/:configId/versions` |
 | GET | `/plugins/personalization/configs/:configId/versions/:versionId` |
 
-### Personalization — assets
+### Assets
 
 | Method | Path |
 |---|---|
@@ -261,7 +265,7 @@ All routes are under `/api/v1`. Responses use a consistent envelope:
 See [Mappings, markups & the public storefront route](#mappings-markups--the-public-storefront-route)
 for the mapping / markup / settings routes (authenticated) and the public storefront routes.
 
-Status codes: `200/201/204` success, `401` unauthenticated, `403` plugin not enabled / forbidden,
+Status codes: `200/201/204` success, `401` unauthenticated, `403` forbidden,
 `404` not found (also returned cross-tenant, so ids are not oracles), `409` concurrency conflict or
 referenced-asset delete, `413` payload too large, `415` unsupported media type, `422` validation
 (structured `details.issues`), `429` rate limited, `5xx` opaque server error.
@@ -330,9 +334,9 @@ config keeps its mappings (restore brings them back); deleting it removes them.
 `GET /api/v1/storefront/personalization/products/:externalId/config?storeId=<store key>[&variantId=][&collectionIds=a,b]`
 
 - `storeId` is the platform's **external store id** - the same value as the `store_id` claim in merchant tokens and as
-  `store_plugins.store_id`. The plugin must be enabled for that store. A missing `storeId` is a 422; an unknown, disabled
-  or malformed key (anything outside `[A-Za-z0-9._:-]{1,128}`) is answered exactly like "nothing mapped" so store existence
-  is not leaked.
+  `store_settings.store_id`. The store must be known (it has made at least one authenticated request). A missing `storeId`
+  is a 422; an unknown or malformed key (anything outside `[A-Za-z0-9._:-]{1,128}`) is answered exactly like "nothing
+  mapped" so store existence is not leaked.
 - Response `200`, body `{ "data": { personalizable: true, configId, version, scope, externalId, config } }` where `config` is the
   **latest published snapshot** (never the draft), or `{ "data": { "personalizable": false } }`. `scope`/`externalId` describe the mapping
   that matched (e.g. the variant id). The body deliberately has **no `requestId`** so it is byte-stable and cacheable; the id is in `X-Request-Id`.
@@ -344,7 +348,7 @@ config keeps its mappings (restore brings them back); deleting it removes them.
   errors (4xx, 429) are `no-store`.
 - Not on the global admin CORS allow-list: see CORS below.
 
-**Asset rewriting** (`src/plugins/personalization/storefront-assets.ts`, one pure function with unit tests): every `src`, `thumbnail`
+**Asset rewriting** (`src/modules/personalization/storefront-assets.ts`, one pure function with unit tests): every `src`, `thumbnail`
 and `thumbnailSrc` (mockups, overlays, fixed-image layers, fonts, artwork choices) is classified. Worker delivery URLs
 (`.../plugins/personalization/assets/<id>/content`, any origin) and R2 custom-domain URLs (`ASSET_PUBLIC_BASE_URL/<object key>`) that belong
 to the requesting store become `<request origin>/api/v1/storefront/personalization/assets/<id>`; other absolute `http(s)` URLs are kept; relative
@@ -353,14 +357,14 @@ request arrived on (https behind Cloudflare). `GET /assets/:assetId` only serves
 references it (by id or object key); it sets `Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`, a strong
 `ETag` (the stored SHA-256), `nosniff` and `Cross-Origin-Resource-Policy: cross-origin`, and applies the owning store's CORS list.
 
-**CORS (per store).** The store's allowed origins are stored in `platform.store_plugins.settings.storefrontOrigins` and managed with
+**CORS (per store).** The store's allowed origins are stored in `store_settings.storefront_origins` and managed with
 `PUT /plugins/personalization/settings/storefront` (`{ "storefrontOrigins": ["https://shop.example.com"] }`; bare origins only, normalised,
 max 20). A request `Origin` that is in the list gets `Access-Control-Allow-Origin: <origin>` (and `Access-Control-Expose-Headers: ETag, X-Request-Id`);
 anything else - or an empty list, the default - gets no CORS headers. The global `CORS_ALLOWED_ORIGINS` list does **not** apply to `/storefront/*`.
 
 **Rate limiting.** `src/shared/rate-limit.ts`: a fixed-window counter keyed by store key + `CF-Connecting-IP` (config route) or by IP (assets,
 5x budget; preflight has its own counter). Defaults 120 requests / 60 s, tunable with `STOREFRONT_RATE_LIMIT` and `STOREFRONT_RATE_WINDOW_SECONDS`.
-Over the limit -> `429` with `Retry-After`. The counter store is injectable (`createApp(registry, { rateLimitStore, now })`). The default store is
+Over the limit -> `429` with `Retry-After`. The counter store is injectable (`createApp({ rateLimitStore, now })`). The default store is
 **per isolate, in memory** - best-effort only. In production also add Cloudflare WAF **rate-limiting rules** (or the Rate Limiting binding) for
 `/api/v1/storefront/*`; without a `CF-Connecting-IP` header (local dev) all clients share one bucket.
 
@@ -414,31 +418,32 @@ query param or body field.
 > data operation is ever unauthenticated. To integrate a real IdP, issue tokens signed with
 > `JWT_SIGNING_SECRET`, or replace `verifyJwtHs256` with the provider's verifier.
 
-Plugin installation is enforced per store (`store_plugins`); ownership of each config/asset is enforced
-by store-scoped queries in the repository.
+A store becomes known to the Worker on its first authenticated request (the tenant middleware registers it in
+`store_settings`); which stores receive tokens at all is the hosting platform's decision, and there is no
+per-store enable/disable switch. Ownership of each config/asset is enforced by store-scoped queries in the
+repository.
 
 ## Bucket layout
 
 One bucket per environment, with the same layout on R2 and S3:
 
 ```
-plugins/
-  <plugin-folder>/storefront.js, store-admin.js     plugin code bundles (not written by this API)
 stores/
   <store-id>/
-    <plugin-folder>/assets/<uuid>.<ext>             that store's artwork, customer images, mockups
+    product-personalization/
+      assets/<uuid>.<ext>             that store's merchant artwork and mockups
+      customizations/<uuid>.<ext>     PRIVATE customer files (never served by the public asset route)
 ```
 
-- The personalization plugin's folder is `product-personalization` (`STORAGE_FOLDER` in
-  `src/plugins/personalization/types.ts`); its API id stays `personalization`.
-- Each plugin declares `storageFolder` on its `PluginModule`. The registry validates it
-  (lowercase letters, digits, hyphens) and refuses two plugins that share one.
+- The `product-personalization` segment namespaces this service inside a bucket that may be shared with
+  other services. It is part of every stored `object_key`, so it must not change (`NAMESPACE` in
+  `src/storage/object-storage.ts`).
 - Keys are generated server-side by `generateObjectKey`. The store id comes from the verified token,
   never from the request. The file name is a UUID, not the original name.
-- Before reading or deleting an object, the service checks that its key sits under
-  `stores/<store>/<plugin-folder>/assets/`.
-- The `plugins/` code folder is separate. Nothing in this API writes there; publish those bundles
-  with your own deploy step.
+- Before reading or deleting an object, the service checks that its key sits under the store's expected
+  `assets/` or `customizations/` prefix.
+- Nothing in this API writes element bundles (`storefront.js`, `store-admin.js`); publish those with your
+  own deploy step.
 - Existing rows keep whatever key they were stored with. Assets uploaded under the earlier
   `personalization/<store>/<yyyy>/<mm>/` layout (local test data only) will be refused by the prefix
   check; re-upload them or clear the dev data.
@@ -564,11 +569,16 @@ inspection/recovery.
 
 ## Database migrations
 
-- Current migrations: `0001_platform.sql`, `0002_personalization.sql`, `0003_mappings_markups.sql`.
+- One baseline migration, `0001_baseline.sql`, holds the whole schema; later changes are appended as
+  `0002_…` and so on.
 - SQL files in `migrations/`, applied in filename order, each in its own transaction, tracked by
-  checksum in `platform.schema_migrations`.
+  checksum in `personalization.schema_migrations`.
 - **Append-only:** editing an already-applied file is refused (add a new migration instead).
 - Idempotent objects (`IF NOT EXISTS`, `ON CONFLICT`) so re-runs are safe.
+- **Databases from before the baseline** (migrations 0001–0006, ledger in `platform.schema_migrations`)
+  are refused: nothing was ever released from them, so drop their `platform` and `personalization`
+  schemas (or recreate the database) and migrate again. That guard lives in `scripts/migrate.mjs` and can
+  be deleted once every database has been recreated.
 
 ```bash
 DATABASE_URL=<local|staging|prod> npm run migrate           # apply
@@ -595,6 +605,12 @@ rejection, resumable-upload idempotency, and CORS.
 Mappings, markups, settings and the public storefront (precedence, draft/archived/unpublished handling, re-publish,
 cross-tenant isolation, unknown keys, rate limiting with an injected store/clock, CORS, ETag/304, asset rewriting and serving)
 are covered in `test/mappings.test.ts`, `test/markups.test.ts`, `test/storefront.test.ts` and `test/storefront-unit.test.ts`.
+
+Store registration (a store becomes known on its first authenticated request; the public routes and shopper
+uploads/saves refuse a store that never has) is covered in `test/store-settings.test.ts`, and
+`test/schema.test.ts` asserts the final schema (one `personalization` schema, the exact table set, no
+`plugin_id` anywhere, the `artwork` file kind and the per-line event `results` columns). It also fails on a
+test database that still has the pre-baseline schemas: drop them and run the migrations again.
 
 Set `TEST_DATABASE_URL` to point at a disposable test database (default
 `postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_test`).
@@ -631,6 +647,10 @@ Staging mirrors the above with `--env staging` and its own Hyperdrive id, bucket
 allowlist and API URL. Keep staging and production fully separated; never point local/staging at
 production resources.
 
+Secrets, routes and the `workers.dev` URL belong to a Worker **name**. This Worker is
+`zb-product-personalizer-api`; if a Worker with the earlier name (`zb-plugin-platform`) was ever deployed,
+it is a different Worker: set every secret again for the new name and remove the old one yourself.
+
 **Rollback:** `wrangler rollback [--env <env>]` reverts the Worker to the previous deployment. Schema
 changes roll forward via a new migration. Validate `GET /api/v1/health` after any deploy or rollback.
 
@@ -646,11 +666,11 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 - Rate limiting: authenticated routes rely on Cloudflare edge rate limiting. The PUBLIC storefront routes have a small
   in-Worker per-isolate limiter (best-effort); also add edge rules for production (see the storefront section).
 - Public storefront routes never take the store from a token and expose only published, non-archived data of a store
-  that has the plugin enabled; assets are served only while a published config references them.
+  that is known to the Worker; assets are served only while a published config references them.
 
 ## Operational notes
 
-- **Logging:** structured JSON lines with `requestId`, `plugin`, `storeId` and operation context. No
+- **Logging:** structured JSON lines with `requestId`, `storeId` and operation context. No
   tokens, secrets, payload bodies or file bytes are logged. `observability` is enabled in
   `wrangler.jsonc`.
 - **Backups / PITR:** **not configured by this project.** Enable and verify automated backups / point-
@@ -663,6 +683,10 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 
 - **No production identity provider** is included. `JWT_SIGNING_SECRET` + the token contract are the
   integration boundary; wire ZenBasket's token issuance to complete auth.
+- **No per-store enable/disable switch.** A store is known once its merchant has used the API, and whether a
+  store has the extension installed is decided by the hosting platform (which issues the tokens). The
+  install / uninstall lifecycle events of contract v1 (section 10) are not implemented; when they are, a
+  status column on `store_settings` is the place for them.
 - **Cloud deployment not provisioned here.** Verified locally: migrations, the full HTTP API + R2 flow
   via node integration tests, and an end-to-end run on the real `workerd` runtime (`wrangler dev`) with
   a local Postgres (Hyperdrive `localConnectionString`) and Miniflare R2 — health DB check, config

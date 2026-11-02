@@ -60,6 +60,10 @@ secret) and are **shown once**; the Worker never returns them again, and the Ang
 (the endpoints need the explicit `integrations:manage` scope, which an ordinary editor session does not
 carry — a wildcard scope does not count).
 
+There is no separate install step on this Worker: a store is registered by its first authenticated request
+(creating its credential is enough), and the storefront routes answer for a store only after that. Which
+stores get session tokens at all is the platform's decision.
+
 Authenticated like any admin route (`Authorization: Bearer <store session token>`), under
 `/plugins/personalization/integration/credentials`:
 
@@ -132,8 +136,8 @@ await fetch(url, { method: 'POST', body, headers: {
 ### 4.3 What the Worker verifies (never just the payload)
 
 Per **event**: HMAC signature, timestamp window, credential active and not expired (401, all causes alike);
-the **store comes from the credential**, `storeId` in the body is only cross-checked (403); the plugin is
-enabled for the store; the event type is supported (422).
+the **store comes from the credential**, `storeId` in the body is only cross-checked (403); the event type is
+supported (422).
 Per **line** (each under its own savepoint in one transaction): the customization is looked up **within that
 store**; `productId` (and `variantId`) match what was recorded when the shopper saved; the customization is
 `saved` and not `expired`; the customization is not already linked elsewhere and the order line does not already
@@ -170,7 +174,7 @@ Envelope-level errors (the standard error envelope `{ error: { code, message, re
 |---|---|---|
 | 400 | `bad_request` (not JSON) | no — fix |
 | 401 | `unauthorized`, `invalid_timestamp` (bad/missing signature or headers, clock outside window, revoked/expired/unknown key) | after fixing |
-| 403 | `forbidden` (`storeId` ≠ credential's store, or plugin not enabled) | no |
+| 403 | `forbidden` (`storeId` ≠ credential's store) | no |
 | 409 | `conflict` / `event_id_reused` (same `eventId`, different payload) | no — fix the producer |
 | 413 | `payload_too_large` | no |
 | 422 | `validation_failed`, `unsupported_event_type` | no — fix |
