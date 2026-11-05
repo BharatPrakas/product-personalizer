@@ -10,6 +10,9 @@ import { LocalProductMappingRepository } from './mapping/local-product-mapping-r
 import { ProductMappingRepository } from './mapping/product-mapping-repository';
 import { LocalMarkupRepository } from './markups/local-markup-repository.service';
 import { MarkupRepository } from './markups/markup-repository';
+import { CloudFontRepository } from './fonts/cloud-font-repository.service';
+import { LocalFontRepository } from './fonts/local-font-repository.service';
+import { FontRepository } from './fonts/font-repository';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -29,6 +32,12 @@ export const appConfig: ApplicationConfig = {
         inject(RuntimeConfig).useCloud()
           ? inject(CloudConfigurationRepository)
           : inject(LocalConfigurationRepository),
+    },
+    // Custom fonts are cloud-only (there is no offline equivalent of the Worker's store-scoped
+    // library — see fonts/local-font-repository.service.ts); the bundled defaults are unaffected.
+    {
+      provide: FontRepository,
+      useFactory: () => (inject(RuntimeConfig).useCloud() ? inject(CloudFontRepository) : inject(LocalFontRepository)),
     },
   ],
 };

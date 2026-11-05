@@ -18,6 +18,7 @@ import { ConfirmService } from '../../ui/confirm.service';
 import { AdminHost } from '../../admin/admin-host.service';
 import { MarkupLibrary } from '../../markups/markup-library.service';
 import { SaveMarkupDialogComponent } from '../../markups/save-markup-dialog.component';
+import { FontLibrary } from '../../fonts/font-library.service';
 import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { ConfigurationRepository } from '../../workspace/configuration-repository';
 import { EmptyStateComponent } from '../../ui/empty-state.component';
@@ -51,7 +52,7 @@ type Mode = 'edit' | 'preview';
     TranslatePipe,
     SaveMarkupDialogComponent,
   ],
-  providers: [EditorStore, AssetStore, MarkupLibrary],
+  providers: [EditorStore, AssetStore, MarkupLibrary, FontLibrary],
   host: {
     // Shortcuts act only while focus is inside the editor, so an embedded editor never hijacks
     // keys (Ctrl+S, Ctrl+Z ...) meant for the host page.

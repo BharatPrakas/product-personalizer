@@ -121,6 +121,8 @@ export const uploadMetadataSchema = z.object({
 
 export const assetListQuerySchema = z.object({
   configId: clientIdSchema.optional(),
+  /** Restricts the listing to images (omitted = every asset) or to store-wide custom fonts. */
+  kind: z.enum(['image', 'font']).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
 });

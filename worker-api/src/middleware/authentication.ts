@@ -5,6 +5,10 @@
  *    with a shared secret (JWT_SIGNING_SECRET). The store id is a signed claim.
  *  - Development only: a static bearer token (DEV_AUTH_TOKEN) mapped to DEV_STORE_ID, so the stack
  *    can be exercised locally without standing up an identity provider. Never enabled in production.
+ *  - Development only, TEMPORARY (see the `DEV_AUTH_BYPASS` doc comment in config/environment.ts):
+ *    with that flag set, no Authorization header is required at all — every request is treated as
+ *    DEV_STORE_ID. This exists only because the real ZenBasket <-> plugin token exchange is not
+ *    decided yet; remove the branch below once it is.
  *
  * A client-supplied store/tenant id in a header, query param or body is NEVER trusted.
  *
@@ -27,6 +31,25 @@ function bearer(header: string | undefined): string | null {
 
 export const authenticate: MiddlewareHandler<AppEnv> = async (c, next) => {
   const config = c.get('config');
+
+  // TEMPORARY (see config/environment.ts `DEV_AUTH_BYPASS`): skips auth entirely in development.
+  // Gated the same way as the dev token below — `environment !== 'production'` is checked here, not
+  // only when the flag is parsed, so there is no path that enables this in staging/production.
+  if (config.devAuthBypass && config.environment !== 'production') {
+    if (!config.devStoreId) {
+      throw new UnauthorizedError('DEV_AUTH_BYPASS is set but DEV_STORE_ID is not.');
+    }
+    const principal: AuthPrincipal = {
+      storeId: config.devStoreId,
+      subject: 'dev-bypass',
+      scopes: ['*'],
+      tokenType: 'dev',
+    };
+    c.set('auth', principal);
+    await next();
+    return;
+  }
+
   const token = bearer(c.req.header('authorization'));
   if (!token) throw new UnauthorizedError('A Bearer token is required.');
 

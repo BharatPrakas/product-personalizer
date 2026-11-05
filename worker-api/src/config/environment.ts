@@ -69,6 +69,15 @@ export interface Env {
   DEV_AUTH_TOKEN?: string;
   DEV_STORE_ID?: string;
   /**
+   * TEMPORARY escape hatch (plugin authorization design is not finalized yet — see
+   * docs/zenbasket-integration.md). When `"true"` AND `ENVIRONMENT !== 'production'`, `authenticate`
+   * skips credential verification entirely and treats every request as DEV_STORE_ID, no Authorization
+   * header required. Remove this flag (and the branch in middleware/authentication.ts) once a real
+   * token flow from ZenBasket is agreed and wired up. Never set in staging/production — gated the same
+   * way DEV_AUTH_TOKEN is, so there is no way to enable it there even by mistake.
+   */
+  DEV_AUTH_BYPASS?: string;
+  /**
    * 32-byte key (base64 or base64url) that encrypts per-store integration secrets at rest in
    * Postgres (AES-256-GCM). Required to create credentials or verify signed callbacks. Never log it,
    * never commit it, and keep it out of `wrangler.jsonc`: `wrangler secret put INTEGRATION_ENCRYPTION_KEY`.
@@ -105,6 +114,8 @@ export interface AppConfig {
   assetSigningSecret: string | null;
   devAuthToken: string | null;
   devStoreId: string | null;
+  /** TEMPORARY — see the `DEV_AUTH_BYPASS` doc comment on `Env`. */
+  devAuthBypass: boolean;
   storageDriver: StorageDriver;
   s3Bucket: string | null;
   s3Region: string | null;
@@ -177,6 +188,7 @@ export function loadConfig(env: Env): AppConfig {
     assetSigningSecret: env.ASSET_SIGNING_SECRET?.trim() || env.JWT_SIGNING_SECRET?.trim() || null,
     devAuthToken: env.DEV_AUTH_TOKEN?.trim() || null,
     devStoreId: env.DEV_STORE_ID?.trim() || null,
+    devAuthBypass: env.DEV_AUTH_BYPASS?.trim() === 'true',
     storageDriver: parseStorageDriver(env.STORAGE_DRIVER),
     s3Bucket: env.S3_BUCKET?.trim() || null,
     s3Region: env.S3_REGION?.trim() || null,

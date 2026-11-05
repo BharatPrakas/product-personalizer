@@ -222,4 +222,19 @@ export class ApiClient {
     );
     return envelope.data;
   }
+
+  async listAssets(opts: { kind?: 'image' | 'font'; configId?: string } = {}): Promise<AssetDto[]> {
+    const all: AssetDto[] = [];
+    for (let page = 1; ; page++) {
+      const res = await this.get<AssetDto[]>('/assets', { kind: opts.kind, configId: opts.configId, page, pageSize: 100 });
+      all.push(...res.data);
+      const meta = res.meta?.pagination as { totalPages?: number } | undefined;
+      if (!meta?.totalPages || page >= meta.totalPages) break;
+    }
+    return all;
+  }
+
+  async deleteAsset(id: string): Promise<void> {
+    await this.remove(`/assets/${encodeURIComponent(id)}`);
+  }
 }

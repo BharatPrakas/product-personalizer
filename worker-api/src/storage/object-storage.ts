@@ -8,11 +8,18 @@
  */
 
 import type { DetectedImageType } from '../shared/image-sniff';
+import type { DetectedFontType } from '../shared/font-sniff';
 
-const EXTENSION: Record<DetectedImageType, string> = {
+export type DetectedAssetType = DetectedImageType | DetectedFontType;
+
+const EXTENSION: Record<DetectedAssetType, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
+  'font/woff2': 'woff2',
+  'font/woff': 'woff',
+  'font/ttf': 'ttf',
+  'font/otf': 'otf',
 };
 
 /** A client-supplied id is never used as (part of) a key verbatim. */
@@ -39,7 +46,7 @@ const NAMESPACE = 'product-personalization';
 
 export interface KeyParts {
   storeId: string;
-  type: DetectedImageType;
+  type: DetectedAssetType;
 }
 
 /** `stores/<store>/product-personalization/assets/` — every merchant asset of one store. */

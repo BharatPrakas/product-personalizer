@@ -11,6 +11,7 @@ import {
   resetBucket,
   sampleDraft,
   sharedBucket,
+  tinyFont,
   tinyPng,
   truncateAll,
 } from './helpers';
@@ -49,6 +50,38 @@ describe('authentication & authorization', () => {
     const body = await json(res);
     expect(body.error.code).toBe('unauthorized');
     expect(body.error.requestId).toBeTruthy();
+  });
+
+  // TEMPORARY: DEV_AUTH_BYPASS (config/environment.ts). Remove this describe block along with the
+  // flag once a real ZenBasket token flow is wired up.
+  describe('DEV_AUTH_BYPASS (temporary escape hatch)', () => {
+    it('is off by default: no Authorization header still 401s even in development', async () => {
+      const res = await call(`${ADMIN}/configs`, { token: null });
+      expect(res.status).toBe(401);
+    });
+
+    it('lets a request with no Authorization header through as DEV_STORE_ID when enabled', async () => {
+      const res = await call(`${ADMIN}/configs`, { token: null, env: { DEV_AUTH_BYPASS: 'true' } });
+      expect(res.status).toBe(200);
+    });
+
+    it('ignores whatever bearer token is sent (garbage, expired, someone else’s) while enabled', async () => {
+      const res = await call(`${ADMIN}/configs`, { token: 'not-a-real-token-at-all', env: { DEV_AUTH_BYPASS: 'true' } });
+      expect(res.status).toBe(200);
+    });
+
+    it('CANNOT be enabled in production — the environment gate is checked at request time, not only when parsed', async () => {
+      const res = await call(`${ADMIN}/configs`, {
+        token: null,
+        env: { DEV_AUTH_BYPASS: 'true', ENVIRONMENT: 'production', JWT_SIGNING_SECRET: undefined, DEV_AUTH_TOKEN: undefined },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('404s before reaching the gate if someone copies the flag with any other value (e.g. DEV_AUTH_BYPASS=1)', async () => {
+      const res = await call(`${ADMIN}/configs`, { token: null, env: { DEV_AUTH_BYPASS: '1' } });
+      expect(res.status).toBe(401);
+    });
   });
 });
 
@@ -335,6 +368,100 @@ describe('R2 asset flow', () => {
     const second = (await json(await upload(STORE_A, '?clientRef=idb:abc123'))).data;
     expect(first.id).toBe(second.id);
     expect(sharedBucket.objects.size).toBe(1);
+  });
+});
+
+describe('custom font uploads (store-wide, same pipeline as images)', () => {
+  async function uploadFont(bytes = tinyFont('woff2'), contentType = 'font/woff2') {
+    return call(`${ADMIN}/assets`, {
+      method: 'POST',
+      rawBody: bytes,
+      headers: { 'Content-Type': contentType },
+      storeId: STORE_A,
+    });
+  }
+
+  it('accepts WOFF2/WOFF/TTF/OTF, storing content-based type and no dimensions', async () => {
+    for (const [format, type] of [
+      ['woff2', 'font/woff2'],
+      ['woff', 'font/woff'],
+      ['ttf', 'font/ttf'],
+      ['otf', 'font/otf'],
+    ] as const) {
+      const res = await uploadFont(tinyFont(format));
+      expect(res.status, format).toBe(201);
+      const asset = (await json(res)).data;
+      expect(asset.contentType).toBe(type);
+      expect(asset.width).toBeNull();
+      expect(asset.height).toBeNull();
+      expect(asset.objectKey).toMatch(new RegExp(`\\.${format}$`));
+    }
+  });
+
+  it('is never confused with an image: a declared image/* Content-Type does not change the sniffed type', async () => {
+    const res = await uploadFont(tinyFont('woff2'), 'image/png'); // lying Content-Type
+    expect(res.status).toBe(201);
+    expect((await json(res)).data.contentType).toBe('font/woff2');
+  });
+
+  it('rejects bytes that are neither an image nor a font', async () => {
+    const res = await uploadFont(new TextEncoder().encode('not a font or image'), 'font/woff2');
+    expect(res.status).toBe(415);
+  });
+
+  it('is served through the same signed delivery URL as an image, with the font Content-Type', async () => {
+    const asset = (await json(await uploadFont())).data;
+    const res = await call(new URL(asset.deliveryUrl).pathname + new URL(asset.deliveryUrl).search, { token: null });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('font/woff2');
+  });
+
+  it('lists fonts separately from images with ?kind=font, and images are unaffected by it', async () => {
+    const font = (await json(await uploadFont())).data;
+    const image = (await json(await call(`${ADMIN}/assets`, { method: 'POST', storeId: STORE_A, rawBody: tinyPng(), headers: { 'Content-Type': 'image/png' } }))).data;
+
+    const fonts = await json(await call(`${ADMIN}/assets?kind=font`));
+    expect(fonts.data.map((a: { id: string }) => a.id)).toEqual([font.id]);
+
+    const images = await json(await call(`${ADMIN}/assets?kind=image`));
+    expect(images.data.map((a: { id: string }) => a.id)).toEqual([image.id]);
+
+    const all = await json(await call(`${ADMIN}/assets`));
+    expect(all.data.map((a: { id: string }) => a.id).sort()).toEqual([font.id, image.id].sort());
+  });
+
+  it('is store-scoped like every other asset', async () => {
+    await uploadFont();
+    expect((await json(await call(`${ADMIN}/assets?kind=font`, { storeId: STORE_B }))).data).toEqual([]);
+  });
+
+  it('can be deleted once nothing references it, and is blocked while a config uses it (same rule as images)', async () => {
+    const font = (await json(await uploadFont())).data;
+    await call(`${ADMIN}/configs`, {
+      method: 'POST',
+      body: {
+        clientConfigId: 'cfg-font-ref',
+        draft: sampleDraft({
+          id: 'cfg-font-ref',
+          fonts: [{ id: 'custom', family: 'Custom', src: font.deliveryUrl, label: 'Custom' }],
+        }),
+      },
+    });
+    expect((await call(`${ADMIN}/assets/${font.id}`, { method: 'DELETE' })).status).toBe(409);
+
+    await call(`${ADMIN}/configs/cfg-font-ref`, { method: 'DELETE' });
+    const deleted = await call(`${ADMIN}/assets/${font.id}`, { method: 'DELETE' });
+    expect(deleted.status).toBe(204);
+    expect(sharedBucket.objects.has(font.objectKey)).toBe(false);
+  });
+
+  it('lists a store’s custom fonts filtered by ?configId= the same way images already do (the pre-existing listAssets bug is fixed)', async () => {
+    await call(`${ADMIN}/configs`, { method: 'POST', body: { clientConfigId: 'cfg-a', draft: sampleDraft({ id: 'cfg-a' }) } });
+    const font = (await json(await call(`${ADMIN}/assets?configId=cfg-a`, { method: 'POST', storeId: STORE_A, rawBody: tinyFont(), headers: { 'Content-Type': 'font/woff2' } }))).data;
+    await uploadFont(); // a second, unrelated font not tied to any config
+
+    const scoped = await json(await call(`${ADMIN}/assets?configId=cfg-a`));
+    expect(scoped.data.map((a: { id: string }) => a.id)).toEqual([font.id]);
   });
 });
 

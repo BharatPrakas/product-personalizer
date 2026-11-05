@@ -144,7 +144,14 @@ export async function getAssetContent(c: Context<AppEnv>): Promise<Response> {
 
 export async function listAssets(c: Context<AppEnv>): Promise<Response> {
   const query = assetListQuerySchema.parse(c.req.query());
-  const result = await serviceFor(c).listAssets(query);
+  // `configClientId` is the service's own name for `query.configId`; mapped explicitly here (not
+  // forwarded as `query` directly) so a filter by config id actually reaches the repository.
+  const result = await serviceFor(c).listAssets({
+    configClientId: query.configId,
+    kind: query.kind,
+    page: query.page,
+    pageSize: query.pageSize,
+  });
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
   return paginated(c, result.assets, {
     page: result.page,

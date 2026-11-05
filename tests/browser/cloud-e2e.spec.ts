@@ -12,10 +12,12 @@
  */
 import { readFileSync } from 'node:fs';
 import {
+  ASSET_PATHS,
   type Environment,
   adminHost,
   clickText,
   host,
+  inside,
   openAdminHost,
   openHost,
   startEnvironment,
@@ -194,6 +196,92 @@ describe.skipIf(!enabled)(
       });
       await host.waitStatus(shop.page, 'v', 'not-personalizable');
       await shop.page.close();
+      await page.close();
+    });
+
+    it('uploads a custom font, adds it to the template, saves, then removes and deletes it', async () => {
+      // UI saves are async and the exact "saved" status text/markup is not worth coupling to;
+      // poll the Worker itself for the draft to reflect the edit.
+      const waitForDraft = async (check: (fonts: Array<{ id: string }>) => boolean, timeoutMs = 20000) => {
+        const start = Date.now();
+        for (;;) {
+          const res = await call('GET', `/configs/${encodeURIComponent(id)}`);
+          if (res.status === 200 && check(res.body.data.draft.fonts)) return res.body.data;
+          if (Date.now() - start > timeoutMs) throw new Error('Timed out waiting for the saved draft.');
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+      };
+
+      const id = `e2e-font-${Date.now()}`;
+      const draft = {
+        schemaVersion: 2,
+        id,
+        version: 1,
+        status: 'draft',
+        product: { id: `p-${id}`, name: 'Font E2E' },
+        assetBaseUrl: `${env.origin}/nested/path/customizer/assets/`,
+        variants: [{ id: 'default', label: 'Default', mockupIds: [], printableAreaIds: [] }],
+        mockups: [],
+        printableAreas: [],
+        artworks: [],
+        fonts: [{ id: 'sans', family: 'CustomizerSans', label: 'Sans', src: 'fonts/sans-regular.woff2' }],
+        fields: [],
+      };
+      const created = await call('POST', '/configs', { clientConfigId: id, draft });
+      expect(created.status).toBe(201);
+
+      const { page } = await openAdminHost(env);
+      await adminHost.mount(page, 'a', { apiBaseUrl: API, authToken: TOKEN });
+      await adminHost.ready(page, 'a');
+      await adminHost.set(page, 'a', 'view', 'editor');
+      await adminHost.set(page, 'a', 'configId', id);
+      await adminHost.waitView(page, 'a', 'editor');
+
+      await waitInside(page, 'a', 'button[role="tab"]');
+      await clickText(page, 'a', 'button[role="tab"]', 'Fonts');
+      await waitInside(page, 'a', 'input[type="file"]');
+      // The bundled default ('Sans') is listed read-only; no custom font (and no "in template" chip) yet.
+      expect(await page.evaluate(() => document.getElementById('a')!.shadowRoot!.querySelector('.chip'))).toBeNull();
+
+      await upload(page, 'a', ASSET_PATHS.fontSample);
+      await waitInside(page, 'a', 'button[type="submit"][form="upload-font-form"]');
+      await clickText(page, 'a', 'button[type="submit"]', 'Upload font');
+      // Uploaded (a store-wide asset, persisted immediately) and auto-added to the open draft.
+      await waitInside(page, 'a', '.chip');
+
+      await clickText(page, 'a', '.editor-header button', 'Save draft');
+      const saved = await waitForDraft((fonts) => fonts.length === 2);
+      const customFont = saved.draft.fonts.find((f: { id: string }) => f.id !== 'sans');
+      expect(customFont).toBeTruthy();
+      expect(customFont.src).toContain(`${API}/api/v1/storefront/personalization/assets/`);
+      expect(customFont.label).toContain('Mono Bold');
+
+      // Remove from the template (a local edit; the library asset itself is untouched) and save again.
+      await clickText(page, 'a', '.list-row__actions button', 'Remove from template');
+      await clickText(page, 'a', '.editor-header button', 'Save draft');
+      await waitForDraft((fonts) => fonts.length === 1);
+      expect((await call('GET', `/assets/${customFont.id}`)).status).toBe(200); // still in the library
+
+      // Delete it from the store library: the icon-only "more actions" button has no text to match
+      // on, and the selector must stay scoped to the font row (the editor header has its own menu).
+      const menuButton = await inside(page, 'a', '.list-row__actions button[aria-haspopup="menu"]');
+      await menuButton.click();
+      await waitInside(page, 'a', '[role="menuitem"]');
+      await clickText(page, 'a', '[role="menuitem"]', 'Delete');
+      await waitInside(page, 'a', 'button.btn--danger');
+      await clickText(page, 'a', 'button.btn--danger', 'Delete');
+      // Poll the Worker (not the row's label text): a label is not unique, so a leftover font of the
+      // same name from an earlier run would make a DOM-text wait pass or hang for the wrong reason.
+      const start = Date.now();
+      let status = 200;
+      while (status !== 404) {
+        status = (await call('GET', `/assets/${customFont.id}`)).status;
+        if (status === 404) break;
+        if (Date.now() - start > 20000) throw new Error(`Asset ${customFont.id} was never deleted (last status ${status}).`);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      expect(status).toBe(404);
+
       await page.close();
     });
   },

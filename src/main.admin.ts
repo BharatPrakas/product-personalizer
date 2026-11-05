@@ -28,6 +28,8 @@ import { AdminProductMappingRepository } from './app/mapping/admin-product-mappi
 import { ProductMappingRepository } from './app/mapping/product-mapping-repository';
 import { AdminMarkupRepository } from './app/markups/admin-markup-repository';
 import { MarkupRepository } from './app/markups/markup-repository';
+import { AdminFontRepository } from './app/fonts/admin-font-repository';
+import { FontRepository } from './app/fonts/font-repository';
 import { setAssetBaseUrl } from './app/workspace/asset-base';
 
 interface Registration {
@@ -71,6 +73,7 @@ export function registerPersonalizationAdmin(): Promise<void> {
         { provide: ConfigurationRepository, useExisting: AdminConfigurationRepository },
         { provide: ProductMappingRepository, useExisting: AdminProductMappingRepository },
         { provide: MarkupRepository, useExisting: AdminMarkupRepository },
+        { provide: FontRepository, useExisting: AdminFontRepository },
         ...(nonce ? [{ provide: CSP_NONCE, useValue: nonce }] : []),
       ],
     });

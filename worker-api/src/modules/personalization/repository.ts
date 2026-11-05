@@ -290,13 +290,16 @@ export class PersonalizationRepository {
 
   async listAssets(
     storeId: string,
-    opts: { configDbId: string | null; page: number; pageSize: number },
+    opts: { configDbId: string | null; kind?: 'image' | 'font'; page: number; pageSize: number },
   ): Promise<{ rows: AssetRow[]; total: number }> {
     const params: unknown[] = [storeId];
     let where = "store_id = $1 AND status = 'stored'";
     if (opts.configDbId) {
       params.push(opts.configDbId);
       where += ` AND config_id = $${params.length}`;
+    }
+    if (opts.kind) {
+      where += ` AND content_type ${opts.kind === 'font' ? 'LIKE' : 'NOT LIKE'} 'font/%'`;
     }
     const totalResult = await this.db.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM personalization.assets WHERE ${where}`,

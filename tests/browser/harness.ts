@@ -656,4 +656,6 @@ export const near = (actual: number[], expected: number[], tolerance = 6) =>
 export const ASSET_PATHS = {
   samplePhoto: join(root, 'public', 'assets', 'samples', 'photo-landscape.jpg'),
   portraitPhoto: join(root, 'public', 'assets', 'samples', 'photo-portrait.jpg'),
+  /** A real, valid WOFF2 file (one of the bundled default fonts) reused as a custom-upload fixture. */
+  fontSample: join(root, 'public', 'assets', 'fonts', 'mono-bold.woff2'),
 };

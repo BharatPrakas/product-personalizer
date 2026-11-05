@@ -46,7 +46,7 @@ export type Selection =
 /** `draw` creates a printable area of the given shape by dragging on the mockup. */
 export type Tool = { kind: 'select' } | { kind: 'pan' } | { kind: 'draw'; shape: ShapeSpec };
 
-export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers' | 'markups';
+export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers' | 'markups' | 'fonts';
 
 export type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 

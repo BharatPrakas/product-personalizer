@@ -19,6 +19,7 @@ import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 import { recordAudit } from '../audit/audit';
 import { type ObjectStorage, assetKeyPrefix, generateObjectKey } from '../../storage/object-storage';
 import { sniffImage } from '../../shared/image-sniff';
+import { sniffFont } from '../../shared/font-sniff';
 import {
   ConflictError,
   NotFoundError,
@@ -390,10 +391,16 @@ export class PersonalizationService {
       if (existing) return this.toAsset(existing);
     }
 
-    // Trust the bytes, not the declared Content-Type.
-    const sniffed = sniffImage(new Uint8Array(input.bytes));
+    // Trust the bytes, not the declared Content-Type. An upload is either an image (mockups,
+    // artwork, overlays) or a font (custom fonts, store-wide); never both, so image sniffing runs
+    // first and font sniffing is only tried once it has ruled the bytes out.
+    const bytes = new Uint8Array(input.bytes);
+    const sniffedImage = sniffImage(bytes);
+    const sniffed = sniffedImage.ok && sniffedImage.type ? sniffedImage : sniffFont(bytes);
     if (!sniffed.ok || !sniffed.type) {
-      throw new UnsupportedMediaTypeError('Only PNG, JPEG or WebP images are accepted.');
+      throw new UnsupportedMediaTypeError(
+        'Only PNG, JPEG, WebP images or WOFF2, WOFF, TTF, OTF fonts are accepted.',
+      );
     }
 
     const digest = await crypto.subtle.digest('SHA-256', input.bytes);
@@ -419,8 +426,9 @@ export class PersonalizationService {
       originalFilename: input.filename ?? null,
       contentType: sniffed.type,
       sizeBytes: size,
-      width: sniffed.width ?? null,
-      height: sniffed.height ?? null,
+      // Fonts have no intrinsic pixel dimensions.
+      width: 'width' in sniffed ? (sniffed.width ?? null) : null,
+      height: 'height' in sniffed ? (sniffed.height ?? null) : null,
       checksum,
       clientRef: input.clientRef ?? null,
       nowMs: this.stamp(),
@@ -454,6 +462,8 @@ export class PersonalizationService {
 
   async listAssets(opts: {
     configClientId?: string;
+    /** Restricts the listing to images (the default, unfiltered listing) or to fonts. */
+    kind?: 'image' | 'font';
     page: number;
     pageSize: number;
   }): Promise<{ assets: AssetDto[]; total: number; page: number; pageSize: number }> {
@@ -464,6 +474,7 @@ export class PersonalizationService {
     }
     const { rows, total } = await this.repo.listAssets(this.ctx.storeId, {
       configDbId,
+      kind: opts.kind,
       page: opts.page,
       pageSize: opts.pageSize,
     });

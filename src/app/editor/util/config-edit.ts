@@ -9,7 +9,7 @@
  *  - removing an area / artwork / mockup / variant removes every reference to it.
  */
 
-import { FieldSpec, ImageFieldSpec, TextFieldSpec } from '../../customizer/models/config.models';
+import { FieldSpec, FontSpec, ImageFieldSpec, TextFieldSpec } from '../../customizer/models/config.models';
 import {
   AreaPlacement,
   Artwork,
@@ -21,6 +21,7 @@ import {
   ProductMockup,
   ProductVariant,
   ShapeSpec,
+  TextLayer,
   layerFieldId,
 } from '../../customizer/models/product.models';
 import { boundFieldIds } from '../../customizer/util/resolve';
@@ -1012,4 +1013,62 @@ export function duplicateMockup(
     },
     id: newId,
   };
+}
+
+// ---- fonts --------------------------------------------------------------------------------------
+
+/**
+ * Adds a font (the bundled defaults, or a store-uploaded custom one) to the template and makes it
+ * an allowed choice on every editable text field, so it shows up in the font picker immediately.
+ * A font already present (same `id`) is left untouched, not duplicated.
+ */
+export function addFont(
+  config: ProductConfig,
+  font: Omit<FontSpec, 'id'> & { id?: string },
+): { config: ProductConfig; id: string } {
+  if (font.id && config.fonts.some((f) => f.id === font.id)) return { config, id: font.id };
+  const id = font.id ?? uniqueId(font.label ?? font.family, config.fonts.map((f) => f.id));
+  const spec: FontSpec = { ...font, id };
+  return {
+    config: {
+      ...config,
+      fonts: [...config.fonts, spec],
+      fields: config.fields.map((f) =>
+        f.type === 'text' ? { ...f, fontIds: [...f.fontIds, id] } : f,
+      ),
+    },
+    id,
+  };
+}
+
+/**
+ * Removes a font and every reference to it: dropped from each text field's allowed choices (and its
+ * default, if it pointed there) and from every fixed (non-editable) text layer, falling back to the
+ * font that was first in the list. A config always keeps at least one font — removing the last one
+ * is refused (returns the input unchanged) rather than leaving every text field with no font at all.
+ */
+export function removeFont(config: ProductConfig, id: string): ProductConfig {
+  const fonts = config.fonts.filter((f) => f.id !== id);
+  if (fonts.length === 0 || fonts.length === config.fonts.length) return config;
+  const fallback = fonts[0].id;
+
+  const fields = config.fields.map((f): FieldSpec => {
+    if (f.type !== 'text') return f;
+    const fontIds = f.fontIds.filter((fid) => fid !== id).length
+      ? f.fontIds.filter((fid) => fid !== id)
+      : [fallback];
+    const defaultValue =
+      f.defaultValue?.fontId === id ? { ...f.defaultValue, fontId: fallback } : f.defaultValue;
+    return { ...f, fontIds, ...(defaultValue ? { defaultValue } : {}) };
+  });
+
+  const artworks = config.artworks.map((artwork) => ({
+    ...artwork,
+    layers: artwork.layers.map((layer): ArtworkLayer => {
+      if (layer.type !== 'text' || (layer as TextLayer).fontId !== id) return layer;
+      return { ...layer, fontId: fallback } as TextLayer;
+    }),
+  }));
+
+  return { ...config, fonts, fields, artworks };
 }

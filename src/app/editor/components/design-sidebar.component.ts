@@ -5,6 +5,7 @@ import { IconComponent, IconName } from '../../ui/icon.component';
 import { EditorStore, SidebarTab } from '../services/editor-store.service';
 import { AreasTabComponent } from './areas-tab.component';
 import { ArtworksTabComponent } from './artworks-tab.component';
+import { FontsTabComponent } from './fonts-tab.component';
 import { LayersTabComponent } from './layers-tab.component';
 import { MockupsTabComponent } from './mockups-tab.component';
 import { MarkupsTabComponent } from '../../markups/markups-tab.component';
@@ -25,6 +26,7 @@ interface Tab {
     ArtworksTabComponent,
     LayersTabComponent,
     MarkupsTabComponent,
+    FontsTabComponent,
     TranslatePipe,
   ],
   template: `
@@ -73,6 +75,9 @@ interface Tab {
         @case ('markups') {
           <app-markups-tab />
         }
+        @case ('fonts') {
+          <app-fonts-tab />
+        }
       }
     </div>
   `,
@@ -86,6 +91,7 @@ export class DesignSidebarComponent {
     { id: 'artworks', label: 'sidebar.tab.artworks', icon: 'artwork' },
     { id: 'layers', label: 'sidebar.tab.layers', icon: 'layers' },
     { id: 'markups', label: 'sidebar.tab.markups', icon: 'shapes' },
+    { id: 'fonts', label: 'sidebar.tab.fonts', icon: 'text' },
   ];
 
   /** Arrow keys move between tabs, as in the ARIA tabs pattern. */

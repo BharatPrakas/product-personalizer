@@ -268,6 +268,22 @@ export function tinyPng(): Uint8Array {
   return bytes;
 }
 
+/**
+ * Minimal bytes carrying a real font format's magic number, enough for `sniffFont` (and the Worker's
+ * upload pipeline, which only inspects bytes — never the browser) to accept it. Not a loadable font.
+ */
+export function tinyFont(format: 'woff2' | 'woff' | 'ttf' | 'otf' = 'woff2'): Uint8Array {
+  const tag =
+    format === 'woff2'
+      ? [0x77, 0x4f, 0x46, 0x32] // 'wOF2'
+      : format === 'woff'
+        ? [0x77, 0x4f, 0x46, 0x46] // 'wOFF'
+        : format === 'otf'
+          ? [0x4f, 0x54, 0x54, 0x4f] // 'OTTO'
+          : [0x00, 0x01, 0x00, 0x00]; // sfnt v1 (TTF)
+  return new Uint8Array([...tag, 0, 0, 0, 0, 0, 0, 0, 0]);
+}
+
 // ---- mapping / storefront fixtures ----
 
 export const ADMIN = '/api/v1/plugins/personalization';
