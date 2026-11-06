@@ -23,6 +23,10 @@ import {
   truncateAll,
 } from './helpers';
 import { signBody } from '../src/modules/integration-credentials/signature';
+import { OrderCallbackService } from '../src/modules/personalization/order-callback-service';
+import { createDatabase } from '../src/database/connection';
+import { Logger } from '../src/shared/logger';
+import { getTestD1 } from './helpers';
 
 beforeAll(async () => {
   await applyMigrations();
@@ -45,7 +49,7 @@ async function setup() {
 }
 
 const count = async (table: string) =>
-  Number((await queryDb<{ n: string }>(`SELECT count(*)::text AS n FROM ${table}`))[0].n);
+  Number((await queryDb<{ n: number }>(`SELECT count(*) AS n FROM ${table}`))[0].n);
 
 describe('credential management', () => {
   it('returns the secret once and only metadata afterwards; the database holds ciphertext', async () => {
@@ -62,11 +66,11 @@ describe('credential management', () => {
     expect(list[0]).not.toHaveProperty('secret');
     expect(list[0]).not.toHaveProperty('secret_encrypted');
 
-    const [row] = await queryDb<{ secret_encrypted: string }>('SELECT secret_encrypted FROM personalization.integration_credentials');
+    const [row] = await queryDb<{ secret_encrypted: string }>('SELECT secret_encrypted FROM integration_credentials');
     expect(row.secret_encrypted).not.toContain(issued.secret);
     expect(row.secret_encrypted.startsWith('v1.')).toBe(true);
     // Not in the audit trail either.
-    const audit = await queryDb<{ metadata: unknown }>("SELECT metadata FROM personalization.audit_logs WHERE action LIKE 'integration_credential.%'");
+    const audit = await queryDb<{ metadata: unknown }>("SELECT metadata FROM audit_logs WHERE action LIKE 'integration_credential.%'");
     expect(audit).toHaveLength(1);
     expect(JSON.stringify(audit)).not.toContain(issued.secret);
   });
@@ -116,7 +120,7 @@ describe('credential management', () => {
     expect((await postOrderEvent(fresh, orderEvent(c2.customizationId, { orderId: 'ORD-2', lineId: 'L2' }))).status).toBe(200);
 
     // After the grace period the old one is rejected; the new one still works.
-    await queryDb("UPDATE personalization.integration_credentials SET expires_at = now() - interval '1 second' WHERE id = $1", [credential.id]);
+    await queryDb('UPDATE integration_credentials SET expires_at = $2 WHERE id = $1', [credential.id, new Date(Date.now() - 1000).toISOString()]);
     const c3 = await saveCustomization();
     expect((await postOrderEvent(credential, orderEvent(c3.customizationId, { orderId: 'ORD-3', lineId: 'L3' }))).status).toBe(401);
     expect((await postOrderEvent(fresh, orderEvent(c3.customizationId, { orderId: 'ORD-3', lineId: 'L3' }))).status).toBe(200);
@@ -172,8 +176,8 @@ describe('signed order events — authentication', () => {
     expect(reTimed.status).toBe(401);
 
     // Nothing was written by any of them.
-    expect(await count('personalization.order_links')).toBe(0);
-    expect(await count('personalization.integration_events')).toBe(0);
+    expect(await count('order_links')).toBe(0);
+    expect(await count('integration_events')).toBe(0);
     // A bearer dev token is NOT an alternative way in.
     const bearer = await call(url, { method: 'POST', token: DEV_TOKEN, body: event });
     expect(bearer.status).toBe(401);
@@ -232,16 +236,16 @@ describe('signed order events — linking', () => {
     // Contract v1: the receiver response is not wrapped in `data`.
     expect(body.data).toBeUndefined();
 
-    const [row] = await queryDb<any>('SELECT status, ordered_at, expires_at FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT status, ordered_at, expires_at FROM customizations');
     expect(row.status).toBe('ordered');
     expect(row.ordered_at).not.toBeNull();
     expect(row.expires_at).toBeNull();
-    const [link] = await queryDb<any>('SELECT * FROM personalization.order_links');
+    const [link] = await queryDb<any>('SELECT * FROM order_links');
     expect(link).toMatchObject({ store_id: STORE_A, external_order_id: 'ORD-1001', external_line_id: 'LINE-1', product_external_id: PRODUCT_ID, event_id: event.eventId });
-    const [ev] = await queryDb<any>('SELECT line_count, results FROM personalization.integration_events');
+    const [ev] = await queryDb<any>('SELECT line_count, results FROM integration_events');
     expect(ev.line_count).toBe(1);
     expect(ev.results).toEqual(body.results);
-    const audit = await queryDb<any>("SELECT actor FROM personalization.audit_logs WHERE action = 'order.link'");
+    const audit = await queryDb<any>("SELECT actor FROM audit_logs WHERE action = 'order.link'");
     expect(audit).toHaveLength(1);
     expect(audit[0].actor).toBe(`integration:${credential.id}`);
 
@@ -263,9 +267,9 @@ describe('signed order events — linking', () => {
     expect(body.duplicate).toBe(true);
     // Same per-line outcome as the first delivery ("applied"), not a recomputed one.
     expect(body.results).toEqual(first.results);
-    expect(await count('personalization.order_links')).toBe(1);
-    expect(await count('personalization.integration_events')).toBe(1);
-    expect(await count("personalization.audit_logs WHERE action = 'order.link'")).toBe(1);
+    expect(await count('order_links')).toBe(1);
+    expect(await count('integration_events')).toBe(1);
+    expect(await count("audit_logs WHERE action = 'order.link'")).toBe(1);
   });
 
   it('treats a harmless re-serialization of the same event as a repeat', async () => {
@@ -286,7 +290,7 @@ describe('signed order events — linking', () => {
     const body = await json(retry);
     expect(body.duplicate).toBe(false);
     expect(body.results[0].status).toBe('duplicate');
-    expect(await count('personalization.order_links')).toBe(1);
+    expect(await count('order_links')).toBe(1);
   });
 
   it('rejects the LINE (HTTP 200, status `rejected`) when an ordered customization is linked to a different order or line', async () => {
@@ -299,7 +303,7 @@ describe('signed order events — linking', () => {
         expect.objectContaining({ status: 'rejected', reason: 'customization_already_ordered' }),
       ]);
     }
-    expect(await count('personalization.order_links')).toBe(1);
+    expect(await count('order_links')).toBe(1);
   });
 
   it('rejects the line when an order line already carries a different customization, leaving the other `saved`', async () => {
@@ -308,9 +312,9 @@ describe('signed order events — linking', () => {
     expect((await postOrderEvent(credential, orderEvent(customization.customizationId))).status).toBe(200);
     const res = await postOrderEvent(credential, orderEvent(second.customizationId));
     expect(await resultsOf(res)).toEqual([expect.objectContaining({ status: 'rejected', reason: 'order_line_already_linked' })]);
-    const [row] = await queryDb<any>('SELECT status FROM personalization.customizations WHERE id = $1', [second.customizationId]);
+    const [row] = await queryDb<any>('SELECT status FROM customizations WHERE id = $1', [second.customizationId]);
     expect(row.status).toBe('saved');
-    expect(await count('personalization.order_links')).toBe(1);
+    expect(await count('order_links')).toBe(1);
   });
 
   it('409s when an eventId is reused with a different payload (envelope-level conflict)', async () => {
@@ -327,8 +331,8 @@ describe('signed order events — linking', () => {
     const wrongProduct = await postOrderEvent(credential, orderEvent(customization.customizationId, { productId: 'some-other-product' }));
     expect(wrongProduct.status).toBe(200);
     expect(await resultsOf(wrongProduct)).toEqual([expect.objectContaining({ status: 'rejected', reason: 'product_mismatch' })]);
-    expect(await count('personalization.order_links')).toBe(0);
-    const [row] = await queryDb<any>('SELECT status FROM personalization.customizations');
+    expect(await count('order_links')).toBe(0);
+    const [row] = await queryDb<any>('SELECT status FROM customizations');
     expect(row.status).toBe('saved');
 
     // A product-scoped customization has no variant recorded, so a variant in the event is not a mismatch.
@@ -357,16 +361,16 @@ describe('signed order events — linking', () => {
     const credentialB = await createCredential(STORE_B);
     const res = await postOrderEvent(credentialB, orderEvent(customization.customizationId, { storeId: STORE_B }));
     expect(await resultsOf(res)).toEqual([expect.objectContaining({ status: 'rejected', reason: 'customization_not_found' })]);
-    const [row] = await queryDb<any>('SELECT status FROM personalization.customizations WHERE id = $1', [customization.customizationId]);
+    const [row] = await queryDb<any>('SELECT status FROM customizations WHERE id = $1', [customization.customizationId]);
     expect(row.status).toBe('saved');
-    expect(await count('personalization.order_links')).toBe(0);
+    expect(await count('order_links')).toBe(0);
   });
 
   it('rejects an event whose storeId is not the credential’s store (403)', async () => {
     const { credential, customization } = await setup();
     const res = await postOrderEvent(credential, orderEvent(customization.customizationId, { storeId: STORE_B }));
     expect(res.status).toBe(403);
-    expect(await count('personalization.order_links')).toBe(0);
+    expect(await count('order_links')).toBe(0);
   });
 
   it('rejects unsupported event types, unknown fields and malformed envelopes (422)', async () => {
@@ -382,8 +386,8 @@ describe('signed order events — linking', () => {
     expect((await postOrderEvent(credential, orderEventWith([]))).status).toBe(422);
     expect((await postOrderEvent(credential, orderEventWith([orderLine(id), orderLine(id)]))).status).toBe(422); // duplicate line ids
     expect((await postOrderEvent(credential, { ...orderEvent(id), lines: [{ ...orderLine(id), extra: 1 }] } as any)).status).toBe(422);
-    expect(await count('personalization.order_links')).toBe(0);
-    expect(await count('personalization.integration_events')).toBe(0);
+    expect(await count('order_links')).toBe(0);
+    expect(await count('integration_events')).toBe(0);
   });
 
   it('rejects a line with no or an invalid customizationId, and an unknown customization', async () => {
@@ -407,9 +411,9 @@ describe('signed order events — linking', () => {
   it('rejects a customization that expired before it was ordered', async () => {
     const { credential, customization } = await setup();
     await queryDb(
-      `UPDATE personalization.customizations SET status = 'expired', expired_at = now(), expires_at = NULL, data = '{}'
+      `UPDATE customizations SET status = 'expired', expired_at = $2, expires_at = NULL, data = '{}'
         WHERE id = $1`,
-      [customization.customizationId],
+      [customization.customizationId, new Date().toISOString()],
     );
     const res = await postOrderEvent(credential, orderEvent(customization.customizationId));
     expect(await resultsOf(res)).toEqual([expect.objectContaining({ status: 'rejected', reason: 'customization_expired' })]);
@@ -432,18 +436,18 @@ describe('signed order events — linking', () => {
       expect.objectContaining({ lineId: 'L-2', status: 'rejected', reason: 'product_mismatch' }),
       expect.objectContaining({ lineId: 'L-3', status: 'applied' }),
     ]);
-    expect(await count('personalization.order_links')).toBe(2);
-    expect(await count("personalization.customizations WHERE status = 'ordered'")).toBe(2);
-    const [rejected] = await queryDb<any>('SELECT status FROM personalization.customizations WHERE id = $1', [second.customizationId]);
+    expect(await count('order_links')).toBe(2);
+    expect(await count("customizations WHERE status = 'ordered'")).toBe(2);
+    const [rejected] = await queryDb<any>('SELECT status FROM customizations WHERE id = $1', [second.customizationId]);
     expect(rejected.status).toBe('saved');
-    const [ev] = await queryDb<any>('SELECT line_count FROM personalization.integration_events');
+    const [ev] = await queryDb<any>('SELECT line_count FROM integration_events');
     expect(ev.line_count).toBe(3);
 
     // A replay returns the identical per-line outcome and applies nothing again.
     const replay = await json(await postOrderEvent(credential, event));
     expect(replay.duplicate).toBe(true);
     expect(replay.results).toEqual(firstResults);
-    expect(await count('personalization.order_links')).toBe(2);
+    expect(await count('order_links')).toBe(2);
     // The rejected line can be re-sent under a NEW eventId once the cause is fixed.
     const fixed = await postOrderEvent(credential, orderEventWith([orderLine(second.customizationId, { id: 'L-2' })]));
     expect((await resultsOf(fixed))[0].status).toBe('applied');
@@ -457,8 +461,8 @@ describe('signed order events — linking', () => {
     const bodies = await Promise.all(results.map(async (r) => json(r)));
     expect(bodies.filter((b) => b.duplicate === false)).toHaveLength(1);
     for (const b of bodies) expect(b.results).toEqual([expect.objectContaining({ lineId: 'LINE-1', status: 'applied' })]);
-    expect(await count('personalization.order_links')).toBe(1);
-    expect(await count('personalization.integration_events')).toBe(1);
+    expect(await count('order_links')).toBe(1);
+    expect(await count('integration_events')).toBe(1);
   });
 
   it('serializes events that race for one order line: one applies, the rest are rejected', async () => {
@@ -470,10 +474,64 @@ describe('signed order events — linking', () => {
     expect(responses.map((r) => r.status)).toEqual([200, 200, 200, 200]);
     const statuses = (await Promise.all(responses.map(resultsOf))).map((r) => r[0].status).sort();
     expect(statuses).toEqual(['applied', 'rejected', 'rejected', 'rejected']);
-    expect(await count('personalization.order_links')).toBe(1);
-    expect(await count("personalization.customizations WHERE status = 'ordered'")).toBe(1);
+    expect(await count('order_links')).toBe(1);
+    expect(await count("customizations WHERE status = 'ordered'")).toBe(1);
     // setup() saved one customization of its own, plus the four that raced.
-    expect(await count("personalization.customizations WHERE status = 'saved'")).toBe(4);
+    expect(await count("customizations WHERE status = 'saved'")).toBe(4);
+  });
+
+  it('resumes a stale `processing` event left by a simulated crash, without double-applying or hanging', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEvent(customization.customizationId);
+    const db = createDatabase(await getTestD1());
+
+    // Simulate a prior attempt that inserted the dedup row and then died before any line ran.
+    await db.query(
+      `INSERT INTO integration_events
+         (store_id, event_id, event_type, payload_sha256, occurred_at, status)
+       VALUES ($1, $2, $3, $4, $5, 'processing')`,
+      [STORE_A, event.eventId, event.type, 'simulated-crash-hash', event.occurredAt],
+    );
+
+    const service = new OrderCallbackService({ db, logger: new Logger('error', { requestId: 'crash-recovery-test' }), requestId: 'crash-recovery-test' });
+    const result = await service.confirm({
+      storeId: STORE_A,
+      credentialId: credential.id,
+      event,
+      payloadSha256: 'simulated-crash-hash',
+    });
+
+    expect(result.duplicate).toBe(false);
+    expect(result.results).toEqual([expect.objectContaining({ lineId: 'LINE-1', status: 'applied' })]);
+    const [row] = await queryDb<any>('SELECT status, results FROM integration_events WHERE event_id = $1', [event.eventId]);
+    expect(row.status).toBe('completed');
+    expect(row.results).toEqual(result.results);
+    expect(await count('order_links')).toBe(1);
+    const [cz] = await queryDb<any>('SELECT status FROM customizations WHERE id = $1', [customization.customizationId]);
+    expect(cz.status).toBe('ordered');
+
+    // A genuine replay (now `completed`) answers from the stored results and changes nothing further.
+    const replay = await service.confirm({ storeId: STORE_A, credentialId: credential.id, event, payloadSha256: 'simulated-crash-hash' });
+    expect(replay.duplicate).toBe(true);
+    expect(replay.results).toEqual(result.results);
+    expect(await count('order_links')).toBe(1);
+  });
+
+  it('409s a stale `processing` event replayed with a different payload hash, same as a completed one would', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEvent(customization.customizationId);
+    const db = createDatabase(await getTestD1());
+    await db.query(
+      `INSERT INTO integration_events
+         (store_id, event_id, event_type, payload_sha256, occurred_at, status)
+       VALUES ($1, $2, $3, $4, $5, 'processing')`,
+      [STORE_A, event.eventId, event.type, 'original-hash', event.occurredAt],
+    );
+    const service = new OrderCallbackService({ db, logger: new Logger('error', { requestId: 'x' }), requestId: 'x' });
+    await expect(
+      service.confirm({ storeId: STORE_A, credentialId: credential.id, event, payloadSha256: 'different-hash' }),
+    ).rejects.toMatchObject({ status: 409, details: { reason: 'event_id_reused' } });
+    expect(await count('order_links')).toBe(0);
   });
 });
 

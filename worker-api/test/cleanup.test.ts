@@ -3,10 +3,10 @@ import {
   ADMIN,
   STOREFRONT,
   STORE_A,
-  TEST_DATABASE_URL,
   applyMigrations,
   call,
   createCredential,
+  getTestD1,
   json,
   makeEnv,
   orderEvent,
@@ -43,22 +43,18 @@ const at = (ms: number) => new Date(Date.now() + ms);
 /** Run one cleanup pass "as of" a point in time (the job takes its clock as a parameter). */
 async function cleanup(now: Date, options: { storage?: ObjectStorage; env?: Parameters<typeof makeEnv>[0] extends never ? never : Record<string, string>; batchSize?: number } = {}) {
   const env = { ...makeEnv(), ...options.env } as ReturnType<typeof makeEnv>;
-  const db = createDatabase(TEST_DATABASE_URL);
-  try {
-    return await new CleanupService({
-      db,
-      storage: () => options.storage ?? new R2ObjectStorage(sharedBucket as unknown as R2Bucket),
-      config: loadConfig(env),
-      logger: new Logger('error', { requestId: 'cleanup-test' }),
-      batchSize: options.batchSize,
-    }).run('test', now);
-  } finally {
-    await db.close();
-  }
+  const db = createDatabase(await getTestD1());
+  return new CleanupService({
+    db,
+    storage: () => options.storage ?? new R2ObjectStorage(sharedBucket as unknown as R2Bucket),
+    config: loadConfig(env),
+    logger: new Logger('error', { requestId: 'cleanup-test' }),
+    batchSize: options.batchSize,
+  }).run('test', now);
 }
 
-const statusOf = async (id: string) => (await queryDb<any>('SELECT status FROM personalization.customizations WHERE id = $1', [id]))[0]?.status;
-const assetRows = () => queryDb<any>('SELECT id, status, object_key, delete_after, last_error, delete_attempts FROM personalization.customization_assets ORDER BY created_at');
+const statusOf = async (id: string) => (await queryDb<any>('SELECT status FROM customizations WHERE id = $1', [id]))[0]?.status;
+const assetRows = () => queryDb<any>('SELECT id, status, object_key, delete_after, last_error, delete_attempts FROM customization_assets ORDER BY created_at');
 
 async function savedWithAsset() {
   const asset = await uploadCustomerImage();
@@ -82,7 +78,7 @@ describe('abandoned customization cleanup', () => {
     // Day 31: expired, data cleared, file RELEASED but still in storage (grace period).
     const expired = await cleanup(at(31 * DAY));
     expect(expired.customizationsExpired).toBe(1);
-    const [row] = await queryDb<any>('SELECT status, data, expires_at, expired_at FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT status, data, expires_at, expired_at FROM customizations');
     expect(row).toMatchObject({ status: 'expired', data: {}, expires_at: null });
     expect(row.expired_at).not.toBeNull();
     const [released] = await assetRows();
@@ -114,7 +110,7 @@ describe('abandoned customization cleanup', () => {
     const { saved } = await savedWithAsset();
     const env = { CUSTOMIZATION_RETENTION_DAYS: '1', ASSET_DELETE_GRACE_HOURS: '1', EXPIRED_TOMBSTONE_DAYS: '1' };
     // `expires_at` was fixed at save time from the default retention, so move it to the configured one.
-    await queryDb("UPDATE personalization.customizations SET expires_at = now() + interval '1 day'");
+    await queryDb('UPDATE customizations SET expires_at = $1', [new Date(Date.now() + DAY).toISOString()]);
     expect((await cleanup(at(2 * DAY), { env })).customizationsExpired).toBe(1);
     expect((await cleanup(at(2 * DAY + 2 * HOUR), { env })).assetsDeleted).toBe(1);
     expect((await cleanup(at(4 * DAY), { env })).tombstonesPurged).toBe(1);
@@ -142,9 +138,9 @@ describe('abandoned customization cleanup', () => {
     await seedPersonalizableProduct();
     const { saved } = await savedWithAsset();
     await queryDb(
-      `INSERT INTO personalization.order_links (store_id, customization_id, external_order_id, external_line_id, product_external_id, event_id, occurred_at)
-       VALUES ($1, $2, 'ORD-X', 'L-X', 'p', 'evt-x', now())`,
-      [STORE_A, saved.customizationId],
+      `INSERT INTO order_links (id, store_id, customization_id, external_order_id, external_line_id, product_external_id, event_id, occurred_at)
+       VALUES ($1, $2, $3, 'ORD-X', 'L-X', 'p', 'evt-x', $4)`,
+      [crypto.randomUUID(), STORE_A, saved.customizationId, new Date().toISOString()],
     );
     expect((await cleanup(at(100 * DAY))).customizationsExpired).toBe(0);
     expect(await statusOf(saved.customizationId)).toBe('saved');
@@ -168,23 +164,13 @@ describe('abandoned customization cleanup', () => {
     expect(asset.assetId).toBe(row.id);
   });
 
-  it('is not racing the order callback: an expiry pass skips a row the callback has locked', async () => {
-    await seedPersonalizableProduct();
-    const { saved } = await savedWithAsset();
-    const db = createDatabase(TEST_DATABASE_URL);
-    try {
-      let outcome: Awaited<ReturnType<typeof cleanup>> | undefined;
-      await db.transaction(async (tx) => {
-        // What the callback does first: lock the customization row.
-        await tx.query('SELECT 1 FROM personalization.customizations WHERE id = $1 FOR UPDATE', [saved.customizationId]);
-        outcome = await cleanup(at(40 * DAY));
-      });
-      expect(outcome!.customizationsExpired).toBe(0);
-      expect(await statusOf(saved.customizationId)).toBe('saved');
-    } finally {
-      await db.close();
-    }
-  });
+  // There used to be a test here holding a Postgres `FOR UPDATE` row lock open in one transaction
+  // while a cleanup pass ran concurrently, asserting the lock made cleanup skip the row. D1 has no
+  // row locking and no concurrent transactions to race in the first place (every write is serialized
+  // to a single logical writer), so that scenario can no longer be expressed, and the guarantee it
+  // was protecting — an order and an expiry can never both apply to the same customization — is
+  // already exercised sequentially by "NEVER touches ordered customizations..." above, backed by the
+  // conditional `WHERE status = 'saved'` in cleanup-service.ts rather than a lock.
 
   it('answers an event for an already-expired customization with a clear per-line rejection', async () => {
     await seedPersonalizableProduct();
@@ -268,7 +254,7 @@ describe('failure handling and bookkeeping', () => {
     await seedPersonalizableProduct();
     await uploadCustomerImage();
     await cleanup(at(25 * HOUR));
-    await queryDb("UPDATE personalization.customization_assets SET status = 'deleting', updated_at = now() - interval '3 hours'");
+    await queryDb("UPDATE customization_assets SET status = 'deleting', updated_at = $1", [new Date(Date.now() - 3 * HOUR).toISOString()]);
     const outcome = await cleanup(at(60 * HOUR));
     expect(outcome.assetsDeleted).toBe(1);
   });
@@ -278,7 +264,7 @@ describe('failure handling and bookkeeping', () => {
     await savedWithAsset();
     await cleanup(at(31 * DAY));
     await cleanup(at(32 * DAY + 2 * HOUR));
-    const runs = await queryDb<any>('SELECT * FROM personalization.cleanup_runs ORDER BY started_at');
+    const runs = await queryDb<any>('SELECT * FROM cleanup_runs ORDER BY started_at');
     expect(runs).toHaveLength(2);
     expect(runs[0]).toMatchObject({ trigger: 'test', status: 'succeeded', customizations_expired: 1, assets_deleted: 0, error: null });
     expect(runs[1]).toMatchObject({ status: 'succeeded', customizations_expired: 0, assets_deleted: 1 });
@@ -295,9 +281,9 @@ describe('failure handling and bookkeeping', () => {
   it('is what the cron trigger runs (runScheduledCleanup)', async () => {
     await seedPersonalizableProduct();
     await uploadCustomerImage();
-    await queryDb("UPDATE personalization.customization_assets SET created_at = now() - interval '2 days'");
-    await runScheduledCleanup(makeEnv(sharedBucket), '17 * * * *');
-    const [run] = await queryDb<any>('SELECT trigger, status, uploads_released FROM personalization.cleanup_runs');
+    await queryDb('UPDATE customization_assets SET created_at = $1', [new Date(Date.now() - 2 * DAY).toISOString()]);
+    await runScheduledCleanup({ ...makeEnv(sharedBucket), DB: await getTestD1() }, '17 * * * *');
+    const [run] = await queryDb<any>('SELECT trigger, status, uploads_released FROM cleanup_runs');
     expect(run).toEqual({ trigger: '17 * * * *', status: 'succeeded', uploads_released: 1 });
   });
 });

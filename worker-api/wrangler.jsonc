@@ -1,21 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   // Dedicated Worker for Product Personalization: configurations, mappings, the public storefront
-  // routes, customizations and signed order events. It owns its own PostgreSQL database (the
-  // Hyperdrive binding below) and its own object-storage bucket.
+  // routes, customizations and signed order events. It owns its own D1 database (the binding below)
+  // and its own object-storage bucket.
   "name": "zb-product-personalizer-api",
   "main": "src/index.ts",
-  // Recent runtime so Hyperdrive + node-postgres (`pg`) work. Do not lower without re-verifying `pg`.
   "compatibility_date": "2025-09-01",
-  // `nodejs_compat` is REQUIRED for the `pg` driver (Buffer, streams, net shims) on the Workers runtime.
+  // `nodejs_compat` is REQUIRED for aws4fetch and Buffer/crypto shims used by the S3 storage driver
+  // and the integration-credential signing code — unrelated to the database, do not remove it.
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
   },
 
-  // --- Non-secret vars. Secrets (DB password inside the Hyperdrive connection string, JWT signing
-  // --- key) are NEVER placed here; set them with `wrangler secret put` / `.dev.vars`. See README.
+  // --- Non-secret vars. Secrets (JWT signing key, integration encryption key) are NEVER placed here;
+  // --- set them with `wrangler secret put` / `.dev.vars`. See README.
   // Hourly cleanup of abandoned customizations and customer files (see CleanupService).
   "triggers": { "crons": ["17 * * * *"] },
 
@@ -35,15 +35,24 @@
     "S3_REGION": "us-west-2"
   },
 
-  // --- Hyperdrive: pooled connection to this Worker's dedicated PostgreSQL database.
-  // Create with: wrangler hyperdrive create <name> --connection-string="postgres://..."
-  // Replace the placeholder id below with the real one it prints (it is environment-specific, not a secret).
-  "hyperdrive": [
+  // --- D1: this Worker's dedicated SQLite database, one per environment (never shared).
+  // `database_id` is environment-specific, not a secret, but each environment's real database only
+  // exists once `wrangler d1 create <name>` has been run for it — ALWAYS apply migrations to a new
+  // database (`wrangler d1 migrations apply <name> --env <env> [--remote]`) before pointing any
+  // deployed Worker code at it; `wrangler deploy` does not do this for you.
+  //   local (`wrangler dev`, no --remote): a local SQLite file; the placeholder id below is never
+  //     used to reach a real database — only `wrangler dev --remote` or a deploy reaches Cloudflare.
+  //   staging: created 2026-11-06 (`zb-product-personalizer-db-staging`), migrated, and validated —
+  //     see the D1 migration memory / session report. Not yet deployed to (`wrangler deploy --env
+  //     staging` has not been run).
+  //   production: still a placeholder (`00000000-...`) — not created yet. Do not deploy production
+  //     until `wrangler d1 create` + `wrangler d1 migrations apply --env production` have both run
+  //     against it first.
+  "d1_databases": [
     {
-      "binding": "HYPERDRIVE",
-      "id": "9cd1b962a64f425ab5b47da985012480",
-      // For `wrangler dev`, point at a LOCAL Postgres so you never hit a deployed DB from your laptop.
-      "localConnectionString": "postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_dev"
+      "binding": "DB",
+      "database_name": "zb-product-personalizer-db",
+      "database_id": "00000000-0000-0000-0000-000000000000"
     }
   ],
 
@@ -61,8 +70,12 @@
         "S3_BUCKET": "zb-plugins",
         "S3_REGION": "us-west-2"
       },
-      "hyperdrive": [
-        { "binding": "HYPERDRIVE", "id": "0000000000000000000000000staging" }
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zb-product-personalizer-db-staging",
+          "database_id": "91437292-f0ff-4450-a17e-f63c469518da"
+        }
       ]
     },
     "production": {
@@ -76,8 +89,12 @@
         "LOG_LEVEL": "warn",
         "STORAGE_DRIVER": "r2"
       },
-      "hyperdrive": [
-        { "binding": "HYPERDRIVE", "id": "9cd1b962a64f425ab5b47da985012480" }
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zb-product-personalizer-db-production",
+          "database_id": "00000000-0000-0000-0000-000000000000"
+        }
       ],
       "r2_buckets": [
         {

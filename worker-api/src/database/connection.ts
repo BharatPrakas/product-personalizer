@@ -1,58 +1,85 @@
 /**
- * PostgreSQL access through Hyperdrive, using node-postgres (`pg`).
+ * D1 (SQLite) access through the native `D1Database` binding.
  *
- * Runtime notes that are easy to get wrong:
- *  - `pg` only runs on the Workers runtime with `compatibility_flags: ["nodejs_compat"]` and a recent
- *    `compatibility_date` (set in wrangler.jsonc). A plain Node example will NOT work unchanged.
- *  - Hyperdrive already pools connections at the edge, so we open ONE short-lived client per request
- *    rather than a per-request pool, and close it after the response via `waitUntil`.
- *  - Transactions are kept short and never wrap an R2 network call (see service layer).
+ * Query text keeps the Postgres-style numbered placeholders ($1, $2, ...) repository code already
+ * uses; `toSqliteSql` rewrites them to SQLite's `?1, ?2, ...` right before preparing, so call sites
+ * did not need every query renumbered. Dates are bound as ISO-8601 strings (see
+ * migrations/d1/0001_baseline.sql for the exact format every timestamp column uses).
  *
- * The same code runs in Node for tests by pointing the connection string at a local Postgres.
+ * There is no `transaction()`/`BEGIN` here: D1 has no interactive transactions, only `batch()`, which
+ * runs a fixed list of prepared statements as one atomic unit (all succeed or none do) with no
+ * branching between them. Callers that need atomicity across statements build the full list up front
+ * — read everything first, decide, THEN batch — see database/transactions.ts removal note in each
+ * service for how individual call sites were restructured.
  */
-
-import pg from 'pg';
-
-const { Client } = pg;
 
 export interface QueryResult<T> {
   rows: T[];
   rowCount: number;
 }
 
+export interface Statement {
+  text: string;
+  params?: readonly unknown[];
+}
+
 export interface SqlExecutor {
   query<T = Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<QueryResult<T>>;
 }
 
+/** `$1, $2, ...` (kept for readability / diff-minimal ports) -> SQLite's numbered `?1, ?2, ...`. */
+export function toSqliteSql(text: string): string {
+  return text.replace(/\$(\d+)/g, '?$1');
+}
+
+function bindValue(value: unknown): unknown {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function bindParams(params: readonly unknown[]): unknown[] {
+  return params.map(bindValue);
+}
+
+function toQueryResult<T>(result: D1Result<T>): QueryResult<T> {
+  const rows = result.results ?? [];
+  // `meta.changes` is SQLite's own row-change count; `meta.rows_written` is a separate D1 resource/
+  // billing metric that can overcount (observed: it counts a no-op trigger merely being REGISTERED on
+  // the table being written, even when the trigger's WHEN condition never fires) — never use it for
+  // business row counts. A RETURNING clause (rows.length) is preferred over either when present, since
+  // a cascaded delete in another table inflates `changes` too (RETURNING only reports the directly
+  // targeted table's rows).
+  if (rows.length > 0) return { rows, rowCount: rows.length };
+  const changes = result.meta?.changes;
+  return { rows, rowCount: typeof changes === 'number' ? changes : 0 };
+}
+
+/** `$3, $4, $5` for `placeholders(3, 3)` — an IN-list of the right length starting at a given index. */
+export function placeholders(start: number, count: number): string {
+  return Array.from({ length: count }, (_, i) => `$${start + i}`).join(', ');
+}
+
+/** D1 caps bound parameters per statement at 100 (unlike raw SQLite's much higher default). Any
+ *  query that binds one or more params per item in a caller-supplied list must chunk it to stay well
+ *  under that — this is the conservative per-chunk item count for `paramsPerItem` bound values each. */
+export function chunkForParamLimit<T>(items: readonly T[], paramsPerItem: number, reservedParams = 1): T[][] {
+  const perChunk = Math.max(1, Math.floor((90 - reservedParams) / paramsPerItem));
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += perChunk) chunks.push(items.slice(i, i + perChunk));
+  return chunks;
+}
+
 export class Database implements SqlExecutor {
-  private client: pg.Client | null = null;
-  private connecting: Promise<void> | null = null;
-
-  constructor(private readonly connectionString: string) {}
-
-  private async ensure(): Promise<pg.Client> {
-    if (this.client) return this.client;
-    this.connecting ??= (async () => {
-      const client = new Client({
-        connectionString: this.connectionString,
-        // Hyperdrive terminates TLS to the origin; the Worker<->Hyperdrive hop is internal.
-        // For local Postgres over 127.0.0.1 TLS is not used.
-        application_name: 'zb-product-personalizer-api',
-      });
-      await client.connect();
-      this.client = client;
-    })();
-    await this.connecting;
-    return this.client!;
-  }
+  constructor(private readonly d1: D1Database) {}
 
   async query<T = Record<string, unknown>>(
     text: string,
     params: readonly unknown[] = [],
   ): Promise<QueryResult<T>> {
-    const client = await this.ensure();
-    const result = await client.query(text, params as unknown[]);
-    return { rows: result.rows as T[], rowCount: result.rowCount ?? 0 };
+    const result = await this.d1
+      .prepare(toSqliteSql(text))
+      .bind(...bindParams(params))
+      .all<T>();
+    return toQueryResult(result);
   }
 
   /** First row or null. */
@@ -65,43 +92,22 @@ export class Database implements SqlExecutor {
   }
 
   /**
-   * Run `fn` inside a single transaction. Commits on success, rolls back on any throw. Keep the body
-   * short — do all R2 / network work outside the transaction.
+   * Runs every statement as one atomic unit — D1's `batch()`. Build the full list from data already
+   * read; there is no way to inspect one statement's result before the next runs.
    */
-  async transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {
-    const client = await this.ensure();
-    await client.query('BEGIN');
-    try {
-      const executor: SqlExecutor = {
-        query: async <R>(text: string, params: readonly unknown[] = []) => {
-          const result = await client.query(text, params as unknown[]);
-          return { rows: result.rows as R[], rowCount: result.rowCount ?? 0 };
-        },
-      };
-      const value = await fn(executor);
-      await client.query('COMMIT');
-      return value;
-    } catch (error) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // The connection is being discarded anyway; surface the original error.
-      }
-      throw error;
-    }
-  }
-
-  async close(): Promise<void> {
-    const client = this.client;
-    this.client = null;
-    this.connecting = null;
-    if (client) await client.end();
+  async batch<T = Record<string, unknown>>(statements: readonly Statement[]): Promise<QueryResult<T>[]> {
+    if (statements.length === 0) return [];
+    const prepared = statements.map((s) =>
+      this.d1.prepare(toSqliteSql(s.text)).bind(...bindParams(s.params ?? [])),
+    );
+    const results = await this.d1.batch<T>(prepared);
+    return results.map((r) => toQueryResult<T>(r));
   }
 }
 
-export function createDatabase(connectionString: string): Database {
-  if (!connectionString) {
-    throw new Error('A PostgreSQL connection string is required (check the HYPERDRIVE binding).');
+export function createDatabase(d1: D1Database): Database {
+  if (!d1) {
+    throw new Error('A D1 database binding is required (check the DB binding).');
   }
-  return new Database(connectionString);
+  return new Database(d1);
 }

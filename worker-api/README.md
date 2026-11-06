@@ -2,20 +2,19 @@
 
 The dedicated Cloudflare Worker that provides cloud persistence for the Product Personalization
 application: configurations and versions, assets, product mappings, the public storefront routes,
-customer customizations and signed order events. It has its own PostgreSQL database and its own
-object-storage bucket, and nothing else runs on it. Which extensions exist, and whether a store has this
-one installed, is the hosting platform's concern, not this Worker's.
+customer customizations and signed order events. It has its own Cloudflare D1 (SQLite) database and its
+own object-storage bucket, and nothing else runs on it. Which extensions exist, and whether a store has
+this one installed, is the hosting platform's concern, not this Worker's.
 
 ```
-Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdrive ──▶ PostgreSQL (dedicated)
+Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ D1 (SQLite, dedicated)
                                    │
                                    └──────────────────────▶ R2 (artwork, images, mockups, previews)
 ```
 
-- **PostgreSQL** is the authoritative store for configurations, version history and asset metadata.
-- **R2** stores binary files. Image bytes are never stored in PostgreSQL JSON.
-- **Hyperdrive** pools the Postgres connection at the edge; the Worker uses the `pg` driver with
-  `nodejs_compat`.
+- **D1** is the authoritative store for configurations, version history and asset metadata. It is a
+  native Cloudflare binding (no pooling layer): the Worker calls `env.DB` directly.
+- **R2** stores binary files. Image bytes are never stored in D1's JSON-as-TEXT columns.
 
 > This backend is **additive**. The standalone Angular app still runs entirely in the browser
 > (IndexedDB) and is unchanged. Cloud persistence is opt-in (see "Angular integration").
@@ -48,9 +47,10 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ Hyperdr
 ## Prerequisites
 
 - Node.js 20+ (verified on Node 24).
-- A PostgreSQL 14+ database (verified on PostgreSQL 18). **Separate from ZenBasket's MySQL** — this
-  service never connects to or migrates that database.
-- A Cloudflare account with Workers, Hyperdrive and R2 enabled (for deployment only).
+- A Cloudflare D1 database. Local development uses Miniflare's local D1 emulation (via `wrangler dev`
+  / the test harness) — no separately-provisioned database server, unlike the retired Postgres setup.
+  **Separate from ZenBasket's MySQL** — this service never connects to or migrates that database.
+- A Cloudflare account with Workers, D1 and R2 enabled (for deployment only).
 
 ## Project structure
 
@@ -68,13 +68,14 @@ worker-api/
 │   │   ├── store-settings/      # per-store settings (storefront CORS origins); a row makes a store "known"
 │   │   ├── audit/               # append-only audit log
 │   │   └── health/              # GET /health
-│   ├── database/                # pg-over-Hyperdrive connection + transaction helpers
+│   ├── database/                # thin D1 binding wrapper (connection.ts) — no transaction helper:
+│   │                            #   D1 has no interactive transactions, only atomic batch()
 │   ├── storage/                 # object storage (R2 or S3) + safe key generation
 │   └── shared/                  # api-paths (URL contract), errors, responses, logger, jwt, image-sniff, rate-limit, Hono context types
-├── migrations/                  # version-controlled SQL (one baseline so far)
+├── migrations/                  # version-controlled SQLite DDL (one baseline so far), applied with
+│                                 #   `wrangler d1 migrations apply`
 ├── docs/zenbasket-integration.md # API contract for the ZenBasket backend team
-├── scripts/migrate.mjs          # migration runner (trusted machine / CI, not in a request)
-├── test/                        # vitest: unit + full HTTP integration (real Postgres + in-memory R2)
+├── test/                        # vitest: unit + full HTTP integration (Miniflare-backed D1 + in-memory R2)
 ├── wrangler.jsonc               # Worker config, bindings, environments
 └── package.json
 ```
@@ -93,36 +94,20 @@ cd worker-api
 npm install
 ```
 
-### 2. Provision a local PostgreSQL database
+### 2. No separate database to provision
 
-Use any local Postgres. Example (psql as a superuser):
-
-```sql
-CREATE ROLE personalizer LOGIN PASSWORD 'personalizer_local_dev';
-CREATE DATABASE personalizer_dev OWNER personalizer;
-```
-
-Connection string for local dev:
-`postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_dev`
-
-> `wrangler dev` connects to this **local** database through the Hyperdrive binding's
-> `localConnectionString` (already set in `wrangler.jsonc`). It does **not** use a deployed Hyperdrive
-> resource — so local development never touches a deployed database.
+D1 needs nothing installed locally: `wrangler dev` creates a local SQLite file under `.wrangler/state`
+on first run, scoped to this Worker. There is no connection string, role or server to set up.
 
 ### 3. Apply migrations
 
-Migrations run from your machine (not from the Worker) using a trusted `DATABASE_URL`:
-
 ```bash
-DATABASE_URL="postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_dev" \
-  npm run migrate            # apply pending migrations (idempotent)
-
-DATABASE_URL="..." npm run migrate:status   # show applied / pending
+npm run migrate            # wrangler d1 migrations apply <db> --local (idempotent)
+npm run migrate:status     # wrangler d1 migrations list <db> --local
 ```
 
-A database created before the baseline migration (it has a `platform.schema_migrations` table) is refused
-with a message: drop its `platform` and `personalization` schemas (or recreate the database) and migrate
-again.
+This applies `migrations/*.sql` to the **local** D1 database `wrangler dev` uses — never a deployed
+one. Migrations are tracked by wrangler's own `d1_migrations` table, not a custom ledger.
 
 ### 4. Local dev secrets
 
@@ -137,7 +122,7 @@ token is only honoured when `ENVIRONMENT != production`.
 ### 5. Run the Worker
 
 ```bash
-npm run dev            # wrangler dev on http://localhost:8787 (local Postgres + local R2)
+npm run dev            # wrangler dev on http://localhost:8787 (local D1 + local R2)
 ```
 
 Smoke test:
@@ -171,14 +156,19 @@ With no such config the Angular app stays on IndexedDB (local) — unchanged.
 
 ## Database schema
 
-One schema, `personalization`, holds everything, including the migration ledger (`schema_migrations`,
-created by the runner). The baseline migration `0001_baseline.sql` creates it.
+A single flat D1 (SQLite) database holds everything — no schema namespacing, since D1 databases are
+already per-Worker. The baseline migration `migrations/0001_baseline.sql` creates it; ids are
+`TEXT` UUIDs generated application-side (`crypto.randomUUID()` — SQLite has no `gen_random_uuid()`),
+and every `jsonb` column from the original design is `TEXT` holding `JSON.stringify`'d data, validated
+with SQLite's `json_valid()`/`json_type()` rather than Postgres's `jsonb_typeof()`. Timestamps are
+`TEXT` ISO-8601 strings (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` as the default), not a native
+`timestamptz` type — SQLite has none.
 
 ### Stores, audit and credentials
 
 | Table | Purpose |
 |---|---|
-| `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. `storefront_origins` (`text[]`) holds the store's allowed CORS origins. |
+| `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. `storefront_origins` (a JSON array in a `TEXT` column) holds the store's allowed CORS origins. |
 | `audit_logs` | Append-only log of privileged operations (identifiers + small metadata only; never secrets or payloads). |
 | `integration_credentials` | Per-store HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. |
 
@@ -186,7 +176,7 @@ created by the runner). The baseline migration `0001_baseline.sql` creates it.
 
 | Table | Purpose |
 |---|---|
-| `configs` | One row per managed configuration. `draft` and `published` are **JSONB** (the renderer's `ProductConfig` is stored verbatim — never flattened). `updated_at_ms` is the optimistic-concurrency token. `client_config_id` is unique per store (stable local↔cloud id + idempotent migration). |
+| `configs` | One row per managed configuration. `draft` and `published` are JSON-as-`TEXT` (the renderer's `ProductConfig` is stored verbatim — never flattened). `updated_at_ms` is the optimistic-concurrency token. `client_config_id` is unique per store (stable local↔cloud id + idempotent migration). |
 | `config_versions` | Immutable publish history (one row per publish). |
 | `assets` | Metadata for every binary in object storage: `object_key`, verified `content_type`, `size_bytes`, dimensions, `checksum_sha256`, `status`, and the client's `idb:` ref for dedupe. |
 
@@ -195,29 +185,61 @@ created by the runner). The baseline migration `0001_baseline.sql` creates it.
 | Table | Purpose |
 |---|---|
 | `mappings` | Links a host product / variant / collection (`scope`, `external_id`) to one configuration, per store. `UNIQUE (store_id, scope, external_id)`; index `(store_id, config_id)`. `(config_id, store_id)` is a composite FK to `configs (id, store_id)` with `ON DELETE CASCADE`, so deleting a config removes its mappings and the database itself refuses a cross-store mapping. `label` (<= 200) caches the host product title for the admin UI. |
-| `markups` | Reusable merchant-authored snippets: `kind` (`area` \| `artwork`), `name` (1..120), `payload` jsonb (must be an object; <= 256 KB enforced by the API). `UNIQUE (store_id, kind, lower(name))`; index `(store_id, kind)`. |
+| `markups` | Reusable merchant-authored snippets: `kind` (`area` \| `artwork`), `name` (1..120), `payload` JSON-as-`TEXT` (must be an object; <= 256 KB enforced by the API). `UNIQUE (store_id, kind, lower(name))`; index `(store_id, kind)`. |
 
-Timestamps follow one convention: `*_ms` epoch-millisecond bigints, plus `created_at` / `updated_at`
-timestamptz.
+Timestamps follow one convention: `*_ms` epoch-millisecond integers, plus `created_at` / `updated_at`
+ISO-8601 `TEXT`.
 
 ### Customizations, order events and cleanup
 
 | Table | Purpose |
 |---|---|
-| `customizations` | A shopper's saved design: pins `(config_id, store_id, config_version)` through a composite FK to `config_versions` (`ON DELETE RESTRICT`), records the ZenBasket `product_external_id` / `variant_external_id` and the mapping that matched, `data` jsonb, `status` (`saved` → `ordered` \| `expired`) with a CHECK tying status to its timestamps, and `expires_at` for the 30-day inactivity expiry. |
+| `customizations` | A shopper's saved design: pins `(config_id, store_id, config_version)` through a composite FK to `config_versions` (`ON DELETE RESTRICT`), records the ZenBasket `product_external_id` / `variant_external_id` and the mapping that matched, `data` JSON-as-`TEXT`, `status` (`saved` → `ordered` \| `expired`) with a CHECK tying status to its timestamps, `expires_at` for the 30-day inactivity expiry, and `pending_attach_count` — not business state, a counter two triggers use to make "create the customization and claim its uploaded files" all-or-nothing without a transaction (see "Database access" below). |
 | `customization_assets` | Customer files (private object-storage prefix `…/customizations/`): `kind` upload / preview / artwork (the print-ready file of a printable area), `status` uploaded → attached → released → deleting → deleted, `delete_after` (grace period), retry bookkeeping. Owner FK `(customization_id, store_id)`. Kept apart from `assets` so merchant-asset logic and public delivery can never touch customer files. |
 | `order_links` | The ZenBasket order line a customization was bought on. `UNIQUE (customization_id)` and `UNIQUE (store_id, external_order_id, external_line_id)` give the idempotency/conflict guarantees. |
-| `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per processed event (it may carry several order lines); `results` (jsonb) stores the per-line outcome so a replay answers identically, and `line_count` the number of lines. Written in the same transaction as the links. |
+| `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per processed event (it may carry several order lines); `results` (JSON-as-`TEXT`) stores the per-line outcome so a replay answers identically, `line_count` the number of lines, and `status` (`processing` → `completed`) lets a crashed or genuinely concurrent duplicate delivery be resumed safely instead of answering with incomplete results — see "Order callback concurrency" below. |
 | `cleanup_runs` | One row per scheduled cleanup run with its counts and outcome. |
 
 ZenBasket identifiers (store, product, variant, order, line) are plain `text`; there are **no foreign keys
 to ZenBasket's MySQL database**.
 
-Design rationale: the configuration is already a structured JSON document, so it is stored as JSONB
-and only lifecycle/ownership/versioning metadata is relational. Every row carries `store_id` and
-every query is store-scoped, so a store can never read another store's data by guessing an id.
-Uniqueness: `(store_id, client_config_id)` and `assets.object_key`. Indexes cover the frequent
+Design rationale: the configuration is already a structured JSON document, so it is stored verbatim
+(JSON-as-`TEXT`) and only lifecycle/ownership/versioning metadata is relational. Every row carries
+`store_id` and every query is store-scoped, so a store can never read another store's data by guessing
+an id. Uniqueness: `(store_id, client_config_id)` and `assets.object_key`. Indexes cover the frequent
 store-scoped list queries.
+
+### Database access
+
+`src/database/connection.ts` wraps the `DB` (D1) binding directly — `env.DB.prepare(sql).bind(...)`.
+There is no `transaction()`/`BEGIN`: D1 has no interactive transactions, only `batch()`, which runs a
+fixed list of prepared statements atomically (all succeed or none do) with **no branching between
+them** based on an earlier statement's result. Every former `runInTransaction(db, async (tx) => ...)`
+call site was restructured around that constraint — read everything needed first, decide, then submit
+the full write set as one `batch()` — rather than papering over it with a retry wrapper (D1 also has no
+serialization-failure errors to retry; writes to one database are fully serialized, so there is nothing
+to retry).
+
+Two call sites needed more than a mechanical port:
+
+- **Claiming uploaded files when a customization is saved/updated** (`customization-repository.ts`
+  `insertWithAttach`/`applyUpdate`) used to insert the row and conditionally claim N uploads inside one
+  Postgres transaction, rolling back both if the claim came up short. `batch()` can't make one
+  statement's execution conditional on another's row count, so this is now enforced in SQL instead: the
+  `pending_attach_count` column plus two triggers in `migrations/0001_baseline.sql`
+  (`customization_assets_attach_decrement`, `customizations_attach_guard`) make the whole batch
+  `RAISE(ABORT, ...)` — rolling back the insert and the claim together — if the claimed count ever
+  comes up short. No compensating delete/release is ever issued.
+- **Order callbacks** (`order-callback-service.ts`) used one Postgres transaction with a `SAVEPOINT`
+  per line, so a rejected line didn't undo the others. D1 has no savepoints. Each line now commits as
+  its own small `batch()` (its link insert and its `saved`→`ordered` flip, gated by the same
+  all-or-nothing trick: the UPDATE's `WHERE` requires the link to now exist for *that specific*
+  customization+order+line, so a losing `ON CONFLICT DO NOTHING` insert — whichever unique constraint
+  it lost on — stops the status flip too, without branching). The event dedup row's new `status` column
+  (`processing`/`completed`) lets a crashed or concurrently-retried delivery resume safely: every line's
+  write is already conditional and idempotent, so re-running them is always safe, just not always
+  necessary. A genuinely concurrent duplicate delivery briefly polls (bounded, ~500 ms) for the other
+  request to finish before giving up and reprocessing itself.
 
 ## API reference
 
@@ -283,7 +305,7 @@ Authenticated (Bearer token; store comes from the verified token, never from the
 | POST | `/mappings` | `{ configId, scope, externalId, label?, reassign? }` -> **201** created, **200** if it already pointed at that config (idempotent; a provided `label` updates) or was moved with `reassign: true` |
 | PUT | `/mappings/:id` | `{ configId?, label?, reassign? }` (at least one of `configId`/`label`; `label: ""`/`null` clears). Changing `configId` to a different config needs `reassign: true`, else 409 |
 | DELETE | `/mappings/:id` | 204 (404 if not in this store) |
-| POST | `/mappings/bulk` | `{ configId, create?: [{scope, externalId, label?}], deleteIds?: string[], reassign? }`, max 500 items (create + deleteIds), ONE transaction |
+| POST | `/mappings/bulk` | `{ configId, create?: [{scope, externalId, label?}], deleteIds?: string[], reassign? }`, max 500 items (create + deleteIds). The deletes and the first create round's label/move/insert writes are ONE atomic `batch()` — not two separate phases — so an ordinary call (no other request racing the same target) is all-or-nothing end to end, same as the old single Postgres transaction. Only a crash *between two retry rounds*, reachable only when a genuinely concurrent writer races the exact same target, can leave the call partially applied, and even then every write is idempotent and keyed by the target itself, so the next call touching that target (a retry of this one, or any other) always converges cleanly |
 | GET | `/markups` | `?kind=&search=&limit=&cursor=` (`search` is a literal, case-insensitive substring of the name) |
 | POST | `/markups` | `{ name, kind, payload }` -> 201 |
 | PUT | `/markups/:id` | `{ name?, payload? }` |
@@ -380,28 +402,32 @@ server-to-server event — is specified for the ZenBasket team in
   configurable timestamp window, constant-time comparison, and rotation with an overlap period. The store
   comes from the credential, never the body.
 - **Generic envelope, per-line outcome:** `POST /api/v1/integrations/personalization/events` takes the
-  contract-v1 envelope (`order`, `lines[].extensions`). The whole event is ONE PostgreSQL transaction (event-id
-  dedup → per line, under a savepoint: row lock → product/variant check → link → `saved`→`ordered`). A line that
-  breaks a business rule is `rejected` in the per-line `results` (HTTP 200) without undoing or blocking the
-  others; a replay returns the *stored* results; the same `eventId` with a different payload is a 409; a
-  different order/line for an ordered customization is a rejected line; a zero-row conditional update triggers a
-  state re-read rather than a blind failure.
+  contract-v1 envelope (`order`, `lines[].extensions`). Event-id dedup is one row with a `processing`/
+  `completed` status; each line then commits independently as its own small atomic batch (product/
+  variant check → link → `saved`→`ordered`, with no row lock — D1 has none — only conditional writes).
+  A line that breaks a business rule is `rejected` in the per-line `results` (HTTP 200) without undoing
+  or blocking the others; a replay returns the *stored* results once the event is `completed`; the same
+  `eventId` with a different payload is a 409; a different order/line for an ordered customization is a
+  rejected line; a zero-row conditional write triggers a state re-read rather than a blind failure. See
+  "Database access" above for how this replaced the single-transaction-with-savepoints design.
 - **Privacy:** the `customizationId` authorizes nothing by itself. Shoppers use a scoped, expiring token;
   merchants are store-scoped; customer files sit in a private prefix streamed only after an access check.
 - **Cleanup:** an hourly cron (`scheduled()` → `CleanupService`) expires inactive `saved` customizations
   (30 days), releases abandoned uploads, deletes released files after a grace period, and purges empty
-  tombstones. `ordered` customizations are never touched. Runs are recorded in `personalization.cleanup_runs`.
+  tombstones. `ordered` customizations are never touched. Runs are recorded in `cleanup_runs`. Claims
+  that used `FOR UPDATE SKIP LOCKED` under Postgres are now plain conditional `UPDATE`/`DELETE`
+  statements — D1 serializes every write to one logical writer, so there is no concurrent transaction
+  to lock against in the first place.
 
-Verification status: covered by node integration tests against real Postgres (including concurrent
-deliveries and mutation-checked safety guards) and exercised end to end on the real `workerd` runtime via
-`wrangler dev` with local R2: the storefront element in Chrome (via the reference bridge page) saves a design
-(photo, print-ready artwork and previews uploaded privately), the cart line carries only `customizationId`, a
-signed contract-v1 `order.confirmed` links it to the order line, a replay returns the stored result, and
-re-ordering it is rejected; the cron handler was checked via `--test-scheduled`.
-Known gap: the per-line savepoint is only exercised by rejections that happen before any write in that line, so
-no test proves a *partial write* inside a rejected line is rolled back (the case is defensive).
-Not verified without a live Cloudflare account: the deployed cron trigger, Hyperdrive behaviour under load,
-and real R2/S3 deletes of customer files (tests use an in-memory bucket).
+Verification status: covered by node integration tests against a real Miniflare-backed D1 database
+(including concurrent deliveries and mutation-checked safety guards) run inside `workerd` semantics,
+not plain Node. Not yet re-verified end to end against a *deployed* `wrangler dev`/live Cloudflare D1
+database since the Postgres→D1 migration (it previously was, against Postgres); re-run the storefront
+element smoke test (save a design, link it via a signed `order.confirmed`, replay, re-order-rejection)
+before relying on a staging deploy.
+Not verified without a live Cloudflare account: the deployed cron trigger, D1 behaviour under
+production load/concurrency (only Miniflare's local D1 has been exercised), and real R2/S3 deletes of
+customer files (tests use an in-memory bucket).
 
 ## Authentication & tenancy
 
@@ -525,7 +551,7 @@ import and publish a template in `<zb-personalization-admin>`, map it to a produ
 unmapped product and an archived template stay silent.
 
 ```bash
-# 1. a local Postgres with the migrations applied (see "Local development")
+# 1. the local D1 migrations applied (see "Local development" — `npm run migrate`)
 # 2. a throw-away wrangler config with a local R2 bucket and the test page origin allowed for CORS:
 cp wrangler.jsonc wrangler.e2e.jsonc   # then: drop the "env" block, set "STORAGE_DRIVER": "r2",
                                        #   "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:4310",
@@ -538,8 +564,8 @@ ZB_E2E_API_URL=http://localhost:8787 ZB_E2E_TOKEN=<DEV_AUTH_TOKEN> ZB_E2E_STORE_
   npx vitest run --config tests/browser/vitest.config.mts tests/browser/cloud-e2e.spec.ts
 ```
 
-The test leaves its template (archived) and mapping in the dev database; use unique names and clean up with SQL if
-you care. It needs no Cloudflare account.
+The test leaves its template (archived) and mapping in the dev database; use unique names and clean up with
+`wrangler d1 execute <db> --local --command "DELETE FROM ..."` if you care. It needs no Cloudflare account.
 
 ## Angular integration
 
@@ -569,25 +595,27 @@ inspection/recovery.
 
 ## Database migrations
 
-- One baseline migration, `0001_baseline.sql`, holds the whole schema; later changes are appended as
-  `0002_…` and so on.
-- SQL files in `migrations/`, applied in filename order, each in its own transaction, tracked by
-  checksum in `personalization.schema_migrations`.
-- **Append-only:** editing an already-applied file is refused (add a new migration instead).
+- One baseline migration, `migrations/0001_baseline.sql`, holds the whole schema; later changes are
+  appended as `0002_…` and so on.
+- Applied with `wrangler d1 migrations apply`/`list` (the `migrate`/`migrate:status` npm scripts), not
+  a custom runner — wrangler tracks applied migrations itself in a `d1_migrations` table, so there is
+  no hand-rolled checksum ledger to maintain.
+- **Append-only:** wrangler refuses to re-apply an edited already-applied file (add a new migration
+  instead).
 - Idempotent objects (`IF NOT EXISTS`, `ON CONFLICT`) so re-runs are safe.
-- **Databases from before the baseline** (migrations 0001–0006, ledger in `platform.schema_migrations`)
-  are refused: nothing was ever released from them, so drop their `platform` and `personalization`
-  schemas (or recreate the database) and migrate again. That guard lives in `scripts/migrate.mjs` and can
-  be deleted once every database has been recreated.
 
 ```bash
-DATABASE_URL=<local|staging|prod> npm run migrate           # apply
-DATABASE_URL=<...> npm run migrate:status                   # inspect
+npm run migrate                                              # local (wrangler dev's D1)
+npx wrangler d1 migrations apply zb-product-personalizer-db           # staging/production
+npx wrangler d1 migrations apply zb-product-personalizer-db --env staging
 ```
 
-Run against staging/production from CI or a trusted bastion using that environment's credentials.
-**Never** run destructive schema changes during normal API requests (the Worker never does).
-Forward-recovery is preferred: to undo, write a new migration that reverses the change.
+Run against staging/production from CI or a trusted bastion. **Never** run destructive schema changes
+during normal API requests (the Worker never does). Forward-recovery is preferred: to undo, write a
+new migration that reverses the change.
+
+The Postgres-era migration file and its custom runner (`scripts/migrate.mjs`) have been removed —
+`migrations/` now holds only the D1 SQLite schema, applied with wrangler's own migration tooling.
 
 ## Testing
 
@@ -596,11 +624,13 @@ npm run typecheck     # tsc --noEmit
 npm test              # vitest: unit + full HTTP integration
 ```
 
-Integration tests call the Hono app's `fetch` with a test `Env`: a **real local Postgres** and an
-in-memory R2. They cover health, auth (401), CRUD, optimistic-concurrency conflicts, idempotent
-create, structured 422s, duplicate/archive/restore/delete, publish + version history, **tenant
-isolation**, the full R2 upload/delivery/ownership/reference-protected-delete flow, invalid-file
-rejection, resumable-upload idempotency, and CORS.
+Integration tests call the Hono app's `fetch` with a test `Env`: a **real D1 database**, provided by a
+local Miniflare instance (`test/helpers.ts`; not `@cloudflare/vitest-pool-workers`/the full workerd
+pool, since that package's current release requires vitest 4.x and this project is on vitest 5 — see
+the comment at the top of `test/helpers.ts`), and an in-memory R2. They cover health, auth (401), CRUD,
+optimistic-concurrency conflicts, idempotent create, structured 422s, duplicate/archive/restore/delete,
+publish + version history, **tenant isolation**, the full R2 upload/delivery/ownership/reference-
+protected-delete flow, invalid-file rejection, resumable-upload idempotency, and CORS.
 
 Mappings, markups, settings and the public storefront (precedence, draft/archived/unpublished handling, re-publish,
 cross-tenant isolation, unknown keys, rate limiting with an injected store/clock, CORS, ETag/304, asset rewriting and serving)
@@ -608,12 +638,12 @@ are covered in `test/mappings.test.ts`, `test/markups.test.ts`, `test/storefront
 
 Store registration (a store becomes known on its first authenticated request; the public routes and shopper
 uploads/saves refuse a store that never has) is covered in `test/store-settings.test.ts`, and
-`test/schema.test.ts` asserts the final schema (one `personalization` schema, the exact table set, no
-`plugin_id` anywhere, the `artwork` file kind and the per-line event `results` columns). It also fails on a
-test database that still has the pre-baseline schemas: drop them and run the migrations again.
+`test/schema.test.ts` asserts the final schema (the exact table set via `sqlite_master`, no `plugin_id`
+anywhere, the `artwork` file kind and the per-line event `results`/`status` columns).
 
-Set `TEST_DATABASE_URL` to point at a disposable test database (default
-`postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_test`).
+Each test file gets its own fresh, disposable Miniflare D1 instance (no connection string or
+pre-existing database to point at, unlike the retired Postgres setup) — see `getTestD1()` in
+`test/helpers.ts`.
 
 ## Deploying to staging / production
 
@@ -621,11 +651,9 @@ One-time Cloudflare setup per environment (replace names/ids; **ids are environm
 secrets, but update `wrangler.jsonc` with the real ones**):
 
 ```bash
-# 1. Create the Hyperdrive config pointing at that environment's Postgres (the connection string,
-#    which contains the DB password, is stored by Cloudflare — not in your repo).
-wrangler hyperdrive create zb-personalization-prod \
-  --connection-string="postgres://USER:PASSWORD@HOST:5432/DBNAME"
-#    → copy the printed id into wrangler.jsonc env.production.hyperdrive[0].id
+# 1. Create the D1 database for that environment.
+wrangler d1 create zb-product-personalizer-db-production
+#    → copy the printed database_id into wrangler.jsonc env.production.d1_databases[0].database_id
 
 # 2. Create the R2 bucket.
 wrangler r2 bucket create zb-personalization-assets-production
@@ -637,15 +665,16 @@ wrangler secret put CUSTOMIZATION_TOKEN_SECRET --env production
 #    (DEV_AUTH_TOKEN / DEV_STORE_ID are NOT set in production.)
 
 # 4. Apply migrations against the production database from CI/bastion:
-DATABASE_URL="postgres://USER:PASSWORD@HOST:5432/DBNAME" npm run migrate
+npx wrangler d1 migrations apply zb-product-personalizer-db-production --env production
 
 # 5. Deploy:
 npm run deploy:production     # wrangler deploy --env production
 ```
 
-Staging mirrors the above with `--env staging` and its own Hyperdrive id, bucket, secret, CORS
+Staging mirrors the above with `--env staging` and its own D1 database, bucket, secret, CORS
 allowlist and API URL. Keep staging and production fully separated; never point local/staging at
-production resources.
+production resources — a D1 `database_id` is still a real, environment-specific resource even though
+it is not a secret like the old Hyperdrive connection string was.
 
 Secrets, routes and the `workers.dev` URL belong to a Worker **name**. This Worker is
 `zb-product-personalizer-api`; if a Worker with the earlier name (`zb-plugin-platform`) was ever deployed,
@@ -673,11 +702,15 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 - **Logging:** structured JSON lines with `requestId`, `storeId` and operation context. No
   tokens, secrets, payload bodies or file bytes are logged. `observability` is enabled in
   `wrangler.jsonc`.
-- **Backups / PITR:** **not configured by this project.** Enable and verify automated backups / point-
-  in-time recovery on your managed Postgres (e.g. the provider's PITR) before relying on it. Do not
-  assume backups exist until verified.
-- **Connection lifetime:** one short-lived `pg` client per request (Hyperdrive pools at the edge),
-  closed after the response via `waitUntil`. Transactions are short and never wrap R2 I/O.
+- **Backups / PITR:** **not configured by this project.** D1 has built-in time-travel (point-in-time
+  restore via `wrangler d1 time-travel`, 30 days by default) — confirm it covers your recovery needs
+  before relying on it; this is not the same as an independently verified backup.
+- **Connection lifetime:** none — D1 is a native binding, not a pooled connection. There is no
+  per-request client to open or close, unlike the retired Hyperdrive/`pg` setup.
+- **No interactive transactions:** D1 only offers atomic `batch()` (a fixed list of statements, all-or-
+  nothing, no branching between them) — see "Database access" above. Every write path that used to run
+  inside a Postgres transaction was individually restructured around this; there is no generic
+  transaction helper to reach for in new code.
 
 ## Limitations, assumptions & risks
 
@@ -687,20 +720,33 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
   store has the extension installed is decided by the hosting platform (which issues the tokens). The
   install / uninstall lifecycle events of contract v1 (section 10) are not implemented; when they are, a
   status column on `store_settings` is the place for them.
-- **Cloud deployment not provisioned here.** Verified locally: migrations, the full HTTP API + R2 flow
-  via node integration tests, and an end-to-end run on the real `workerd` runtime (`wrangler dev`) with
-  a local Postgres (Hyperdrive `localConnectionString`) and Miniflare R2 — health DB check, config
-  CRUD and R2 upload/retrieval all pass. A live Cloudflare account (deployed Hyperdrive + R2 + secrets)
-  has **not** been exercised; do a staging smoke test after the one-time setup above.
+- **Staging D1 created and validated (2026-11-06); the Worker itself has not been deployed anywhere.**
+  `zb-product-personalizer-db-staging` exists, the baseline migration is applied, and `wrangler dev
+  --remote --env staging` (real remote D1, not Miniflare) confirmed: schema integrity
+  (`PRAGMA foreign_key_check`/`quick_check`, all 13 tables + both triggers present), configs/publish,
+  mappings (including a 130-item bulk create to exercise the 100-bound-parameter chunking), markups
+  (including the long-search-term LIKE-limit fix), customizations save/update, integration credentials
+  (create/rotate/revoke), and order-callback concurrency (a real concurrent-duplicate-delivery race
+  against production D1, not just Miniflare — exactly one of the racing deliveries applies, the rest
+  see `duplicate:true`). The `pending_attach_count` attach-count guard was additionally
+  probed with raw multi-statement SQL directly against the remote database: a short claim rolled back
+  *the entire multi-statement unit* (confirmed by querying afterward — nothing committed), and a full
+  claim committed cleanly. **Not exercised: anything touching object storage** — R2 is not enabled on
+  this Cloudflare account (bucket creation fails with error 10042), and the `.dev.vars` AWS S3 temporary
+  credentials used for the `s3` storage driver have expired (`ExpiredToken`) — a pre-existing rotation
+  issue, unrelated to this migration — so customer file uploads, the merchant asset endpoint, and
+  cleanup's actual R2/S3 object deletion were not re-verified against a real backing store. No
+  `wrangler deploy` was run against staging or production; only `wrangler dev --remote` (which never
+  makes the Worker reachable at a public URL).
 - **Angular ↔ cloud path** is implemented and type-checked (production build passes) but **not verified
   against a live deployment**. Point a local app at `wrangler dev` to validate before release.
 - **In-Worker rate limiting is best-effort only**: the public storefront limiter is per isolate and in memory (not a global limit).
   Authenticated routes have no in-Worker limiter. Configure Cloudflare rate-limiting rules for production.
-- **Storefront additions are verified locally only**: node integration tests (real Postgres, in-memory R2), the migration applied to the
+- **Storefront additions are verified locally only**: node integration tests (Miniflare-backed D1, in-memory R2), the migration applied to the
   local dev DB, `wrangler deploy --dry-run`, and a `wrangler dev` (workerd) smoke run of create/publish/map/storefront read. Not verified
   without a live Cloudflare account: real edge caching (`s-maxage`, `Vary: Origin` and ETag revalidation through the CDN), R2/S3 streaming of
-  public assets, `CF-Connecting-IP` behaviour, multi-isolate rate limiting, and Hyperdrive latency of the bulk endpoint (it issues a handful of
-  set-based queries, not one per item).
+  public assets, `CF-Connecting-IP` behaviour, multi-isolate rate limiting, and D1 latency/throughput of the bulk endpoint under real production
+  load (it issues several small per-item statements batched together, not genuinely set-based bulk SQL — see "Database access" above).
 - **Storefront assumptions/risks**: `storeId` is the guessable external store id (a public key, not a secret); the safety comes from serving
   published data only. Published configs that reference browser-local or relative assets are deliberately not served. Asset reference checks use a
   substring match on the published JSON (same approach as the existing delete guard). The public asset URL does not carry the store key, so
@@ -725,3 +771,33 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
   customization's state.
 - Server-side config validation is structural + limits + minimal publish-readiness; the authoritative
   deep/business validation remains the shared Angular validator.
+- **Markup name case-folding is ASCII-only at the database level, Unicode-aware at the application
+  level.** SQLite's `lower()` (and therefore the `markups_store_kind_name_uq` unique index and the
+  `instr(lower(name), ...)` search this replaced `ILIKE` with) only folds ASCII letters —
+  `lower('CAFÉ')` is `'cafÉ'`, not `'café'` — unlike Postgres's locale-aware `lower()`/`ILIKE`. Markup
+  *search* (`markup-service.ts` `list()`) was fixed to fold in JS (`toLocaleLowerCase()`, Unicode-
+  correct) instead of in SQL, so "café" still finds "CAFÉ wall art" exactly as it did under Postgres —
+  see the regression test in `test/markups.test.ts`. The *uniqueness* constraint was **not** changed
+  the same way (it's enforced by the database, not application code): two markups of the same kind
+  differing only in the case of a non-ASCII letter (e.g. "CAFÉ" and "café") can now both exist, where
+  Postgres would have rejected the second as a duplicate. Plain-ASCII names (the common case — see the
+  existing "CHEST AREA" vs "Chest area" test) are unaffected either way.
+- **D1 bounds parameters per statement at 100** (well below raw SQLite's default), tighter than
+  Postgres's effectively-unbounded `unnest()`-based bulk upserts/`= ANY(...)` filters. Every list-based
+  query (`mapping-repository.ts` bulk insert/lookup/delete, `storefront-repository.ts` `findAssets`,
+  the collection-ids filter on the public config route) is now chunked (`chunkForParamLimit` in
+  `src/database/connection.ts`) or defensively capped so a large list degrades (silently truncated, in
+  the one case — `resolveMapping`'s `collectionIds`, capped at 90 — where chunking would also require
+  re-merging an `ORDER BY ... LIMIT 1` across chunks) rather than erroring the whole request.
+- **Mapping bulk writes are atomic for the ordinary case, self-healing for the rare one** (see the
+  `/mappings/bulk` row in the API reference above). D1 has no interactive transaction, but the upfront
+  delete and the first create round's writes are folded into one `batch()` (the deletes ordered first,
+  so a "delete this mapping, then re-create the same target" request sees its own deletes before its
+  own inserts run, inside the SAME atomic unit) — so a normal call, with no other request racing the
+  same target, is all-or-nothing exactly like the old single Postgres transaction. Only a crash
+  *between two retry rounds* — reachable only when a genuinely concurrent writer races the exact same
+  target, never from an ordinary single-caller request — can leave a call partially applied, and even
+  then nothing is left inconsistent: every write is idempotent and keyed by the target itself
+  (`store_id, scope, external_id`), not by this request, so the next call touching that target — a
+  retry of this one, or a completely different caller — converges cleanly rather than duplicating or
+  corrupting anything.

@@ -138,7 +138,7 @@ await fetch(url, { method: 'POST', body, headers: {
 Per **event**: HMAC signature, timestamp window, credential active and not expired (401, all causes alike);
 the **store comes from the credential**, `storeId` in the body is only cross-checked (403); the event type is
 supported (422).
-Per **line** (each under its own savepoint in one transaction): the customization is looked up **within that
+Per **line** (independently of every other line in the event): the customization is looked up **within that
 store**; `productId` (and `variantId`) match what was recorded when the shopper saved; the customization is
 `saved` and not `expired`; the customization is not already linked elsewhere and the order line does not already
 carry another customization.

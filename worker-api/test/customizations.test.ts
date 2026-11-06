@@ -40,7 +40,7 @@ describe('private customer uploads', () => {
     const asset = await uploadCustomerImage();
     expect(asset).toMatchObject({ kind: 'upload', contentType: 'image/png', width: 1, height: 1 });
     expect(asset.uploadToken).toMatch(/^zbc1\./);
-    const [row] = await queryDb<any>('SELECT object_key, status, customization_id FROM personalization.customization_assets');
+    const [row] = await queryDb<any>('SELECT object_key, status, customization_id FROM customization_assets');
     expect(row.object_key.startsWith(`stores/${STORE_A}/product-personalization/customizations/`)).toBe(true);
     expect(row.status).toBe('uploaded');
     expect(row.customization_id).toBeNull();
@@ -64,7 +64,7 @@ describe('private customer uploads', () => {
     expect((await post(new Uint8Array())).status).toBe(415);
     expect((await post(tinyPng(), STORE_A, { MAX_UPLOAD_BYTES: '10' })).status).toBe(413);
     expect((await post(tinyPng(), 'no_such_store')).status).toBe(404);
-    expect(await queryDb('SELECT 1 FROM personalization.customization_assets')).toHaveLength(0);
+    expect(await queryDb('SELECT 1 FROM customization_assets')).toHaveLength(0);
   });
 
   it('answers 503 when customer tokens are not configured, without storing anything', async () => {
@@ -94,19 +94,19 @@ describe('saving a customization', () => {
     expect(Object.keys(saved).sort()).toEqual(['accessToken', 'accessTokenExpiresAt', 'customizationId', 'expiresAt', 'status']);
     expect(JSON.stringify(saved)).not.toContain('secret-customer-text');
 
-    const [row] = await queryDb<any>('SELECT * FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT * FROM customizations');
     expect(row).toMatchObject({ store_id: STORE_A, config_version: cfg.version, product_external_id: PRODUCT_ID, mapping_scope: 'product', status: 'saved' });
     // 30-day default inactivity window.
     const days = (new Date(row.expires_at).getTime() - new Date(row.last_activity_at).getTime()) / 86_400_000;
     expect(Math.round(days)).toBe(30);
-    const [a] = await queryDb<any>('SELECT status, customization_id FROM personalization.customization_assets');
+    const [a] = await queryDb<any>('SELECT status, customization_id FROM customization_assets');
     expect(a).toMatchObject({ status: 'attached', customization_id: saved.customizationId });
   });
 
   it('honours the configurable retention period', async () => {
     await seedPersonalizableProduct();
     await saveCustomization({ env: { CUSTOMIZATION_RETENTION_DAYS: '7' } });
-    const [row] = await queryDb<any>('SELECT expires_at, last_activity_at FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT expires_at, last_activity_at FROM customizations');
     expect(Math.round((new Date(row.expires_at).getTime() - new Date(row.last_activity_at).getTime()) / 86_400_000)).toBe(7);
   });
 
@@ -118,7 +118,7 @@ describe('saving a customization', () => {
     await call(`${ADMIN}/configs/cfg-cz1/publish`, { method: 'POST' });
     const after = await storefrontConfig();
     expect(after.version).toBe(before.version + 1);
-    const [row] = await queryDb<any>('SELECT config_version FROM personalization.customizations WHERE id = $1', [first.customizationId]);
+    const [row] = await queryDb<any>('SELECT config_version FROM customizations WHERE id = $1', [first.customizationId]);
     expect(row.config_version).toBe(before.version);
     // An older rendered version is still accepted (its snapshot exists); a never-published one is not.
     const stale = await pub(czUrl(), { method: 'POST', body: { productId: PRODUCT_ID, configId: after.configId, configVersion: before.version, data: {} } });
@@ -148,7 +148,7 @@ describe('saving a customization', () => {
     expect((await pub(czUrl(), { method: 'POST', body: { ...base, data: { blob: 'x'.repeat(400 * 1024) } } })).status).toBe(413);
     expect((await pub(czUrl(), { method: 'POST', body: { ...base, data: {} }, rawBody: new TextEncoder().encode('{nope') })).status).toBe(400);
     expect((await pub(czUrl('', 'ghost_store'), { method: 'POST', body: { ...base, data: {} } })).status).toBe(404);
-    expect(await queryDb('SELECT 1 FROM personalization.customizations')).toHaveLength(0);
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(0);
   });
 
   it('requires a valid upload token per attached file and lets a file be used only once', async () => {
@@ -164,14 +164,14 @@ describe('saving a customization', () => {
     // Duplicate ids in one request.
     expect((await pub(czUrl(), { method: 'POST', body: body([{ assetId: asset.assetId, uploadToken: asset.uploadToken }, { assetId: asset.assetId, uploadToken: asset.uploadToken }]) })).status).toBe(422);
     // Nothing was created by the rejected attempts.
-    expect(await queryDb('SELECT 1 FROM personalization.customizations')).toHaveLength(0);
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(0);
 
     // First use succeeds; the same upload cannot be claimed by a second customization.
     expect((await pub(czUrl(), { method: 'POST', body: body([{ assetId: asset.assetId, uploadToken: asset.uploadToken }]) })).status).toBe(201);
     const replay = await pub(czUrl(), { method: 'POST', body: body([{ assetId: asset.assetId, uploadToken: asset.uploadToken }]) });
     expect(replay.status).toBe(409);
     expect((await errorOf(replay)).details.reason).toBe('asset_unavailable');
-    expect(await queryDb('SELECT 1 FROM personalization.customizations')).toHaveLength(1);
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(1);
   });
 
   it('refuses an upload token that was issued for another store', async () => {
@@ -247,12 +247,15 @@ describe('updating a customization', () => {
   it('replaces the data, refreshes the inactivity window and re-issues a token', async () => {
     await seedPersonalizableProduct();
     const saved = await saveCustomization();
-    await queryDb("UPDATE personalization.customizations SET expires_at = now() + interval '1 day', last_activity_at = now() - interval '29 days'");
+    await queryDb('UPDATE customizations SET expires_at = $1, last_activity_at = $2', [
+      new Date(Date.now() + 86_400_000).toISOString(),
+      new Date(Date.now() - 29 * 86_400_000).toISOString(),
+    ]);
     const res = await pub(czUrl(saved.customizationId), { method: 'PUT', headers: bearer(saved.accessToken), body: { data: { fields: { name: 'Grace' } } } });
     expect(res.status).toBe(200);
     const updated = (await json(res)).data;
     expect(updated.accessToken).toMatch(/^zbc1\./);
-    const [row] = await queryDb<any>('SELECT data, expires_at, last_activity_at FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT data, expires_at, last_activity_at FROM customizations');
     expect(row.data).toEqual({ fields: { name: 'Grace' } });
     expect(Math.round((new Date(row.expires_at).getTime() - Date.now()) / 86_400_000)).toBe(30);
   });
@@ -267,12 +270,12 @@ describe('updating a customization', () => {
     // New asset without a token is refused, and the whole update rolls back.
     const noToken = await pub(url, { method: 'PUT', headers: bearer(saved.accessToken), body: { data: { v: 2 }, assets: [{ assetId: second.assetId }] } });
     expect(noToken.status).toBe(401);
-    const [unchanged] = await queryDb<any>('SELECT data FROM personalization.customizations');
+    const [unchanged] = await queryDb<any>('SELECT data FROM customizations');
     expect(unchanged.data).toEqual({ fields: { name: 'Ada' } });
 
     const ok = await pub(url, { method: 'PUT', headers: bearer(saved.accessToken), body: { data: { v: 2 }, assets: [{ assetId: second.assetId, uploadToken: second.uploadToken }] } });
     expect(ok.status).toBe(200);
-    const rows = await queryDb<any>('SELECT id, status, delete_after FROM personalization.customization_assets ORDER BY created_at');
+    const rows = await queryDb<any>('SELECT id, status, delete_after FROM customization_assets ORDER BY created_at');
     expect(rows.map((r: any) => r.status)).toEqual(['released', 'attached']);
     expect(new Date(rows[0].delete_after).getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
     // The released file is no longer downloadable by the shopper.
@@ -282,11 +285,11 @@ describe('updating a customization', () => {
   it('is refused once the customization is ordered', async () => {
     await seedPersonalizableProduct();
     const saved = await saveCustomization();
-    await queryDb("UPDATE personalization.customizations SET status = 'ordered', ordered_at = now(), expires_at = NULL");
+    await queryDb("UPDATE customizations SET status = 'ordered', ordered_at = $1, expires_at = NULL", [new Date().toISOString()]);
     const res = await pub(czUrl(saved.customizationId), { method: 'PUT', headers: bearer(saved.accessToken), body: { data: { tamper: true } } });
     expect(res.status).toBe(409);
     expect((await errorOf(res)).details.reason).toBe('customization_not_editable');
-    const [row] = await queryDb<any>('SELECT data FROM personalization.customizations');
+    const [row] = await queryDb<any>('SELECT data FROM customizations');
     expect(row.data).toEqual({ fields: { name: 'Ada' } });
     // Reading an ordered customization is still allowed with the token.
     expect((await pub(czUrl(saved.customizationId), { headers: bearer(saved.accessToken) })).status).toBe(200);
@@ -295,9 +298,87 @@ describe('updating a customization', () => {
   it('reports an expired customization as 410', async () => {
     await seedPersonalizableProduct();
     const saved = await saveCustomization();
-    await queryDb("UPDATE personalization.customizations SET status = 'expired', expired_at = now(), expires_at = NULL, data = '{}'");
+    await queryDb("UPDATE customizations SET status = 'expired', expired_at = $1, expires_at = NULL, data = '{}'", [new Date().toISOString()]);
     expect((await pub(czUrl(saved.customizationId), { headers: bearer(saved.accessToken) })).status).toBe(410);
     expect((await pub(czUrl(saved.customizationId), { method: 'PUT', headers: bearer(saved.accessToken), body: { data: {} } })).status).toBe(410);
+  });
+});
+
+// D1 has no transaction to wrap "insert/update the customization AND claim its uploads" in — these
+// tests exercise the `pending_attach_count` trigger pair in migrations/0001_baseline.sql directly,
+// proving the all-or-nothing guarantee survives a PARTIAL claim shortfall (not just a 100% one, which
+// the "lets a file be used only once" test above already covers) and a genuine concurrent race.
+describe('attach-count guard: atomic customization + upload claim', () => {
+  it('save: a partial claim shortfall rolls back the new customization entirely, not just the missing asset', async () => {
+    await seedPersonalizableProduct();
+    const free = await uploadCustomerImage();
+    const taken = await uploadCustomerImage();
+    // Make `taken` unavailable by attaching it to an unrelated, already-saved customization.
+    await saveCustomization({ assets: [{ assetId: taken.assetId, uploadToken: taken.uploadToken }] });
+
+    const cfg = await storefrontConfig();
+    const res = await pub(czUrl(), {
+      method: 'POST',
+      body: {
+        productId: PRODUCT_ID, configId: cfg.configId, configVersion: cfg.version, data: {},
+        assets: [
+          { assetId: free.assetId, uploadToken: free.uploadToken },
+          { assetId: taken.assetId, uploadToken: taken.uploadToken },
+        ],
+      },
+    });
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).details.reason).toBe('asset_unavailable');
+    // Exactly the one customization from the setup step exists — the second attempt created nothing.
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(1);
+    // The claimable asset was NOT left half-attached by the aborted batch.
+    const [freeRow] = await queryDb<any>('SELECT status, customization_id FROM customization_assets WHERE id = $1', [free.assetId]);
+    expect(freeRow).toMatchObject({ status: 'uploaded', customization_id: null });
+  });
+
+  it('update: a partial claim shortfall leaves the customization and its current assets untouched', async () => {
+    await seedPersonalizableProduct();
+    const kept = await uploadCustomerImage();
+    const saved = await saveCustomization({ assets: [{ assetId: kept.assetId, uploadToken: kept.uploadToken }] });
+    const free = await uploadCustomerImage();
+    const taken = await uploadCustomerImage();
+    await saveCustomization({ assets: [{ assetId: taken.assetId, uploadToken: taken.uploadToken }] });
+
+    const res = await pub(czUrl(saved.customizationId), {
+      method: 'PUT',
+      headers: bearer(saved.accessToken),
+      body: {
+        data: { v: 'should not stick' },
+        assets: [
+          { assetId: kept.assetId },
+          { assetId: free.assetId, uploadToken: free.uploadToken },
+          { assetId: taken.assetId, uploadToken: taken.uploadToken },
+        ],
+      },
+    });
+    expect(res.status).toBe(409);
+    expect((await errorOf(res)).details.reason).toBe('asset_unavailable');
+
+    const [row] = await queryDb<any>('SELECT data FROM customizations WHERE id = $1', [saved.customizationId]);
+    expect(row.data).toEqual({ fields: { name: 'Ada' } });
+    const [keptRow] = await queryDb<any>('SELECT status, customization_id FROM customization_assets WHERE id = $1', [kept.assetId]);
+    expect(keptRow).toMatchObject({ status: 'attached', customization_id: saved.customizationId });
+    const [freeRow] = await queryDb<any>('SELECT status, customization_id FROM customization_assets WHERE id = $1', [free.assetId]);
+    expect(freeRow).toMatchObject({ status: 'uploaded', customization_id: null });
+  });
+
+  it('serializes two saves racing for the same single upload: exactly one wins, the asset ends up attached once', async () => {
+    await seedPersonalizableProduct();
+    const asset = await uploadCustomerImage();
+    const results = await Promise.allSettled(
+      Array.from({ length: 2 }, () => saveCustomization({ assets: [{ assetId: asset.assetId, uploadToken: asset.uploadToken }] })),
+    );
+    const succeeded = results.filter((r) => r.status === 'fulfilled');
+    expect(succeeded).toHaveLength(1);
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(1);
+    const [row] = await queryDb<any>('SELECT status, customization_id FROM customization_assets WHERE id = $1', [asset.assetId]);
+    expect(row.status).toBe('attached');
+    expect(row.customization_id).toBe((succeeded[0] as PromiseFulfilledResult<any>).value.customizationId);
   });
 });
 
@@ -322,7 +403,7 @@ describe('storefront CORS and abuse controls', () => {
     expect(evil.status).toBe(403);
     expect((await errorOf(evil)).code).toBe('origin_not_allowed');
     expect(evil.headers.get('access-control-allow-origin')).toBeNull();
-    expect(await queryDb('SELECT 1 FROM personalization.customizations')).toHaveLength(1);
+    expect(await queryDb('SELECT 1 FROM customizations')).toHaveLength(1);
 
     // A 4xx for an allowed origin still carries CORS headers, so the storefront can read the code.
     const rejected = await pub(czUrl(), { method: 'POST', origin: SHOP, body: { ...body, productId: 'unmapped' } });
@@ -364,7 +445,7 @@ describe('merchant access', () => {
     const a1 = await saveCustomization();
     const a2 = await saveCustomization();
     const b1 = await saveCustomization({ storeId: STORE_B });
-    await queryDb("UPDATE personalization.customizations SET status = 'ordered', ordered_at = now(), expires_at = NULL WHERE id = $1", [a1.customizationId]);
+    await queryDb("UPDATE customizations SET status = 'ordered', ordered_at = $2, expires_at = NULL WHERE id = $1", [a1.customizationId, new Date().toISOString()]);
 
     const list = await json(await call(`${ADMIN}/customizations`));
     expect(list.data.map((c: any) => c.id).sort()).toEqual([a1.customizationId, a2.customizationId].sort());

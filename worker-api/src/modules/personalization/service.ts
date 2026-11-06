@@ -12,7 +12,6 @@
  */
 
 import type { Database } from '../../database/connection';
-import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
 import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
@@ -27,7 +26,8 @@ import {
   UnsupportedMediaTypeError,
   ValidationError,
 } from '../../shared/errors';
-import { PersonalizationRepository, type AssetRow, type ConfigRow, type ConfigVersionRow } from './repository';
+import { PersonalizationRepository, parseConfigRow, type AssetRow, type ConfigRow, type ConfigVersionRow } from './repository';
+import { isForeignKeyViolation } from './support';
 import { signAsset, upgradeLegacyAssetUrls } from './asset-signature';
 import { validateProductConfig } from './validation';
 import {
@@ -50,8 +50,8 @@ export interface ServiceContext {
   origin: string;
 }
 
-function toNum(value: string | null): number | null {
-  return value === null ? null : Number(value);
+function toNum(value: number | null): number | null {
+  return value === null ? null : value;
 }
 
 export class PersonalizationService {
@@ -240,19 +240,22 @@ export class PersonalizationService {
     const nextDraft: ProductConfigLike = { ...current.draft, status: 'draft', version: version + 1 };
     const now = this.stamp(Number(current.updated_at_ms));
 
-    const row = await runInTransaction(this.ctx.db, async (tx) => {
-      const repo = new PersonalizationRepository(tx);
-      return repo.applyPublish({
+    // Both statements are fully determined already (current.id is the config's db id, known before
+    // deciding to publish), so they run as one atomic batch — D1 has no interactive transaction to
+    // hold the UPDATE and the version INSERT together otherwise.
+    const [updateResult] = await this.ctx.db.batch<ConfigRow>(
+      this.repo.publishStatements({
+        configDbId: current.id,
         storeId: this.ctx.storeId,
         clientId,
         published,
         nextDraft,
         version,
         nowMs: now,
-      });
-    });
+      }),
+    );
     await this.audit('config.publish', clientId, { version });
-    return this.toRecord(row);
+    return this.toRecord(parseConfigRow(updateResult.rows[0]));
   }
 
   /** Minimal server-side publish-readiness. Authoritative strict validation is the shared Angular
@@ -316,28 +319,28 @@ export class PersonalizationService {
   }
 
   async deleteConfig(clientId: string): Promise<void> {
-    // Gather candidate assets BEFORE the delete (cascade clears config_id), inside one short tx with
-    // the delete itself. R2 work happens afterwards, never inside the transaction.
-    const outcome = await runInTransaction(this.ctx.db, async (tx) => {
-      const repo = new PersonalizationRepository(tx);
-      const current = await repo.getByClientId(this.ctx.storeId, clientId);
-      if (!current) return null;
-      const candidates = await repo.assetsForConfig(this.ctx.storeId, current.id);
-      await repo.deleteByClientId(this.ctx.storeId, clientId);
-      return { candidates };
-    }).catch((error: unknown) => {
+    // Gather candidate assets BEFORE the delete (cascade clears config_id). The DELETE itself is the
+    // only statement that must be atomic, and a single D1 statement already is one; the two reads
+    // tolerate the narrow race of a concurrent write landing between them (the asset-cleanup loop
+    // below re-checks `isReferenced` before actually deleting any object, so a stale candidate list
+    // is self-correcting, never destructive).
+    const current = await this.repo.getByClientId(this.ctx.storeId, clientId);
+    if (!current) throw new NotFoundError(`Configuration "${clientId}" was not found.`);
+    const candidates = await this.repo.assetsForConfig(this.ctx.storeId, current.id);
+    try {
+      await this.repo.deleteByClientId(this.ctx.storeId, clientId);
+    } catch (error) {
       // Customizations pin a published version (FK ... ON DELETE RESTRICT): a configuration that
       // shoppers designed against or ordered cannot be deleted. Archiving it is the safe alternative.
-      const code = (error as { code?: unknown } | null)?.code;
-      if (code === '23503' || code === '23001') {
+      if (isForeignKeyViolation(error)) {
         throw new ConflictError(
           'This configuration has customer customizations and cannot be deleted. Archive it instead.',
           { reason: 'config_has_customizations' },
         );
       }
       throw error;
-    });
-    if (!outcome) throw new NotFoundError(`Configuration "${clientId}" was not found.`);
+    }
+    const outcome = { candidates };
 
     for (const asset of outcome.candidates) {
       const stillReferenced = await this.repo.isReferenced(this.ctx.storeId, [asset.id, asset.object_key]);

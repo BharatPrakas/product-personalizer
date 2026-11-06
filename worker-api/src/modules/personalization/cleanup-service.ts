@@ -13,13 +13,14 @@
  *  5. Expired rows are kept as empty tombstones for a while (so a late order callback gets a clear
  *     answer), then purged once none of their files remain.
  *
- * Every claim uses `FOR UPDATE SKIP LOCKED`, so overlapping runs (or a run racing an order callback,
- * which locks the customization row) cannot double-process or delete something just ordered.
- * Each run is recorded in `personalization.cleanup_runs`.
+ * Every claim is a plain conditional UPDATE/DELETE (`WHERE ... IN (SELECT ... LIMIT n)`), not
+ * `FOR UPDATE SKIP LOCKED`: D1 serializes every write to a single logical writer, so two overlapping
+ * cleanup runs cannot interleave their claims the way two concurrent Postgres transactions could —
+ * there is no row lock to take because there is no concurrent writer to lock against. Each run is
+ * recorded in `cleanup_runs`.
  */
 
 import type { Database } from '../../database/connection';
-import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
 import { type ObjectStorage, customizationKeyPrefix } from '../../storage/object-storage';
@@ -61,12 +62,13 @@ export class CleanupService {
 
   async run(trigger: string, now: Date = new Date()): Promise<CleanupOutcome> {
     const { db, logger } = this.ctx;
-    const started = await db.query<{ id: string }>(
-      `INSERT INTO personalization.cleanup_runs (trigger, started_at) VALUES ($1, $2) RETURNING id`,
-      [trigger, now],
+    const runId = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO cleanup_runs (id, trigger, started_at) VALUES ($1, $2, $3)`,
+      [runId, trigger, now],
     );
     const outcome: CleanupOutcome = {
-      runId: started.rows[0].id,
+      runId,
       customizationsExpired: 0,
       uploadsReleased: 0,
       assetsDeleted: 0,
@@ -97,9 +99,9 @@ export class CleanupService {
     }
 
     await db.query(
-      `UPDATE personalization.cleanup_runs
-          SET status = $2, finished_at = now(), customizations_expired = $3, uploads_released = $4,
-              assets_deleted = $5, assets_failed = $6, tombstones_purged = $7, error = $8
+      `UPDATE cleanup_runs
+          SET status = $2, finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), customizations_expired = $3,
+              uploads_released = $4, assets_deleted = $5, assets_failed = $6, tombstones_purged = $7, error = $8
         WHERE id = $1`,
       [outcome.runId, outcome.errors.length > 0 ? 'failed' : 'succeeded', outcome.customizationsExpired,
        outcome.uploadsReleased, outcome.assetsDeleted, outcome.assetsFailed, outcome.tombstonesPurged,
@@ -116,7 +118,7 @@ export class CleanupService {
   /** A run that died mid-delete leaves rows in `deleting`; hand them back for another attempt. */
   private async resetStaleClaims(now: Date): Promise<void> {
     await this.ctx.db.query(
-      `UPDATE personalization.customization_assets SET status = 'released', updated_at = $1
+      `UPDATE customization_assets SET status = 'released', updated_at = $1
         WHERE status = 'deleting' AND updated_at < $2`,
       [now, new Date(now.getTime() - STALE_CLAIM_MS)],
     );
@@ -124,48 +126,47 @@ export class CleanupService {
 
   private async expireCustomizations(now: Date): Promise<number> {
     const deleteAfter = new Date(now.getTime() + this.ctx.config.assetDeleteGraceHours * HOUR_MS);
-    return runInTransaction(this.ctx.db, async (tx) => {
-      const { rows } = await tx.query<{ id: string }>(
-        `WITH candidates AS (
-           SELECT c.id FROM personalization.customizations c
-            WHERE c.status = 'saved' AND c.expires_at <= $1
-              AND NOT EXISTS (SELECT 1 FROM personalization.order_links ol WHERE ol.customization_id = c.id)
-            ORDER BY c.expires_at
-            LIMIT $2
-            FOR UPDATE OF c SKIP LOCKED)
-         UPDATE personalization.customizations c
-            SET status = 'expired', expired_at = $1, expires_at = NULL, data = '{}'::jsonb,
-                updated_at_ms = greatest($3::bigint, c.updated_at_ms + 1), updated_at = now()
-           FROM candidates
-          WHERE c.id = candidates.id AND c.status = 'saved'
-        RETURNING c.id`,
-        [now, this.batch, now.getTime()],
-      );
-      if (rows.length > 0) {
-        await tx.query(
-          `UPDATE personalization.customization_assets
-              SET status = 'released', delete_after = $2, updated_at = now()
-            WHERE customization_id = ANY($1::uuid[]) AND status = 'attached'`,
-          [rows.map((r) => r.id), deleteAfter],
-        );
-      }
-      return rows.length;
-    });
+    // One atomic batch: claim candidates (conditional UPDATE, no row lock needed — see the file
+    // comment), then release their assets. The second statement is scoped by `expired_at = $now`
+    // rather than the first statement's RETURNING ids, since D1's batch() cannot pass one statement's
+    // result into the next; `now` uniquely identifies the rows this run just expired.
+    const [expireResult] = await this.ctx.db.batch<{ id: string }>([
+      {
+        text: `UPDATE customizations
+                  SET status = 'expired', expired_at = $1, expires_at = NULL, data = '{}',
+                      updated_at_ms = MAX($2, updated_at_ms + 1), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id IN (
+                  SELECT id FROM customizations
+                   WHERE status = 'saved' AND expires_at <= $3
+                     AND NOT EXISTS (SELECT 1 FROM order_links ol WHERE ol.customization_id = customizations.id)
+                   ORDER BY expires_at
+                   LIMIT $4)
+              RETURNING id`,
+        params: [now, now.getTime(), now, this.batch],
+      },
+      {
+        text: `UPDATE customization_assets
+                  SET status = 'released', delete_after = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE status = 'attached' AND customization_id IN (
+                  SELECT id FROM customizations WHERE status = 'expired' AND expired_at = $1)`,
+        params: [now, deleteAfter],
+      },
+    ]);
+    return expireResult.rows.length;
   }
 
   private async releaseAbandonedUploads(now: Date): Promise<number> {
     const cutoff = new Date(now.getTime() - this.ctx.config.unattachedUploadTtlHours * HOUR_MS);
     const deleteAfter = new Date(now.getTime() + this.ctx.config.assetDeleteGraceHours * HOUR_MS);
     const { rowCount } = await this.ctx.db.query(
-      `UPDATE personalization.customization_assets a
-          SET status = 'released', delete_after = $2, updated_at = now()
-        WHERE a.id IN (
-                SELECT x.id FROM personalization.customization_assets x
-                 WHERE x.status = 'uploaded' AND x.customization_id IS NULL AND x.created_at < $1
-                 ORDER BY x.created_at
-                 LIMIT $3
-                 FOR UPDATE OF x SKIP LOCKED)
-          AND a.status = 'uploaded' AND a.customization_id IS NULL`,
+      `UPDATE customization_assets
+          SET status = 'released', delete_after = $2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id IN (
+                SELECT id FROM customization_assets
+                 WHERE status = 'uploaded' AND customization_id IS NULL AND created_at < $1
+                 ORDER BY created_at
+                 LIMIT $3)
+          AND status = 'uploaded' AND customization_id IS NULL`,
       [cutoff, deleteAfter, this.batch],
     );
     return rowCount;
@@ -175,19 +176,18 @@ export class CleanupService {
     const { db, logger } = this.ctx;
     // Claim: grace period elapsed AND the owning customization is neither ordered nor order-linked.
     const claimed = await db.query<ClaimedAsset>(
-      `UPDATE personalization.customization_assets a
-          SET status = 'deleting', delete_attempts = a.delete_attempts + 1, updated_at = $1
-        WHERE a.id IN (
-                SELECT x.id FROM personalization.customization_assets x
+      `UPDATE customization_assets
+          SET status = 'deleting', delete_attempts = delete_attempts + 1, updated_at = $1
+        WHERE id IN (
+                SELECT x.id FROM customization_assets x
                  WHERE x.status = 'released' AND x.delete_after <= $1
-                   AND NOT EXISTS (SELECT 1 FROM personalization.customizations c
+                   AND NOT EXISTS (SELECT 1 FROM customizations c
                                     WHERE c.id = x.customization_id AND c.status = 'ordered')
-                   AND NOT EXISTS (SELECT 1 FROM personalization.order_links ol
+                   AND NOT EXISTS (SELECT 1 FROM order_links ol
                                     WHERE ol.customization_id = x.customization_id)
                  ORDER BY x.delete_after
-                 LIMIT $2
-                 FOR UPDATE OF x SKIP LOCKED)
-      RETURNING a.id, a.store_id, a.object_key, a.delete_attempts`,
+                 LIMIT $2)
+      RETURNING id, store_id, object_key, delete_attempts`,
       [now, this.batch],
     );
 
@@ -200,7 +200,7 @@ export class CleanupService {
         }
         await this.ctx.storage().delete(asset.object_key);
         await db.query(
-          `UPDATE personalization.customization_assets
+          `UPDATE customization_assets
               SET status = 'deleted', deleted_at = $2, last_error = NULL, updated_at = $2
             WHERE id = $1 AND status = 'deleting'`,
           [asset.id, now],
@@ -211,7 +211,7 @@ export class CleanupService {
         const backoffHours = Math.min(2 ** (asset.delete_attempts - 1), MAX_BACKOFF_HOURS);
         logger.warn('customer asset delete failed', { assetId: asset.id, attempts: asset.delete_attempts, error: String(error) });
         await db.query(
-          `UPDATE personalization.customization_assets
+          `UPDATE customization_assets
               SET status = 'released', delete_after = $2, last_error = $3, updated_at = $4
             WHERE id = $1 AND status = 'deleting'`,
           [asset.id, new Date(now.getTime() + backoffHours * HOUR_MS), String(error).slice(0, 300), now],
@@ -223,20 +223,22 @@ export class CleanupService {
 
   private async purgeTombstones(now: Date): Promise<number> {
     const cutoff = new Date(now.getTime() - this.ctx.config.expiredTombstoneDays * DAY_MS);
-    const { rowCount } = await this.ctx.db.query(
-      `DELETE FROM personalization.customizations c
-        WHERE c.id IN (
-                SELECT x.id FROM personalization.customizations x
+    // RETURNING + rows.length, not rowCount: this DELETE cascades into customization_assets (its
+    // already-`deleted`-status, kept-until-purge rows), which would otherwise double the count.
+    const { rows } = await this.ctx.db.query<{ id: string }>(
+      `DELETE FROM customizations
+        WHERE id IN (
+                SELECT x.id FROM customizations x
                  WHERE x.status = 'expired' AND x.expired_at < $1
-                   AND NOT EXISTS (SELECT 1 FROM personalization.order_links ol WHERE ol.customization_id = x.id)
-                   AND NOT EXISTS (SELECT 1 FROM personalization.customization_assets a
+                   AND NOT EXISTS (SELECT 1 FROM order_links ol WHERE ol.customization_id = x.id)
+                   AND NOT EXISTS (SELECT 1 FROM customization_assets a
                                     WHERE a.customization_id = x.id AND a.status <> 'deleted')
                  ORDER BY x.expired_at
-                 LIMIT $2
-                 FOR UPDATE OF x SKIP LOCKED)
-          AND c.status = 'expired'`,
+                 LIMIT $2)
+          AND status = 'expired'
+      RETURNING id`,
       [cutoff, this.batch],
     );
-    return rowCount;
+    return rows.length;
   }
 }

@@ -59,6 +59,11 @@ describe('markups', () => {
     expect(percent.data).toHaveLength(1);
     const wildcard = await json(await call(`${ADMIN}/markups?search=${encodeURIComponent('%')}`));
     expect(wildcard.data).toHaveLength(1); // only the name that literally contains "%"
+    // A long search term must not trip D1/SQLite's ~50-byte LIKE-pattern-complexity limit (the search
+    // is a literal substring match via instr(), not LIKE, specifically to avoid that).
+    const long = await call(`${ADMIN}/markups?search=${encodeURIComponent('x'.repeat(100))}`);
+    expect(long.status).toBe(200);
+    expect((await json(long)).data).toHaveLength(0);
 
     const p1 = await json(await call(`${ADMIN}/markups?limit=2`));
     expect(p1.data).toHaveLength(2);
@@ -67,6 +72,38 @@ describe('markups', () => {
     );
     expect(p2.data).toHaveLength(1);
     expect((await call(`${ADMIN}/markups?kind=bogus`)).status).toBe(422);
+  });
+
+  it('search stays Unicode-aware case-insensitive (not just ASCII) after moving off ILIKE', async () => {
+    // SQLite's lower()/instr() only fold ASCII (lower('CAFÉ') === 'cafÉ'), unlike Postgres's
+    // locale-aware ILIKE this search used to run on — this is why markup-service.ts folds case in JS
+    // (toLocaleLowerCase()) instead of relying on SQL. This test pins that behavior.
+    await createMarkup({ name: 'CAFÉ wall art', kind: 'artwork', payload: {} });
+    await createMarkup({ name: 'Straße banner', kind: 'artwork', payload: {} });
+
+    const lower = await json(await call(`${ADMIN}/markups?search=${encodeURIComponent('café')}`));
+    expect(lower.data.map((m: any) => m.name)).toEqual(['CAFÉ wall art']);
+    const upper = await json(await call(`${ADMIN}/markups?search=${encodeURIComponent('CAFÉ')}`));
+    expect(upper.data.map((m: any) => m.name)).toEqual(['CAFÉ wall art']);
+    const partial = await json(await call(`${ADMIN}/markups?search=${encodeURIComponent('straße')}`));
+    expect(partial.data.map((m: any) => m.name)).toEqual(['Straße banner']);
+  });
+
+  it('search pagination is correct when matches are sparse across several raw batches', async () => {
+    // The search path scans successive 200-row raw batches in JS; create enough non-matching rows
+    // around two matching ones to prove paging through those batches (not just one) still works and
+    // the cursor returned actually resumes from the right place.
+    for (let i = 0; i < 5; i++) await createMarkup({ name: `Noise ${i}`, kind: 'area', payload: {} });
+    await createMarkup({ name: 'Target Alpha', kind: 'area', payload: {} });
+    for (let i = 5; i < 10; i++) await createMarkup({ name: `Noise ${i}`, kind: 'area', payload: {} });
+    await createMarkup({ name: 'Target Beta', kind: 'area', payload: {} });
+
+    const page1 = await json(await call(`${ADMIN}/markups?search=target&limit=1`));
+    expect(page1.data.map((m: any) => m.name)).toEqual(['Target Beta']);
+    expect(page1.meta.pagination.hasMore).toBe(true);
+    const page2 = await json(await call(`${ADMIN}/markups?search=target&limit=1&cursor=${encodeURIComponent(page1.meta.pagination.nextCursor)}`));
+    expect(page2.data.map((m: any) => m.name)).toEqual(['Target Alpha']);
+    expect(page2.meta.pagination.hasMore).toBe(false);
   });
 
   it('rejects a duplicate name within a kind (case-insensitive) with markup_name_taken', async () => {
@@ -141,7 +178,7 @@ describe('markups', () => {
     await call(`${ADMIN}/markups/${m.id}`, { method: 'PUT', body: { name: 'n2' } });
     await call(`${ADMIN}/markups/${m.id}`, { method: 'DELETE' });
     const rows = await queryDb<{ action: string }>(
-      `SELECT action FROM personalization.audit_logs WHERE action LIKE 'markup.%' ORDER BY created_at, action`,
+      `SELECT action FROM audit_logs WHERE action LIKE 'markup.%' ORDER BY created_at, action`,
     );
     expect(rows.map((r) => r.action).sort()).toEqual(['markup.create', 'markup.delete', 'markup.update']);
   });

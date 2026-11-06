@@ -24,7 +24,7 @@ beforeEach(async () => {
   resetBucket();
 });
 
-const stores = () => queryDb<any>('SELECT store_id, storefront_origins, created_at FROM personalization.store_settings ORDER BY store_id');
+const stores = () => queryDb<any>('SELECT store_id, storefront_origins, created_at FROM store_settings ORDER BY store_id');
 
 describe('store registration', () => {
   it('registers a store on its first authenticated request, once', async () => {
@@ -95,8 +95,8 @@ describe('a store that has never used the merchant API', () => {
     expect(save.status).toBe(404);
 
     expect(sharedBucket.objects.size).toBe(0);
-    expect(await queryDb('SELECT 1 FROM personalization.customization_assets')).toEqual([]);
-    expect(await queryDb('SELECT 1 FROM personalization.customizations')).toEqual([]);
+    expect(await queryDb('SELECT 1 FROM customization_assets')).toEqual([]);
+    expect(await queryDb('SELECT 1 FROM customizations')).toEqual([]);
   });
 
   it('becomes known as soon as its merchant uses the API', async () => {

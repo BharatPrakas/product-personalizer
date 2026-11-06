@@ -8,8 +8,8 @@
  */
 
 export interface Env {
-  /** Pooled Postgres connection, created with `wrangler hyperdrive create`. */
-  HYPERDRIVE: Hyperdrive;
+  /** D1 database binding, created with `wrangler d1 create`. */
+  DB: D1Database;
   /**
    * R2 binding for artwork, images, mockups, thumbnails and previews. Required when STORAGE_DRIVER is
    * `r2` (production). Not needed for `s3`.

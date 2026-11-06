@@ -4,7 +4,7 @@
  * depth — that this service stores verbatim and never interprets.
  */
 
-import type { SqlExecutor } from '../../database/connection';
+import type { Database } from '../../database/connection';
 import { ApiError, NotFoundError, ValidationError } from '../../shared/errors';
 import { decodeCursor, encodeCursor, type Cursor } from './pagination';
 import { type StoreContext, isUniqueViolation, stamp, writeAudit } from './support';
@@ -38,15 +38,20 @@ function toDto(row: MarkupRow): MarkupDto {
 const nameTaken = () =>
   new ApiError(409, 'markup_name_taken', 'A markup with this name already exists for this kind.');
 
-/** Escape LIKE metacharacters so a search term is matched literally. */
-const likeEscape = (term: string) => term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+function parsePayload(row: MarkupRow): MarkupRow {
+  return typeof row.payload === 'string' ? { ...row, payload: JSON.parse(row.payload) } : row;
+}
 
 export class MarkupRepository {
-  constructor(private readonly db: SqlExecutor) {}
+  constructor(private readonly db: Database) {}
 
-  async list(
+  /**
+   * One raw page (no `search`): `kind` + keyset cursor, straight to SQL. Used directly when there is
+   * no search term, and as the batch source `list()` scans through when there is one.
+   */
+  private async rawPage(
     storeId: string,
-    opts: { kind?: MarkupKind; search?: string; limit: number; cursor: Cursor | null },
+    opts: { kind?: MarkupKind; cursor: Cursor | null; limit: number },
   ): Promise<MarkupRow[]> {
     const params: unknown[] = [storeId];
     let where = 'store_id = $1';
@@ -54,23 +59,49 @@ export class MarkupRepository {
       params.push(opts.kind);
       where += ` AND kind = $${params.length}`;
     }
-    if (opts.search) {
-      params.push(`%${likeEscape(opts.search)}%`);
-      where += ` AND name ILIKE $${params.length} ESCAPE '\\'`;
-    }
     if (opts.cursor) {
       params.push(opts.cursor.createdAtMs, opts.cursor.id);
-      where += ` AND (created_at_ms, id) < ($${params.length - 1}::bigint, $${params.length}::uuid)`;
+      where += ` AND (created_at_ms, id) < ($${params.length - 1}, $${params.length})`;
     }
-    params.push(opts.limit + 1);
+    params.push(opts.limit);
     const { rows } = await this.db.query<MarkupRow>(
-      `SELECT ${COLS} FROM personalization.markups
+      `SELECT ${COLS} FROM markups
         WHERE ${where}
         ORDER BY created_at_ms DESC, id DESC
         LIMIT $${params.length}`,
       params,
     );
-    return rows;
+    return rows.map(parsePayload);
+  }
+
+  async list(
+    storeId: string,
+    opts: { kind?: MarkupKind; search?: string; limit: number; cursor: Cursor | null },
+  ): Promise<MarkupRow[]> {
+    if (!opts.search) return this.rawPage(storeId, { kind: opts.kind, cursor: opts.cursor, limit: opts.limit + 1 });
+
+    // Case-insensitive substring search, done in JS over successive raw batches, not in SQL: SQLite's
+    // lower()/instr() only fold ASCII (lower('CAFÉ') === 'cafÉ' — the accented letter is untouched),
+    // unlike Postgres's locale-aware ILIKE, which this used to run on. Folding in JS with
+    // toLocaleLowerCase() keeps matching Unicode-correct; LIKE itself is also out regardless — D1
+    // rejects any pattern past ~50 bytes, which a 120-char search term trips after escaping.
+    const needle = opts.search.toLocaleLowerCase();
+    const matches: MarkupRow[] = [];
+    let cursor = opts.cursor;
+    const BATCH = 200;
+    for (let scanned = 0; scanned < 20_000; scanned += BATCH) {
+      const batch = await this.rawPage(storeId, { kind: opts.kind, cursor, limit: BATCH });
+      for (const row of batch) {
+        if (row.name.toLocaleLowerCase().includes(needle)) {
+          matches.push(row);
+          if (matches.length > opts.limit) break;
+        }
+      }
+      if (matches.length > opts.limit || batch.length < BATCH) break;
+      const lastRaw = batch[batch.length - 1];
+      cursor = { createdAtMs: Number(lastRaw.created_at_ms), id: lastRaw.id };
+    }
+    return matches;
   }
 
   async insert(
@@ -78,13 +109,13 @@ export class MarkupRepository {
     input: { name: string; kind: MarkupKind; payload: Record<string, unknown>; nowMs: number },
   ): Promise<MarkupRow> {
     const { rows } = await this.db.query<MarkupRow>(
-      `INSERT INTO personalization.markups
-         (store_id, name, kind, payload, created_at_ms, updated_at_ms)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $5)
+      `INSERT INTO markups
+         (id, store_id, name, kind, payload, created_at_ms, updated_at_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $6)
        RETURNING ${COLS}`,
-      [storeId, input.name, input.kind, JSON.stringify(input.payload), input.nowMs],
+      [crypto.randomUUID(), storeId, input.name, input.kind, JSON.stringify(input.payload), input.nowMs],
     );
-    return rows[0];
+    return parsePayload(rows[0]);
   }
 
   async update(
@@ -93,19 +124,19 @@ export class MarkupRepository {
     input: { name?: string; payload?: Record<string, unknown>; nowMs: number },
   ): Promise<MarkupRow | null> {
     const { rows } = await this.db.query<MarkupRow>(
-      `UPDATE personalization.markups
-          SET name = COALESCE($3, name), payload = COALESCE($4::jsonb, payload),
-              updated_at_ms = GREATEST($5::bigint, updated_at_ms + 1), updated_at = now()
+      `UPDATE markups
+          SET name = COALESCE($3, name), payload = COALESCE($4, payload),
+              updated_at_ms = MAX($5, updated_at_ms + 1), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE store_id = $1 AND id = $2
         RETURNING ${COLS}`,
       [storeId, id, input.name ?? null, input.payload ? JSON.stringify(input.payload) : null, input.nowMs],
     );
-    return rows[0] ?? null;
+    return rows[0] ? parsePayload(rows[0]) : null;
   }
 
   async delete(storeId: string, id: string): Promise<boolean> {
     const { rowCount } = await this.db.query(
-      'DELETE FROM personalization.markups WHERE store_id = $1 AND id = $2',
+      'DELETE FROM markups WHERE store_id = $1 AND id = $2',
       [storeId, id],
     );
     return rowCount > 0;

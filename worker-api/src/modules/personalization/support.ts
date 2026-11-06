@@ -1,6 +1,6 @@
 /**
  * Small helpers shared by the mapping, markup and settings services: the request-scoped context, the
- * never-failing audit write, and Postgres error inspection.
+ * never-failing audit write, and D1/SQLite constraint-violation inspection.
  */
 
 import type { Database } from '../../database/connection';
@@ -40,12 +40,11 @@ export async function writeAudit(
 }
 
 export function isUniqueViolation(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as { code: unknown }).code === '23505'
-  );
+  return error instanceof Error && error.message.includes('UNIQUE constraint failed');
+}
+
+export function isForeignKeyViolation(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('FOREIGN KEY constraint failed');
 }
 
 export function stamp(previous?: number): number {

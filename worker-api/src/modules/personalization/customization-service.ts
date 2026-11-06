@@ -13,7 +13,6 @@
  */
 
 import type { Database } from '../../database/connection';
-import { runInTransaction } from '../../database/transactions';
 import type { AppConfig } from '../../config/environment';
 import {
   ApiError,
@@ -279,27 +278,24 @@ export class CustomizationService {
     this.assertUploadTokens(store.storeId, refs, now);
 
     const expiresAt = this.expiryFrom(now);
-    const customizationId = await runInTransaction(this.ctx.db, async (tx) => {
-      const repo = new CustomizationRepository(tx);
-      const id = await repo.insert({
-        storeId: store.storeId,
-        configUuid: match.config_uuid,
-        configVersion: input.configVersion,
-        productId: input.productId,
-        variantId: input.variantId ?? null,
-        mappingScope: match.scope,
-        mappingExternalId: match.external_id,
-        data: input.data,
-        now,
-        expiresAt,
-      });
-      const attached = await repo.attachUploads(store.storeId, id, refs.map((r) => r.assetId), now);
-      if (attached !== refs.length) {
-        // Rolls the whole save back: an upload is unknown, already used, or belongs to another store.
-        throw new ConflictError('One or more uploads are unavailable. Upload them again.', { reason: 'asset_unavailable' });
-      }
-      return id;
+    const customizationId = await this.repo.insertWithAttach({
+      storeId: store.storeId,
+      configUuid: match.config_uuid,
+      configVersion: input.configVersion,
+      productId: input.productId,
+      variantId: input.variantId ?? null,
+      mappingScope: match.scope,
+      mappingExternalId: match.external_id,
+      data: input.data,
+      now,
+      expiresAt,
+      assetIds: refs.map((r) => r.assetId),
     });
+    if (customizationId === null) {
+      // Nothing committed, including the customization row: an upload is unknown, already used, or
+      // belongs to another store (see the attach-count guard in migrations/d1/0001_baseline.sql).
+      throw new ConflictError('One or more uploads are unavailable. Upload them again.', { reason: 'asset_unavailable' });
+    }
 
     const access = this.issueAccessToken(store.storeId, customizationId, now);
     return {
@@ -342,33 +338,39 @@ export class CustomizationService {
     const expiresAt = this.expiryFrom(now);
     const graceEnd = new Date(now.getTime() + this.ctx.config.assetDeleteGraceHours * HOUR_MS);
 
-    await runInTransaction(this.ctx.db, async (tx) => {
-      const repo = new CustomizationRepository(tx);
-      const row = await repo.getById(store.storeId, customizationId, true);
-      if (!row) throw new NotFoundError('That customization was not found.');
-      if (row.status === 'expired') throw new ApiError(410, 'customization_expired', 'That customization has expired.');
-      if (row.status !== 'saved') {
-        throw new ConflictError('This customization has been ordered and can no longer be changed.', {
-          reason: 'customization_not_editable',
-        });
-      }
-      const current = await repo.attachedAssets(store.storeId, row.id);
-      const currentIds = new Set(current.map((a) => a.id));
-      const wanted = new Set(refs.map((r) => r.assetId));
-      const toAttach = refs.filter((r) => !currentIds.has(r.assetId));
-      const toRelease = [...currentIds].filter((id) => !wanted.has(id));
+    const row = await this.repo.getById(store.storeId, customizationId);
+    if (!row) throw new NotFoundError('That customization was not found.');
+    if (row.status === 'expired') throw new ApiError(410, 'customization_expired', 'That customization has expired.');
+    if (row.status !== 'saved') {
+      throw new ConflictError('This customization has been ordered and can no longer be changed.', {
+        reason: 'customization_not_editable',
+      });
+    }
+    const current = await this.repo.attachedAssets(store.storeId, row.id);
+    const currentIds = new Set(current.map((a) => a.id));
+    const wanted = new Set(refs.map((r) => r.assetId));
+    const toAttach = refs.filter((r) => !currentIds.has(r.assetId));
+    const toRelease = [...currentIds].filter((id) => !wanted.has(id));
 
-      this.assertUploadTokens(store.storeId, toAttach, now);
-      const attached = await repo.attachUploads(store.storeId, row.id, toAttach.map((r) => r.assetId), now);
-      if (attached !== toAttach.length) {
-        throw new ConflictError('One or more uploads are unavailable. Upload them again.', { reason: 'asset_unavailable' });
-      }
-      await repo.releaseAttached(store.storeId, row.id, toRelease, graceEnd);
-      if (!(await repo.updateSaved(store.storeId, row.id, input.data, now, expiresAt))) {
-        // The row is locked, so this only happens if the state moved under us; report it, don't guess.
-        throw new ConflictError('This customization changed while saving. Try again.', { reason: 'state_changed' });
-      }
+    this.assertUploadTokens(store.storeId, toAttach, now);
+    // One atomic batch: nothing commits (including the release and the data write) if the claim comes
+    // up short, and the data write itself re-checks `status = 'saved'` — see applyUpdate.
+    const outcome = await this.repo.applyUpdate({
+      storeId: store.storeId,
+      customizationId: row.id,
+      toAttach: toAttach.map((r) => r.assetId),
+      toRelease,
+      data: input.data,
+      now,
+      expiresAt,
+      deleteAfter: graceEnd,
     });
+    if (outcome === 'attach_unavailable') {
+      throw new ConflictError('One or more uploads are unavailable. Upload them again.', { reason: 'asset_unavailable' });
+    }
+    if (outcome === 'state_changed') {
+      throw new ConflictError('This customization changed while saving. Try again.', { reason: 'state_changed' });
+    }
 
     const access = this.issueAccessToken(store.storeId, customizationId, now);
     return {

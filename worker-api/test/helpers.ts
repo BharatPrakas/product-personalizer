@@ -1,25 +1,24 @@
 /**
- * Test harness. The Hono app is exercised end-to-end by calling `app.fetch(request, env, ctx)` with
- * a test `Env`: a REAL local Postgres (through a plain connection string, standing in for Hyperdrive)
- * and an in-memory R2 bucket. This verifies routing, middleware, auth, tenant isolation, CRUD,
- * versioning, optimistic concurrency and the full R2 upload/delivery/delete flow without workerd.
+ * Test harness. The Hono app is exercised end-to-end by calling `app.fetch(request, env, ctx)` with a
+ * test `Env`: a REAL D1 database, provided by a local Miniflare instance (standing in for the `DB`
+ * binding — this does NOT use `@cloudflare/vitest-pool-workers`/workerd, since that package's latest
+ * release requires vitest ^4 and this project is on vitest 5; Miniflare's D1 is a faithful-enough
+ * SQLite implementation for these tests without needing the whole pool/workerd switch), and an
+ * in-memory R2 bucket. This verifies routing, middleware, auth, tenant isolation, CRUD, versioning,
+ * optimistic concurrency and the full R2 upload/delivery/delete flow, running in plain Node.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import pg from 'pg';
+import { Miniflare } from 'miniflare';
 import { createApp } from '../src/app';
 import { signBody } from '../src/modules/integration-credentials/signature';
+import { toSqliteSql } from '../src/database/connection';
 import type { Env } from '../src/config/environment';
 
-const { Client } = pg;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(HERE, '..', 'migrations');
-
-export const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL ??
-  'postgres://personalizer:personalizer_local_dev@127.0.0.1:5432/personalizer_test';
 
 export const DEV_TOKEN = 'test-dev-token';
 /** 32 bytes, base64 — the test master key for integration secrets. */
@@ -98,9 +97,55 @@ async function toBytes(value: ArrayBuffer | ReadableStream | Uint8Array): Promis
   return out;
 }
 
+// ---- D1 test database (Miniflare-backed) ----
+
+let mf: Miniflare | null = null;
+let testD1: D1Database | null = null;
+
+export async function getTestD1(): Promise<D1Database> {
+  if (testD1) return testD1;
+  mf = new Miniflare({
+    modules: true,
+    script: 'export default { fetch() { return new Response("not used"); } };',
+    d1Databases: { DB: 'test' },
+  });
+  testD1 = await mf.getD1Database('DB');
+  return testD1;
+}
+
+/**
+ * Splits a migration file into top-level statements. A plain split on `;` would cut a trigger's
+ * `BEGIN ... END;` body apart, since D1's `prepare()` only accepts one statement at a time (unlike
+ * Postgres's simple query protocol, which ran the whole file as one `client.query()` call) — so this
+ * strips `--` comments first (prose in them may itself contain semicolons) and then tracks BEGIN/END
+ * nesting, only splitting at a `;` outside of one.
+ */
+function splitStatements(sql: string): string[] {
+  const withoutComments = sql
+    .split('\n')
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n');
+  const parts = withoutComments.split(/(\bBEGIN\b|\bEND\b|;)/i);
+  const statements: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const part of parts) {
+    if (/^BEGIN$/i.test(part)) depth++;
+    else if (/^END$/i.test(part)) depth = Math.max(0, depth - 1);
+    if (part === ';' && depth === 0) {
+      if (current.trim()) statements.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += part;
+  }
+  if (current.trim()) statements.push(current.trim());
+  return statements;
+}
+
 export function makeEnv(bucket: InMemoryR2 = new InMemoryR2()): Env & { bucket: InMemoryR2 } {
   return {
-    HYPERDRIVE: { connectionString: TEST_DATABASE_URL } as unknown as Hyperdrive,
+    DB: undefined as unknown as D1Database, // filled in per-call by `call()`, which awaits the real test D1
     // High by default so ordinary tests never trip the public limiter; limiter tests override it.
     STOREFRONT_RATE_LIMIT: '100000',
     PERSONALIZATION_ASSETS: bucket as unknown as R2Bucket,
@@ -122,9 +167,8 @@ export function makeEnv(bucket: InMemoryR2 = new InMemoryR2()): Env & { bucket: 
 }
 
 /**
- * A context WITHOUT `waitUntil`, so the database middleware closes its connection synchronously after
- * each request (no connection buildup across the many calls a test makes). The deployed Worker does
- * provide `waitUntil` and closes in the background.
+ * A context WITHOUT `waitUntil` — D1 has no per-request connection to close in the background anyway,
+ * unlike the old Hyperdrive/`pg` client, so this just satisfies the type.
  */
 export function executionContext(): ExecutionContext {
   return {
@@ -154,7 +198,7 @@ export interface CallOptions {
  * store id is overridden per call so cross-tenant tests are possible with one app instance).
  */
 export async function call(path: string, options: CallOptions = {}): Promise<Response> {
-  const env = { ...makeEnv(sharedBucket), ...options.env };
+  const env = { ...makeEnv(sharedBucket), DB: await getTestD1(), ...options.env };
   if (options.storeId) env.DEV_STORE_ID = options.storeId;
   const headers = new Headers(options.headers);
   const token = options.token === undefined ? DEV_TOKEN : options.token;
@@ -192,38 +236,92 @@ let migrated = false;
 
 export async function applyMigrations(): Promise<void> {
   if (migrated) return;
-  const client = new Client({ connectionString: TEST_DATABASE_URL });
-  await client.connect();
-  try {
-    const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
-    for (const file of files) {
-      await client.query(readFileSync(join(MIGRATIONS_DIR, file), 'utf8'));
+  const db = await getTestD1();
+  const files = readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
+  for (const file of files) {
+    const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
+    for (const statement of splitStatements(sql)) {
+      await db.prepare(statement).run();
     }
-    migrated = true;
-  } finally {
-    await client.end();
   }
+  migrated = true;
 }
+
+/** Child tables first, respecting the `ON DELETE RESTRICT` chain (customizations -> config_versions
+ *  -> configs); SQLite has no `TRUNCATE ... CASCADE`, and ids are app-generated UUIDs so there is no
+ *  sequence to reset. */
+const TABLES_CHILD_FIRST = [
+  'order_links',
+  'customization_assets',
+  'customizations',
+  'config_versions',
+  'mappings',
+  'configs',
+  'assets',
+  'markups',
+  'integration_credentials',
+  'store_settings',
+  'audit_logs',
+  'integration_events',
+  'cleanup_runs',
+];
 
 export async function truncateAll(): Promise<void> {
-  const client = new Client({ connectionString: TEST_DATABASE_URL });
-  await client.connect();
-  try {
-    await client.query(
-      `TRUNCATE personalization.config_versions, personalization.assets, personalization.markups,
-                personalization.configs, personalization.customizations,
-                personalization.customization_assets, personalization.order_links,
-                personalization.integration_events, personalization.cleanup_runs,
-                personalization.integration_credentials, personalization.store_settings,
-                personalization.audit_logs
-       RESTART IDENTITY CASCADE`,
-    );
-  } finally {
-    await client.end();
+  const db = await getTestD1();
+  for (const table of TABLES_CHILD_FIRST) {
+    await db.prepare(`DELETE FROM ${table}`).run();
   }
 }
 
-// ---- fixtures ----
+/** D1 stores JSON columns (data/draft/published/snapshot/payload/results/metadata/...) as plain TEXT,
+ *  unlike Postgres's jsonb; parse anything that looks like JSON so assertions can keep comparing
+ *  against plain objects/arrays as they did before. */
+function parseJsonish<T>(row: T): T {
+  const out: Record<string, unknown> = { ...(row as Record<string, unknown>) };
+  for (const [key, value] of Object.entries(out)) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) continue;
+    try {
+      out[key] = JSON.parse(trimmed);
+    } catch {
+      // Not actually JSON; leave it as the plain string it is.
+    }
+  }
+  return out as T;
+}
+
+export async function queryDb<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
+  const db = await getTestD1();
+  const { results } = await db.prepare(toSqliteSql(text)).bind(...params).all<T>();
+  return results.map(parseJsonish);
+}
+
+/** A tiny valid PNG (1x1) as bytes. */
+export function tinyPng(): Uint8Array {
+  const base64 =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Minimal bytes carrying a real font format's magic number, enough for `sniffFont` (and the Worker's
+ * upload pipeline, which only inspects bytes — never the browser) to accept it. Not a loadable font.
+ */
+export function tinyFont(format: 'woff2' | 'woff' | 'ttf' | 'otf' = 'woff2'): Uint8Array {
+  const tag =
+    format === 'woff2'
+      ? [0x77, 0x4f, 0x46, 0x32] // 'wOF2'
+      : format === 'woff'
+        ? [0x77, 0x4f, 0x46, 0x46] // 'wOFF'
+        : format === 'otf'
+          ? [0x4f, 0x54, 0x54, 0x4f] // 'OTTO'
+          : [0x00, 0x01, 0x00, 0x00]; // sfnt v1 (TTF)
+  return new Uint8Array([...tag, 0, 0, 0, 0, 0, 0, 0, 0]);
+}
 
 /** A minimal but valid v2 ProductConfig draft. */
 export function sampleDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -256,32 +354,6 @@ export function publishableDraft(id = 'cfg-pub1'): Record<string, unknown> {
     ],
     artworks: [{ id: 'art1', name: 'Design', printableAreaId: 'a1', layers: [] }],
   });
-}
-
-/** A tiny valid PNG (1x1) as bytes. */
-export function tinyPng(): Uint8Array {
-  const base64 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-/**
- * Minimal bytes carrying a real font format's magic number, enough for `sniffFont` (and the Worker's
- * upload pipeline, which only inspects bytes — never the browser) to accept it. Not a loadable font.
- */
-export function tinyFont(format: 'woff2' | 'woff' | 'ttf' | 'otf' = 'woff2'): Uint8Array {
-  const tag =
-    format === 'woff2'
-      ? [0x77, 0x4f, 0x46, 0x32] // 'wOF2'
-      : format === 'woff'
-        ? [0x77, 0x4f, 0x46, 0x46] // 'wOFF'
-        : format === 'otf'
-          ? [0x4f, 0x54, 0x54, 0x4f] // 'OTTO'
-          : [0x00, 0x01, 0x00, 0x00]; // sfnt v1 (TTF)
-  return new Uint8Array([...tag, 0, 0, 0, 0, 0, 0, 0, 0]);
 }
 
 // ---- mapping / storefront fixtures ----
@@ -331,18 +403,6 @@ export async function mapTo(
 ): Promise<Response> {
   return call(`${ADMIN}/mappings`, { method: 'POST', storeId, body: { configId, scope, externalId, ...extra } });
 }
-
-/** Run a query against the test database (assertions on audit rows etc.). */
-export async function queryDb<T = Record<string, unknown>>(text: string, params: unknown[] = []): Promise<T[]> {
-  const client = new Client({ connectionString: TEST_DATABASE_URL });
-  await client.connect();
-  try {
-    return (await client.query(text, params)).rows as T[];
-  } finally {
-    await client.end();
-  }
-}
-
 
 // ---- customization / order-callback fixtures ----
 

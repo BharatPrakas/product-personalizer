@@ -203,7 +203,7 @@ describe('mappings', () => {
     const m = (await json(await mapTo('cfg-aud', 'product', 'p-aud'))).data;
     await call(`${ADMIN}/mappings/${m.id}`, { method: 'DELETE' });
     const rows = await queryDb<{ action: string; resource_type: string }>(
-      `SELECT action, resource_type FROM personalization.audit_logs WHERE action LIKE 'mapping.%' ORDER BY created_at`,
+      `SELECT action, resource_type FROM audit_logs WHERE action LIKE 'mapping.%' ORDER BY created_at`,
     );
     expect(rows.map((r) => r.action)).toEqual(['mapping.create', 'mapping.delete']);
     expect(rows[0].resource_type).toBe('mapping');
@@ -286,6 +286,19 @@ describe('bulk mappings', () => {
     expect(r.deleted).toBe(1);
     expect(r.created).toHaveLength(1);
     expect(r.created[0].id).not.toBe(m.id);
+  });
+
+  it('creates well over 100 targets in one call without tripping D1\'s 100-bound-parameter limit', async () => {
+    await seedPublished('cfg-big');
+    // 150 creates bind well over 100 params in both the existing-targets lookup (2/item) and the
+    // insert batch (7/item) — this only passes if both are chunked (see chunkForParamLimit).
+    const create = Array.from({ length: 150 }, (_, i) => ({ scope: 'product' as const, externalId: `p-big-${i}` }));
+    const res = await call(`${ADMIN}/mappings/bulk`, { method: 'POST', body: { configId: 'cfg-big', create } });
+    expect(res.status).toBe(200);
+    const r = (await json(res)).data;
+    expect(r.created).toHaveLength(150);
+    expect(new Set(r.created.map((m: any) => m.externalId)).size).toBe(150);
+    expect((await json(await call(`${ADMIN}/mappings?configId=cfg-big&limit=200`))).data).toHaveLength(150);
   });
 
   it('rejects more than 500 items, an archived or unknown config', async () => {

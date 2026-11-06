@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
-// Integration tests share one local Postgres, so run files sequentially to avoid truncate races.
+// Integration tests share one Miniflare-backed D1 database per file, so run files sequentially to
+// avoid truncate races (each test file gets its own Miniflare instance; see test/helpers.ts).
 export default defineConfig({
   test: {
     environment: 'node',

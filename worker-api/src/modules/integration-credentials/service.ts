@@ -9,7 +9,6 @@
  */
 
 import type { Database } from '../../database/connection';
-import { runInTransaction } from '../../database/transactions';
 import { ConflictError, NotFoundError, ServiceUnavailableError } from '../../shared/errors';
 import { decryptSecret, encryptSecret, generateSecret, parseMasterKey } from './crypto';
 import { IntegrationCredentialsRepository, type CredentialRow } from './repository';
@@ -103,22 +102,27 @@ export class IntegrationCredentialsService {
     const at = this.now();
     const newId = crypto.randomUUID();
     const secret = generateSecret();
-    const { fresh, previous } = await runInTransaction(this.db, async (tx) => {
-      const repo = new IntegrationCredentialsRepository(tx);
-      const current = await repo.get(storeId, id);
-      if (!current) throw new NotFoundError('That credential was not found.');
-      if (current.status !== 'active') throw new ConflictError('That credential is already revoked.');
-      const inserted = await repo.insert({
+    const current = await this.repo.get(storeId, id);
+    if (!current) throw new NotFoundError('That credential was not found.');
+    if (current.status !== 'active') throw new ConflictError('That credential is already revoked.');
+
+    // Both statements are fully determined already — the new credential's id/secret and whether to
+    // revoke or just set an expiry are decided before any write — so they run as one atomic batch.
+    const expiresAt = graceSeconds > 0 ? new Date(at.getTime() + graceSeconds * 1000) : null;
+    const [insertResult] = await this.db.batch<CredentialRow>([
+      this.repo.insertStatement({
         id: newId,
         storeId,
         label: current.label,
         secretEncrypted: encryptSecret(key, storeId, newId, secret),
         createdBy,
-      });
-      if (graceSeconds <= 0) await repo.revoke(storeId, id, at);
-      else await repo.setExpiry(storeId, id, new Date(at.getTime() + graceSeconds * 1000));
-      return { fresh: inserted, previous: (await repo.get(storeId, id))! };
-    });
+      }),
+      expiresAt ? this.repo.setExpiryStatement(storeId, id, expiresAt) : this.repo.revokeStatement(storeId, id, at),
+    ]);
+    const fresh = insertResult.rows[0];
+    const previous: CredentialRow = expiresAt
+      ? { ...current, expires_at: expiresAt.toISOString() }
+      : { ...current, status: 'revoked', revoked_at: at.toISOString() };
     return { credential: { ...toMetadata(fresh), secret }, previous: toMetadata(previous) };
   }
 

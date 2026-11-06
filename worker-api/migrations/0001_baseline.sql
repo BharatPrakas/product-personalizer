@@ -1,262 +1,222 @@
--- Migration 0001 — Baseline schema of the Product Personalization service.
+-- Migration 0001 — Baseline schema of the Product Personalization service, D1 (SQLite) dialect.
 --
--- This Worker and its database exist only for Product Personalization, so everything lives in ONE
--- schema, `personalization`, including the migration ledger (`schema_migrations`, created by the
--- runner). The service owns no users or stores: ZenBasket's identity system (a separate MySQL
--- database, never touched here) is the source of truth, and stores are referenced by their stable
--- EXTERNAL id as a text column — no foreign key into a local stores table.
+-- Ported from migrations/0001_baseline.sql (PostgreSQL). D1 is a single flat SQLite database, so the
+-- `personalization.` schema prefix is dropped (no other schema exists to collide with). Differences
+-- from the Postgres original, all deliberate:
+--  * uuid -> TEXT. SQLite has no gen_random_uuid(); every id is generated app-side with
+--    `crypto.randomUUID()` and always supplied on INSERT (no column DEFAULT).
+--  * timestamptz -> TEXT, ISO-8601 UTC with milliseconds (`strftime('%Y-%m-%dT%H:%M:%fZ','now')`),
+--    matching `Date.prototype.toISOString()` so the app can compare/bind either representation
+--    interchangeably. Every timestamp column in this schema uses this exact format — never mixed.
+--  * jsonb -> TEXT, validated with `json_valid()` / `json_type()` (SQLite's JSON1 functions) in place
+--    of `jsonb_typeof()`. The app stores `JSON.stringify(...)`; D1 does not parse it back.
+--  * text[] (store_settings.storefront_origins) -> TEXT holding a JSON array string.
+--  * bigint epoch-ms columns -> INTEGER (SQLite integers are 64-bit; no change in practice).
+--  * `FOR UPDATE ... SKIP LOCKED` has no equivalent and needs none: D1 serializes every write to a
+--    single logical writer, so two cleanup runs cannot interleave their claims the way two concurrent
+--    Postgres transactions could. The claim-then-verify shape (conditional UPDATE, check rowcount) is
+--    kept; only the locking clause is dropped. See cleanup-service.ts.
+--  * `customizations.pending_attach_count` and its two triggers near the bottom of this file replace
+--    the Postgres pattern of inserting a customization and conditionally claiming N uploads inside one
+--    transaction, rolling back the whole thing if any upload couldn't be claimed. D1's `batch()` has no
+--    mid-batch branching, so the same all-or-nothing guarantee is enforced in SQL via a counter trigger
+--    plus a `RAISE(ABORT, ...)` guard — not a compensating write after the fact. See
+--    customization-service.ts and customization-repository.ts.
+--  * `integration_events.status` is new: it lets a crashed or concurrently-retried order event be
+--    safely re-processed (every line's own write is already conditional/idempotent) instead of
+--    answering with incomplete stored results. See order-callback-service.ts.
 --
--- Design decisions:
---  * The rendering configuration is a structured JSON document in the Angular app (ProductConfig,
---    schema v2). It is stored as JSONB verbatim — we do NOT flatten the renderer's model into
---    columns. Only lifecycle/ownership/versioning metadata is relational.
---  * Binary images are NEVER stored in these JSON columns. `assets` holds the object key and
---    metadata; the config JSON references stable delivery URLs / asset records.
---  * Optimistic concurrency uses `updated_at_ms` (a strictly-increasing epoch-millisecond stamp),
---    which maps directly onto the Angular repository's `expectedUpdatedAt` contract.
---  * Identifiers that belong to ZenBasket (store, product, variant, order, order line) are opaque
---    text. There are NO foreign keys to ZenBasket's MySQL database; consistency with it is enforced
---    through the authenticated order callback (see docs/zenbasket-integration.md).
+-- D1 enables foreign-key enforcement by default; this migration relies on that (composite FKs below
+-- require the referenced composite UNIQUE indexes, created alongside each table, same as Postgres).
 --
--- Safe to re-run: every object is guarded with IF NOT EXISTS. `gen_random_uuid()` is built in on
--- PostgreSQL 13+ (no extension required).
-
-CREATE SCHEMA IF NOT EXISTS personalization;
+-- Applied via `wrangler d1 migrations apply` (see migrations_dir in wrangler.jsonc), not the
+-- Postgres-specific scripts/migrate.mjs runner.
 
 -- ---- stores ---------------------------------------------------------------------------------------
 
--- One row per store (tenant) that has used this service; `store_id` is the external id. The row is
--- created on the store's first authenticated request (the hosting platform only issues tokens for
--- stores that have the extension), and the public routes treat a store without a row as unknown.
-CREATE TABLE IF NOT EXISTS personalization.store_settings (
-  store_id            text PRIMARY KEY,
-  -- Browser origins allowed to call the PUBLIC storefront routes cross-origin. Empty = none.
-  storefront_origins  text[] NOT NULL DEFAULT '{}',
-  created_at          timestamptz NOT NULL DEFAULT now(),
-  updated_at          timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS store_settings (
+  store_id            TEXT PRIMARY KEY,
+  storefront_origins  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(storefront_origins) AND json_type(storefront_origins) = 'array'),
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Append-only audit trail of privileged operations. Never stores secrets, tokens or payload bodies —
--- only identifiers, the action, and small structured metadata (counts, ids).
-CREATE TABLE IF NOT EXISTS personalization.audit_logs (
-  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  request_id    text,
-  store_id      text,
-  actor         text,
-  action        text NOT NULL,
-  resource_type text,
-  resource_id   text,
-  metadata      jsonb NOT NULL DEFAULT '{}'::jsonb,
-  created_at    timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id            TEXT PRIMARY KEY,
+  request_id    TEXT,
+  store_id      TEXT,
+  actor         TEXT,
+  action        TEXT NOT NULL,
+  resource_type TEXT,
+  resource_id   TEXT,
+  metadata      TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata) AND json_type(metadata) = 'object'),
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS audit_logs_store_idx ON personalization.audit_logs (store_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS audit_logs_store_idx ON audit_logs (store_id, created_at DESC);
 
--- Per-store integration credentials. Server-to-server callers (for example ZenBasket's order service)
--- authenticate with a per-store HMAC secret. The secret must be recoverable by the Worker to verify
--- signatures, so it is stored ENCRYPTED (AES-256-GCM, see src/modules/integration-credentials/crypto.ts),
--- never hashed. The master key lives only in a Worker secret (`INTEGRATION_ENCRYPTION_KEY`); the
--- plaintext secret is shown once, at creation, to the caller.
---
--- Several credentials may be live per store at once: that is how rotation works — issue a new one,
--- then let the old one lapse (`expires_at`) or revoke it.
-CREATE TABLE IF NOT EXISTS personalization.integration_credentials (
-  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id          text NOT NULL,
-  label             text NOT NULL DEFAULT '' CHECK (char_length(label) <= 120),
-  -- `v1.<iv>.<tag>.<ciphertext>` (base64url), bound to (store_id, id) as AEAD associated data.
-  secret_encrypted  text NOT NULL,
-  status            text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
-  -- Set on the OLD credential when it is rotated: it stays valid until then. NULL = no expiry.
-  expires_at        timestamptz,
-  revoked_at        timestamptz,
-  last_used_at      timestamptz,
-  created_by        text,
-  created_at        timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS integration_credentials (
+  id                TEXT PRIMARY KEY,
+  store_id          TEXT NOT NULL,
+  label             TEXT NOT NULL DEFAULT '' CHECK (length(label) <= 120),
+  secret_encrypted  TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  expires_at        TEXT,
+  revoked_at        TEXT,
+  last_used_at      TEXT,
+  created_by        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS integration_credentials_store_idx
-  ON personalization.integration_credentials (store_id, status);
+  ON integration_credentials (store_id, status);
 
 -- ---- configurations ------------------------------------------------------------------------------
 
--- One row per managed configuration (the merchant's unit of work: a working draft plus, once
--- published, an immutable published snapshot).
-CREATE TABLE IF NOT EXISTS personalization.configs (
-  id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id          text NOT NULL,
-  -- The Angular app's own id (e.g. 'cfg-ab12cd34'). Lets IndexedDB migration be idempotent and lets
-  -- the client keep a stable local<->cloud mapping. Unique per store when present.
-  client_config_id  text,
-  -- Denormalised from draft.product.name for cheap listing / search / sort.
-  name              text NOT NULL DEFAULT 'Untitled configuration',
-  schema_version    integer NOT NULL,
-  -- The working draft (status: 'draft'). Always present.
-  draft             jsonb NOT NULL,
-  -- The last published snapshot (status: 'published'), or NULL before the first publish.
-  published         jsonb,
-  -- Strictly-increasing stamps (epoch ms). `updated_at_ms` is the optimistic-concurrency token.
-  created_at_ms     bigint NOT NULL,
-  updated_at_ms     bigint NOT NULL,
-  published_at_ms   bigint,
-  archived_at_ms    bigint,
-  created_at        timestamptz NOT NULL DEFAULT now(),
-  updated_at        timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT configs_schema_version_chk CHECK (schema_version >= 1)
+CREATE TABLE IF NOT EXISTS configs (
+  id                TEXT PRIMARY KEY,
+  store_id          TEXT NOT NULL,
+  client_config_id  TEXT,
+  name              TEXT NOT NULL DEFAULT 'Untitled configuration',
+  schema_version    INTEGER NOT NULL CHECK (schema_version >= 1),
+  draft             TEXT NOT NULL CHECK (json_valid(draft) AND json_type(draft) = 'object'),
+  published         TEXT CHECK (published IS NULL OR (json_valid(published) AND json_type(published) = 'object')),
+  created_at_ms     INTEGER NOT NULL,
+  updated_at_ms     INTEGER NOT NULL,
+  published_at_ms   INTEGER,
+  archived_at_ms    INTEGER,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- A store cannot reach another store's config by guessing an id: every query is scoped by store_id,
--- and this partial unique index keeps the client id stable within a store.
 CREATE UNIQUE INDEX IF NOT EXISTS configs_store_client_uq
-  ON personalization.configs (store_id, client_config_id)
+  ON configs (store_id, client_config_id)
   WHERE client_config_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS configs_store_updated_idx
-  ON personalization.configs (store_id, updated_at_ms DESC);
+  ON configs (store_id, updated_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS configs_store_archived_idx
-  ON personalization.configs (store_id, archived_at_ms);
+  ON configs (store_id, archived_at_ms);
 
--- Lets `mappings` carry a composite foreign key (config_id, store_id) so the database itself refuses
--- a mapping whose store differs from its configuration's store (defence in depth for tenancy).
+-- Backs the composite FK from `mappings`, exactly as in the Postgres schema.
 CREATE UNIQUE INDEX IF NOT EXISTS configs_id_store_uq
-  ON personalization.configs (id, store_id);
+  ON configs (id, store_id);
 
--- Immutable publish history. One row per publish; never updated in place.
-CREATE TABLE IF NOT EXISTS personalization.config_versions (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  config_id      uuid NOT NULL REFERENCES personalization.configs (id) ON DELETE CASCADE,
-  store_id       text NOT NULL,
-  version        integer NOT NULL,
-  snapshot       jsonb NOT NULL,
-  created_at_ms  bigint NOT NULL,
-  created_at     timestamptz NOT NULL DEFAULT now(),
+CREATE TABLE IF NOT EXISTS config_versions (
+  id             TEXT PRIMARY KEY,
+  config_id      TEXT NOT NULL REFERENCES configs (id) ON DELETE CASCADE,
+  store_id       TEXT NOT NULL,
+  version        INTEGER NOT NULL,
+  snapshot       TEXT NOT NULL CHECK (json_valid(snapshot) AND json_type(snapshot) = 'object'),
+  created_at_ms  INTEGER NOT NULL,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT config_versions_version_uq UNIQUE (config_id, version)
 );
 
 CREATE INDEX IF NOT EXISTS config_versions_config_idx
-  ON personalization.config_versions (config_id, created_at_ms DESC);
+  ON config_versions (config_id, created_at_ms DESC);
 
--- Lets a customization pin (config, store, version) with ONE composite foreign key, so the database
--- itself refuses a customization whose config version belongs to another store.
+-- Backs the composite FK from `customizations`.
 CREATE UNIQUE INDEX IF NOT EXISTS config_versions_config_store_version_uq
-  ON personalization.config_versions (config_id, store_id, version);
+  ON config_versions (config_id, store_id, version);
 
--- Metadata for every merchant binary in object storage. The bytes live under `object_key`.
-CREATE TABLE IF NOT EXISTS personalization.assets (
-  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id           text NOT NULL,
-  -- Optional association; an asset may be shared by several configs, so deleting a config does not
-  -- delete the asset (reference counting is done in the service layer before any object delete).
-  config_id          uuid REFERENCES personalization.configs (id) ON DELETE SET NULL,
-  object_key         text NOT NULL UNIQUE,
-  original_filename  text,
-  content_type       text NOT NULL,
-  size_bytes         bigint NOT NULL,
-  width              integer,
-  height             integer,
-  checksum_sha256    text,
-  status             text NOT NULL DEFAULT 'pending'
+CREATE TABLE IF NOT EXISTS assets (
+  id                 TEXT PRIMARY KEY,
+  store_id           TEXT NOT NULL,
+  config_id          TEXT REFERENCES configs (id) ON DELETE SET NULL,
+  object_key         TEXT NOT NULL UNIQUE,
+  original_filename  TEXT,
+  content_type       TEXT NOT NULL,
+  size_bytes         INTEGER NOT NULL,
+  width              INTEGER,
+  height             INTEGER,
+  checksum_sha256    TEXT,
+  status             TEXT NOT NULL DEFAULT 'pending'
                        CHECK (status IN ('pending', 'stored', 'deleted')),
-  -- The client's local reference (e.g. 'idb:a1b2...') for idempotent migration + dedupe.
-  client_ref         text,
-  created_at_ms      bigint NOT NULL,
-  updated_at_ms      bigint NOT NULL,
-  created_at         timestamptz NOT NULL DEFAULT now()
+  client_ref         TEXT,
+  created_at_ms      INTEGER NOT NULL,
+  updated_at_ms      INTEGER NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS assets_store_client_ref_uq
-  ON personalization.assets (store_id, client_ref)
+  ON assets (store_id, client_ref)
   WHERE client_ref IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS assets_store_idx  ON personalization.assets (store_id, status);
-CREATE INDEX IF NOT EXISTS assets_config_idx ON personalization.assets (config_id);
+CREATE INDEX IF NOT EXISTS assets_store_idx  ON assets (store_id, status);
+CREATE INDEX IF NOT EXISTS assets_config_idx ON assets (config_id);
 
 -- ---- mappings and markups ------------------------------------------------------------------------
 
---  * `mappings` links a host-platform product / variant / collection (an EXTERNAL id) to one
---    configuration, so the storefront can ask "which published configuration applies to this
---    product?". A (store, scope, external id) triple maps to at most ONE configuration.
---  * `markups` stores reusable, merchant-authored snippets (printable-area / artwork markup) as a
---    validated JSON object.
-CREATE TABLE IF NOT EXISTS personalization.mappings (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id       text NOT NULL,
-  config_id      uuid NOT NULL,
-  scope          text NOT NULL CHECK (scope IN ('product', 'variant', 'collection')),
-  -- The host platform's id for the product / variant / collection (opaque to this service).
-  external_id    text NOT NULL CHECK (char_length(external_id) BETWEEN 1 AND 200),
-  -- Cached host product title for display in the admin UI; never used for resolution.
-  label          text CHECK (label IS NULL OR char_length(label) <= 200),
-  created_at_ms  bigint NOT NULL,
-  updated_at_ms  bigint NOT NULL,
-  created_at     timestamptz NOT NULL DEFAULT now(),
-  updated_at     timestamptz NOT NULL DEFAULT now(),
-  -- Deleting a configuration removes its mappings.
+CREATE TABLE IF NOT EXISTS mappings (
+  id             TEXT PRIMARY KEY,
+  store_id       TEXT NOT NULL,
+  config_id      TEXT NOT NULL,
+  scope          TEXT NOT NULL CHECK (scope IN ('product', 'variant', 'collection')),
+  external_id    TEXT NOT NULL CHECK (length(external_id) BETWEEN 1 AND 200),
+  label          TEXT CHECK (label IS NULL OR length(label) <= 200),
+  created_at_ms  INTEGER NOT NULL,
+  updated_at_ms  INTEGER NOT NULL,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT mappings_config_fk FOREIGN KEY (config_id, store_id)
-    REFERENCES personalization.configs (id, store_id) ON DELETE CASCADE,
+    REFERENCES configs (id, store_id) ON DELETE CASCADE,
   CONSTRAINT mappings_target_uq UNIQUE (store_id, scope, external_id)
 );
 
 CREATE INDEX IF NOT EXISTS mappings_store_config_idx
-  ON personalization.mappings (store_id, config_id);
+  ON mappings (store_id, config_id);
 CREATE INDEX IF NOT EXISTS mappings_store_created_idx
-  ON personalization.mappings (store_id, created_at_ms DESC, id DESC);
+  ON mappings (store_id, created_at_ms DESC, id DESC);
 
-CREATE TABLE IF NOT EXISTS personalization.markups (
-  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id       text NOT NULL,
-  name           text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 120),
-  kind           text NOT NULL CHECK (kind IN ('area', 'artwork')),
-  -- Validated by the API: a JSON object of at most ~256 KB.
-  payload        jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-  created_at_ms  bigint NOT NULL,
-  updated_at_ms  bigint NOT NULL,
-  created_at     timestamptz NOT NULL DEFAULT now(),
-  updated_at     timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS markups (
+  id             TEXT PRIMARY KEY,
+  store_id       TEXT NOT NULL,
+  name           TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+  kind           TEXT NOT NULL CHECK (kind IN ('area', 'artwork')),
+  payload        TEXT NOT NULL CHECK (json_valid(payload) AND json_type(payload) = 'object'),
+  created_at_ms  INTEGER NOT NULL,
+  updated_at_ms  INTEGER NOT NULL,
+  created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
--- Names are unique per store and kind, ignoring case.
 CREATE UNIQUE INDEX IF NOT EXISTS markups_store_kind_name_uq
-  ON personalization.markups (store_id, kind, lower(name));
+  ON markups (store_id, kind, lower(name));
 CREATE INDEX IF NOT EXISTS markups_store_kind_idx
-  ON personalization.markups (store_id, kind);
+  ON markups (store_id, kind);
 CREATE INDEX IF NOT EXISTS markups_store_created_idx
-  ON personalization.markups (store_id, created_at_ms DESC, id DESC);
+  ON markups (store_id, created_at_ms DESC, id DESC);
 
 -- ---- customizations, order links and cleanup bookkeeping -----------------------------------------
 
--- Lifecycle of a customization:   saved --(order.confirmed event)--> ordered
---                                 saved --(inactivity expiry, cleanup job)--> expired --> purged
--- `ordered` rows are never touched by cleanup; their retention is a separate business policy.
-CREATE TABLE IF NOT EXISTS personalization.customizations (
-  id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id             text NOT NULL,
-  config_id            uuid NOT NULL,
-  -- The published version the customer designed against (immutable snapshot in config_versions).
-  config_version       integer NOT NULL,
-  -- The ZenBasket product page the customization was made on, as resolved by the mapping at save time.
-  product_external_id  text NOT NULL CHECK (char_length(product_external_id) BETWEEN 1 AND 200),
-  variant_external_id  text CHECK (variant_external_id IS NULL OR char_length(variant_external_id) BETWEEN 1 AND 200),
-  mapping_scope        text NOT NULL CHECK (mapping_scope IN ('product', 'variant', 'collection')),
-  mapping_external_id  text NOT NULL CHECK (char_length(mapping_external_id) BETWEEN 1 AND 200),
-  status               text NOT NULL DEFAULT 'saved' CHECK (status IN ('saved', 'ordered', 'expired')),
-  -- The customer's input (text, positions, asset references). Cleared when a customization expires.
-  data                 jsonb NOT NULL CHECK (jsonb_typeof(data) = 'object'),
-  last_activity_at     timestamptz NOT NULL DEFAULT now(),
-  expires_at           timestamptz,
-  ordered_at           timestamptz,
-  expired_at           timestamptz,
-  created_at_ms        bigint NOT NULL,
-  updated_at_ms        bigint NOT NULL,
-  created_at           timestamptz NOT NULL DEFAULT now(),
-  updated_at           timestamptz NOT NULL DEFAULT now(),
-  -- A customization can never be deleted out from under a config delete: deleting a configuration
-  -- that customers have designed against (or ordered) is refused.
+CREATE TABLE IF NOT EXISTS customizations (
+  id                   TEXT PRIMARY KEY,
+  store_id             TEXT NOT NULL,
+  config_id            TEXT NOT NULL,
+  config_version       INTEGER NOT NULL,
+  product_external_id  TEXT NOT NULL CHECK (length(product_external_id) BETWEEN 1 AND 200),
+  variant_external_id  TEXT CHECK (variant_external_id IS NULL OR length(variant_external_id) BETWEEN 1 AND 200),
+  mapping_scope        TEXT NOT NULL CHECK (mapping_scope IN ('product', 'variant', 'collection')),
+  mapping_external_id  TEXT NOT NULL CHECK (length(mapping_external_id) BETWEEN 1 AND 200),
+  status               TEXT NOT NULL DEFAULT 'saved' CHECK (status IN ('saved', 'ordered', 'expired')),
+  data                 TEXT NOT NULL CHECK (json_valid(data) AND json_type(data) = 'object'),
+  -- Not business state: how many of the assets requested in the IN-FLIGHT attach call are still
+  -- unclaimed. Set fresh by every save()/update() attach attempt before it claims anything; see the
+  -- trigger pair at the bottom of this file. Never read by the application.
+  pending_attach_count INTEGER NOT NULL DEFAULT 0,
+  last_activity_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  expires_at           TEXT,
+  ordered_at           TEXT,
+  expired_at           TEXT,
+  created_at_ms        INTEGER NOT NULL,
+  updated_at_ms        INTEGER NOT NULL,
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT customizations_version_fk FOREIGN KEY (config_id, store_id, config_version)
-    REFERENCES personalization.config_versions (config_id, store_id, version) ON DELETE RESTRICT,
+    REFERENCES config_versions (config_id, store_id, version) ON DELETE RESTRICT,
   CONSTRAINT customizations_id_store_uq UNIQUE (id, store_id),
-  -- Status and its timestamps must agree (an `ordered` row has no expiry; only `saved` rows expire).
   CONSTRAINT customizations_state_chk CHECK (
        (status = 'saved'   AND expires_at IS NOT NULL AND ordered_at IS NULL AND expired_at IS NULL)
     OR (status = 'ordered' AND ordered_at IS NOT NULL AND expires_at IS NULL AND expired_at IS NULL)
@@ -265,53 +225,41 @@ CREATE TABLE IF NOT EXISTS personalization.customizations (
 );
 
 CREATE INDEX IF NOT EXISTS customizations_store_created_idx
-  ON personalization.customizations (store_id, created_at_ms DESC, id DESC);
+  ON customizations (store_id, created_at_ms DESC, id DESC);
 CREATE INDEX IF NOT EXISTS customizations_store_status_idx
-  ON personalization.customizations (store_id, status, created_at_ms DESC, id DESC);
+  ON customizations (store_id, status, created_at_ms DESC, id DESC);
 CREATE INDEX IF NOT EXISTS customizations_expiry_idx
-  ON personalization.customizations (expires_at) WHERE status = 'saved';
+  ON customizations (expires_at) WHERE status = 'saved';
 CREATE INDEX IF NOT EXISTS customizations_purge_idx
-  ON personalization.customizations (expired_at) WHERE status = 'expired';
+  ON customizations (expired_at) WHERE status = 'expired';
 CREATE INDEX IF NOT EXISTS customizations_config_idx
-  ON personalization.customizations (config_id, store_id, config_version);
+  ON customizations (config_id, store_id, config_version);
 CREATE INDEX IF NOT EXISTS customizations_product_idx
-  ON personalization.customizations (store_id, product_external_id);
+  ON customizations (store_id, product_external_id);
 
--- Customer-supplied binaries. The bytes live in PRIVATE object storage under
--- `stores/<store>/product-personalization/customizations/`, a prefix the public asset route never
--- serves. Kept apart from `assets` so merchant-asset cleanup and public delivery can never touch
--- customer files.
---   kind     upload   : the shopper's own photo
---            preview  : a rendered composite
---            artwork  : the per-printable-area, print-ready file the design is exported to
---   status   uploaded : stored but not yet attached to a customization (abandoned after a TTL)
---            attached : belongs to a saved / ordered customization
---            released : no longer needed; the object is deleted after `delete_after` (grace period)
---            deleting : claimed by a cleanup run
---            deleted  : the object is gone (row kept until its customization is purged)
-CREATE TABLE IF NOT EXISTS personalization.customization_assets (
-  id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id           text NOT NULL,
-  customization_id   uuid,
-  kind               text NOT NULL CHECK (kind IN ('upload', 'preview', 'artwork')),
-  object_key         text NOT NULL UNIQUE,
-  original_filename  text,
-  content_type       text NOT NULL,
-  size_bytes         bigint NOT NULL,
-  width              integer,
-  height             integer,
-  checksum_sha256    text,
-  status             text NOT NULL DEFAULT 'uploaded'
+CREATE TABLE IF NOT EXISTS customization_assets (
+  id                 TEXT PRIMARY KEY,
+  store_id           TEXT NOT NULL,
+  customization_id   TEXT,
+  kind               TEXT NOT NULL CHECK (kind IN ('upload', 'preview', 'artwork')),
+  object_key         TEXT NOT NULL UNIQUE,
+  original_filename  TEXT,
+  content_type       TEXT NOT NULL,
+  size_bytes         INTEGER NOT NULL,
+  width              INTEGER,
+  height             INTEGER,
+  checksum_sha256    TEXT,
+  status             TEXT NOT NULL DEFAULT 'uploaded'
                        CHECK (status IN ('uploaded', 'attached', 'released', 'deleting', 'deleted')),
-  delete_after       timestamptz,
-  delete_attempts    integer NOT NULL DEFAULT 0,
-  last_error         text,
-  created_at         timestamptz NOT NULL DEFAULT now(),
-  attached_at        timestamptz,
-  deleted_at         timestamptz,
-  updated_at         timestamptz NOT NULL DEFAULT now(),
+  delete_after       TEXT,
+  delete_attempts    INTEGER NOT NULL DEFAULT 0,
+  last_error         TEXT,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  attached_at        TEXT,
+  deleted_at         TEXT,
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT customization_assets_owner_fk FOREIGN KEY (customization_id, store_id)
-    REFERENCES personalization.customizations (id, store_id) ON DELETE CASCADE,
+    REFERENCES customizations (id, store_id) ON DELETE CASCADE,
   CONSTRAINT customization_assets_owner_chk CHECK (
        (status = 'uploaded' AND customization_id IS NULL)
     OR (status = 'attached' AND customization_id IS NOT NULL)
@@ -320,70 +268,98 @@ CREATE TABLE IF NOT EXISTS personalization.customization_assets (
 );
 
 CREATE INDEX IF NOT EXISTS customization_assets_owner_idx
-  ON personalization.customization_assets (customization_id);
+  ON customization_assets (customization_id);
 CREATE INDEX IF NOT EXISTS customization_assets_release_idx
-  ON personalization.customization_assets (delete_after) WHERE status = 'released';
+  ON customization_assets (delete_after) WHERE status = 'released';
 CREATE INDEX IF NOT EXISTS customization_assets_unattached_idx
-  ON personalization.customization_assets (created_at) WHERE status = 'uploaded';
+  ON customization_assets (created_at) WHERE status = 'uploaded';
 CREATE INDEX IF NOT EXISTS customization_assets_deleting_idx
-  ON personalization.customization_assets (updated_at) WHERE status = 'deleting';
+  ON customization_assets (updated_at) WHERE status = 'deleting';
 
--- The ZenBasket order line a customization was bought on.
---   UNIQUE (customization_id)                         one customization is ordered at most once
---   UNIQUE (store_id, external_order_id, external_line_id)   one order line carries one customization
-CREATE TABLE IF NOT EXISTS personalization.order_links (
-  id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  store_id             text NOT NULL,
-  customization_id     uuid NOT NULL,
-  external_order_id    text NOT NULL CHECK (char_length(external_order_id) BETWEEN 1 AND 200),
-  external_line_id     text NOT NULL CHECK (char_length(external_line_id) BETWEEN 1 AND 200),
-  product_external_id  text NOT NULL,
-  event_id             text NOT NULL,
-  occurred_at          timestamptz NOT NULL,
-  created_at           timestamptz NOT NULL DEFAULT now(),
+CREATE TABLE IF NOT EXISTS order_links (
+  id                   TEXT PRIMARY KEY,
+  store_id             TEXT NOT NULL,
+  customization_id     TEXT NOT NULL,
+  external_order_id    TEXT NOT NULL CHECK (length(external_order_id) BETWEEN 1 AND 200),
+  external_line_id     TEXT NOT NULL CHECK (length(external_line_id) BETWEEN 1 AND 200),
+  product_external_id  TEXT NOT NULL,
+  event_id             TEXT NOT NULL,
+  occurred_at          TEXT NOT NULL,
+  created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT order_links_customization_fk FOREIGN KEY (customization_id, store_id)
-    REFERENCES personalization.customizations (id, store_id) ON DELETE RESTRICT,
+    REFERENCES customizations (id, store_id) ON DELETE RESTRICT,
   CONSTRAINT order_links_customization_uq UNIQUE (customization_id),
   CONSTRAINT order_links_line_uq UNIQUE (store_id, external_order_id, external_line_id)
 );
 
 CREATE INDEX IF NOT EXISTS order_links_order_idx
-  ON personalization.order_links (store_id, external_order_id);
+  ON order_links (store_id, external_order_id);
 
--- Durable event-id deduplication for order events. One row per processed event (it may carry several
--- order lines), written in the same transaction as its links, so a failed event leaves nothing behind
--- and can be retried with the same eventId. `results` holds the per-line outcome, so a replay answers
--- identically; `payload_sha256` detects an eventId reused with a different payload. Kept indefinitely
--- (tiny rows): dedup must outlive any retry horizon.
-CREATE TABLE IF NOT EXISTS personalization.integration_events (
-  store_id           text NOT NULL,
-  event_id           text NOT NULL CHECK (char_length(event_id) BETWEEN 1 AND 128),
-  event_type         text NOT NULL,
-  payload_sha256     text NOT NULL,
-  external_order_id  text,
-  line_count         integer,
-  results            jsonb,
-  credential_id      uuid,
-  occurred_at        timestamptz NOT NULL,
-  received_at        timestamptz NOT NULL DEFAULT now(),
-  request_id         text,
+-- `status` lets a crashed or concurrently-retried event be safely re-run: 'processing' means "don't
+-- trust `results` yet, re-apply every line" (each line's own write is already conditional, so
+-- re-applying an already-applied line is a safe no-op); 'completed' means `results` is final truth for
+-- replay. See order-callback-service.ts.
+CREATE TABLE IF NOT EXISTS integration_events (
+  store_id           TEXT NOT NULL,
+  event_id           TEXT NOT NULL CHECK (length(event_id) BETWEEN 1 AND 128),
+  event_type         TEXT NOT NULL,
+  payload_sha256     TEXT NOT NULL,
+  external_order_id  TEXT,
+  line_count         INTEGER,
+  status             TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed')),
+  results            TEXT CHECK (results IS NULL OR json_valid(results)),
+  credential_id      TEXT,
+  occurred_at        TEXT NOT NULL,
+  received_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  request_id         TEXT,
   PRIMARY KEY (store_id, event_id)
 );
 
--- One row per scheduled cleanup run: what it did and whether it finished.
-CREATE TABLE IF NOT EXISTS personalization.cleanup_runs (
-  id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  trigger                  text NOT NULL,
-  status                   text NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed')),
-  started_at               timestamptz NOT NULL DEFAULT now(),
-  finished_at              timestamptz,
-  customizations_expired   integer NOT NULL DEFAULT 0,
-  uploads_released         integer NOT NULL DEFAULT 0,
-  assets_deleted           integer NOT NULL DEFAULT 0,
-  assets_failed            integer NOT NULL DEFAULT 0,
-  tombstones_purged        integer NOT NULL DEFAULT 0,
-  error                    text
+CREATE TABLE IF NOT EXISTS cleanup_runs (
+  id                       TEXT PRIMARY KEY,
+  trigger                  TEXT NOT NULL,
+  status                   TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'succeeded', 'failed')),
+  started_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  finished_at              TEXT,
+  customizations_expired   INTEGER NOT NULL DEFAULT 0,
+  uploads_released         INTEGER NOT NULL DEFAULT 0,
+  assets_deleted           INTEGER NOT NULL DEFAULT 0,
+  assets_failed            INTEGER NOT NULL DEFAULT 0,
+  tombstones_purged        INTEGER NOT NULL DEFAULT 0,
+  error                    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS cleanup_runs_started_idx
-  ON personalization.cleanup_runs (started_at DESC);
+  ON cleanup_runs (started_at DESC);
+
+-- ---- attach-count guard ----------------------------------------------------------------------------
+--
+-- Replaces the Postgres "insert a customization, conditionally claim N uploads, roll back both if the
+-- claim came up short" transaction. D1's batch() is one atomic unit with no mid-batch branching, so the
+-- all-or-nothing rule is enforced in SQL instead of app code:
+--
+--   1. The caller sets customizations.pending_attach_count to the number of uploads it is about to
+--      attempt to claim (on INSERT for save(), or an explicit UPDATE for update()) as the first
+--      statement(s) of the batch.
+--   2. The claim UPDATE on customization_assets (status: 'uploaded' -> 'attached') runs next. Every row
+--      it actually claims fires the trigger below, decrementing the counter by exactly the number of
+--      rows claimed — if 2 of 3 requested uploads were claimable, the counter lands on 1, not 0.
+--   3. The batch's last statement is a no-op touch (`UPDATE customizations SET updated_at = updated_at
+--      WHERE id = ?`) that exists purely to fire the second trigger, which aborts the WHOLE batch — the
+--      claim and the customization write together — if the counter isn't exactly 0.
+--
+-- No compensating delete/release is ever issued: on a shortfall nothing commits at all.
+CREATE TRIGGER IF NOT EXISTS customization_assets_attach_decrement
+AFTER UPDATE OF status ON customization_assets
+WHEN NEW.status = 'attached' AND OLD.status = 'uploaded' AND NEW.customization_id IS NOT NULL
+BEGIN
+  UPDATE customizations SET pending_attach_count = pending_attach_count - 1
+   WHERE id = NEW.customization_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS customizations_attach_guard
+AFTER UPDATE OF updated_at ON customizations
+WHEN NEW.pending_attach_count <> 0
+BEGIN
+  SELECT RAISE(ABORT, 'attach_count_mismatch: one or more requested uploads could not be claimed');
+END;

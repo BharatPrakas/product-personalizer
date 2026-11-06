@@ -139,7 +139,7 @@ describe('S3ObjectStorage', () => {
 
 function envWith(overrides: Partial<Env>): Env {
   return {
-    HYPERDRIVE: {} as Hyperdrive,
+    DB: {} as D1Database,
     ...overrides,
   } as Env;
 }

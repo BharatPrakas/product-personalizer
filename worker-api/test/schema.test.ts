@@ -6,20 +6,13 @@ beforeAll(async () => {
 });
 
 describe('database schema', () => {
-  it('lives in the personalization schema alone', async () => {
-    // A leftover `platform` schema means this database predates the baseline migration: drop its
-    // schemas (or recreate it) and run the migrations again.
-    const schemas = await queryDb<{ nspname: string }>(
-      "SELECT nspname FROM pg_namespace WHERE nspname IN ('platform', 'personalization')",
+  it('defines every expected table and nothing else', async () => {
+    const tables = await queryDb<{ name: string }>(
+      `SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'
+        ORDER BY name`,
     );
-    expect(schemas.map((s) => s.nspname)).toEqual(['personalization']);
-
-    const tables = await queryDb<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables
-        WHERE table_schema = 'personalization' AND table_name <> 'schema_migrations'
-        ORDER BY table_name`,
-    );
-    expect(tables.map((t) => t.table_name)).toEqual([
+    expect(tables.map((t) => t.name)).toEqual([
       'assets',
       'audit_logs',
       'cleanup_runs',
@@ -37,23 +30,22 @@ describe('database schema', () => {
   });
 
   it('has no plugin dimension on any table', async () => {
-    expect(await queryDb("SELECT table_name FROM information_schema.columns WHERE column_name = 'plugin_id'")).toEqual([]);
+    const [hit] = await queryDb<{ sql: string }>(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND sql LIKE '%plugin_id%'`,
+    );
+    expect(hit).toBeUndefined();
   });
 
   it('accepts print-ready artwork as a customer file kind', async () => {
-    const [constraint] = await queryDb<{ def: string }>(
-      "SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'customization_assets_kind_check'",
+    const [table] = await queryDb<{ sql: string }>(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'customization_assets'`,
     );
-    expect(constraint.def).toContain("'artwork'");
+    expect(table.sql).toContain("'artwork'");
   });
 
   it('keeps one row per order event, with its per-line results', async () => {
-    const columns = await queryDb<{ column_name: string }>(
-      `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'personalization' AND table_name = 'integration_events'
-        ORDER BY column_name`,
-    );
-    expect(columns.map((c) => c.column_name)).toEqual([
+    const columns = await queryDb<{ name: string }>(`PRAGMA table_info(integration_events)`);
+    expect(columns.map((c) => c.name).sort()).toEqual([
       'credential_id',
       'event_id',
       'event_type',
@@ -64,6 +56,7 @@ describe('database schema', () => {
       'received_at',
       'request_id',
       'results',
+      'status',
       'store_id',
     ]);
   });
