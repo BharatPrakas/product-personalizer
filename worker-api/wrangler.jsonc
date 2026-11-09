@@ -11,7 +11,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
-    "head_sampling_rate": 1
+    "head_sampling_rate": 1,
   },
 
   // --- Non-secret vars. Secrets (JWT signing key, integration encryption key) are NEVER placed here;
@@ -32,7 +32,7 @@
     // Local / dev object storage is AWS S3. Replace the placeholders once the bucket and region exist.
     "STORAGE_DRIVER": "s3",
     "S3_BUCKET": "zb-plugins",
-    "S3_REGION": "us-west-2"
+    "S3_REGION": "us-west-2",
   },
 
   // --- D1: this Worker's dedicated SQLite database, one per environment (never shared).
@@ -52,11 +52,34 @@
     {
       "binding": "DB",
       "database_name": "zb-product-personalizer-db",
-      "database_id": "00000000-0000-0000-0000-000000000000"
-    }
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
   ],
 
   "env": {
+    "dev": {
+      "triggers": { "crons": ["17 * * * *"] },
+      "vars": {
+        "ENVIRONMENT": "development",
+        "API_VERSION": "v1",
+        "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300",
+        "ASSET_PUBLIC_BASE_URL": "",
+        "MAX_UPLOAD_BYTES": "15728640",
+        "LOG_LEVEL": "info",
+        "STORAGE_DRIVER": "s3",
+        "DEV_AUTH_BYPASS": "true",
+        "DEV_STORE_ID": "dev_store",
+        "S3_BUCKET": "zb-plugins",
+        "S3_REGION": "us-west-2",
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zb-product-personalizer-db-dev",
+          "database_id": "d05823df-1c3a-448f-bc93-2599fc7a42ec",
+        },
+      ]
+    },
     "staging": {
       "triggers": { "crons": ["17 * * * *"] },
       "vars": {
@@ -68,15 +91,15 @@
         "LOG_LEVEL": "info",
         "STORAGE_DRIVER": "s3",
         "S3_BUCKET": "zb-plugins",
-        "S3_REGION": "us-west-2"
+        "S3_REGION": "us-west-2",
       },
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "zb-product-personalizer-db-staging",
-          "database_id": "91437292-f0ff-4450-a17e-f63c469518da"
-        }
-      ]
+          "database_id": "91437292-f0ff-4450-a17e-f63c469518da",
+        },
+      ],
     },
     "production": {
       "triggers": { "crons": ["17 * * * *"] },
@@ -87,21 +110,21 @@
         "ASSET_PUBLIC_BASE_URL": "",
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "warn",
-        "STORAGE_DRIVER": "r2"
+        "STORAGE_DRIVER": "r2",
       },
       "d1_databases": [
         {
           "binding": "DB",
           "database_name": "zb-product-personalizer-db-production",
-          "database_id": "00000000-0000-0000-0000-000000000000"
-        }
+          "database_id": "00000000-0000-0000-0000-000000000000",
+        },
       ],
       "r2_buckets": [
         {
           "binding": "PERSONALIZATION_ASSETS",
-          "bucket_name": "zb-personalization-assets-production"
-        }
-      ]
-    }
-  }
+          "bucket_name": "zb-personalization-assets-production",
+        },
+      ],
+    },
+  },
 }
