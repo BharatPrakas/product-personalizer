@@ -43,21 +43,48 @@ function credentialsFor(c: Context<AppEnv>): IntegrationCredentialsService {
   return new IntegrationCredentialsService(c.get('db'), c.get('config').integrationEncryptionKey);
 }
 
+/** Object entries sorted by key, absent values dropped; `null` when nothing is left. */
+function sortedEntries(value: object | undefined): Array<[string, unknown]> | null {
+  if (!value) return null;
+  const entries = Object.entries(value)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return entries.length > 0 ? entries : null;
+}
+
 /**
  * Hash of the event's MEANING (not its bytes), so a harmless re-serialization (key order, whitespace,
  * line order) still counts as a repeat of the same event.
+ *
+ * The optional order/line details are appended ONLY when present: an event in the original id-only
+ * shape canonicalizes to exactly the string it always did, so replays of events stored before those
+ * fields existed still match their stored hash. Any difference in a detail is a different payload
+ * (`409 event_id_reused` under the same eventId).
  */
 async function canonicalHash(event: OrderEvent): Promise<string> {
   const lines = [...event.lines]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map((l) => [
-      l.id, l.productId, l.variantId ?? null, l.quantity ?? null,
-      Object.entries(l.extensions).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-    ]);
-  const canonical = JSON.stringify([
+    .map((l) => {
+      const base: unknown[] = [
+        l.id, l.productId, l.variantId ?? null, l.quantity ?? null,
+        Object.entries(l.extensions).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      ];
+      if (l.title !== undefined || l.sku !== undefined || l.unitPrice !== undefined) {
+        base.push([l.title ?? null, l.sku ?? null, l.unitPrice ?? null]);
+      }
+      return base;
+    });
+  const { id: _id, ...details } = event.order;
+  const canonical: unknown[] = [
     event.contract, event.type, event.storeId, event.order.id, event.occurredAt, lines,
-  ]);
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  ];
+  const orderDetails = [
+    details.number ?? null, details.placedAt ?? null, details.currency ?? null,
+    sortedEntries(details.totals), sortedEntries(details.customer),
+    sortedEntries(details.shippingAddress), sortedEntries(details.billingAddress),
+  ];
+  if (orderDetails.some((v) => v !== null)) canonical.push(orderDetails);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(canonical)));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 

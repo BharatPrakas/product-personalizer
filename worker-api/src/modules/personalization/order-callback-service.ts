@@ -28,9 +28,15 @@
  *
  * Which store, order line and customization are involved is decided from the authenticated credential
  * and our own rows — the payload's `storeId` is only cross-checked against the credential by the controller.
+ *
+ * Optional order details (contract v1 section 7, [proposed – optional]): the line's title / SKU / price /
+ * quantity / variant go on its `order_links` row; the order's number, date, currency, totals, customer
+ * and addresses go on one `order_details` row per order, written in the SAME batch as the link. They
+ * are customer PII: they are never logged, never put in audit metadata or in `integration_events.results`,
+ * and only leave through the authenticated merchant order API. See `ORDER_DETAILS_UPSERT` for the merge rule.
  */
 
-import type { Database } from '../../database/connection';
+import type { Database, Statement } from '../../database/connection';
 import { ApiError, ConflictError, NotFoundError } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
 import { recordAudit } from '../audit/audit';
@@ -41,7 +47,48 @@ export interface OrderEventLine {
   productId: string;
   variantId?: string;
   quantity?: number;
+  title?: string;
+  sku?: string;
+  /** Decimal string, major units of `order.currency`. */
+  unitPrice?: string;
   extensions: Record<string, string>;
+}
+
+export interface OrderTotals {
+  subtotal?: string;
+  shipping?: string;
+  tax?: string;
+  discount?: string;
+  total?: string;
+}
+
+export interface OrderCustomer {
+  id?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+}
+
+export interface OrderAddress {
+  name?: string;
+  line1?: string;
+  line2?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  country?: string;
+  phone?: string;
+}
+
+export interface OrderEventOrder {
+  id: string;
+  number?: string;
+  placedAt?: string;
+  currency?: string;
+  totals?: OrderTotals;
+  customer?: OrderCustomer;
+  shippingAddress?: OrderAddress;
+  billingAddress?: OrderAddress;
 }
 
 export interface OrderEvent {
@@ -50,7 +97,7 @@ export interface OrderEvent {
   type: string;
   occurredAt: string;
   storeId: string;
-  order: { id: string };
+  order: OrderEventOrder;
   lines: OrderEventLine[];
 }
 
@@ -72,6 +119,112 @@ export interface OrderEventResult {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Drops absent keys; an object with nothing left is absent. */
+function compact<T extends object>(value: T | undefined): T | null {
+  if (!value) return null;
+  const entries = Object.entries(value).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  return entries.length > 0 ? (Object.fromEntries(entries) as T) : null;
+}
+
+/** The `order_details` column values of an event, or null when it carries no order details at all. */
+interface OrderDetailsValues {
+  order_number: string | null;
+  placed_at: string | null;
+  currency: string | null;
+  totals: OrderTotals | null;
+  customer: OrderCustomer | null;
+  shipping_address: OrderAddress | null;
+  billing_address: OrderAddress | null;
+}
+
+function orderDetailsOf(order: OrderEventOrder): OrderDetailsValues | null {
+  const values: OrderDetailsValues = {
+    order_number: order.number ?? null,
+    // Normalised to the schema-wide UTC format so date filters compare correctly.
+    placed_at: order.placedAt ? new Date(order.placedAt).toISOString() : null,
+    currency: order.currency ?? null,
+    totals: compact(order.totals),
+    customer: compact(order.customer),
+    shipping_address: compact(order.shippingAddress),
+    billing_address: compact(order.billingAddress),
+  };
+  return Object.values(values).some((v) => v !== null) ? values : null;
+}
+
+/**
+ * Merge rule for one order's details across several events / lines — FILL-ONLY, FIRST VALUE WINS:
+ *
+ *  - a column that is NULL is filled by the incoming value;
+ *  - an absent incoming value never blanks a stored one (COALESCE keeps the stored value);
+ *  - a stored non-null value is never replaced. `totals` and `customer` merge per key (json_patch with
+ *    the STORED object as the patch, so stored keys win and only missing keys are added). An address is
+ *    one unit — filled only while NULL — so two partial addresses are never stitched into one that
+ *    nobody entered;
+ *  - a differing incoming value is dropped and reported by `detailConflicts` as a warning (field
+ *    NAMES only, never values: they are PII).
+ *
+ * Why not "last write wins": events are not ordered (section 7), so "later" is not knowable, and a
+ * replayed old event must not roll a value back. Only written when the order has at least one linked
+ * line in this store, so an event whose lines were all rejected stores no customer data.
+ */
+const ORDER_DETAILS_UPSERT = `
+  INSERT INTO order_details
+    (store_id, external_order_id, order_number, placed_at, currency, totals, customer,
+     shipping_address, billing_address, last_event_id)
+  SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+   WHERE EXISTS (SELECT 1 FROM order_links WHERE store_id = $1 AND external_order_id = $2)
+  ON CONFLICT (store_id, external_order_id) DO UPDATE SET
+    order_number     = COALESCE(order_details.order_number, excluded.order_number),
+    placed_at        = COALESCE(order_details.placed_at, excluded.placed_at),
+    currency         = COALESCE(order_details.currency, excluded.currency),
+    totals           = CASE WHEN order_details.totals IS NULL THEN excluded.totals
+                            WHEN excluded.totals IS NULL THEN order_details.totals
+                            ELSE json_patch(excluded.totals, order_details.totals) END,
+    customer         = CASE WHEN order_details.customer IS NULL THEN excluded.customer
+                            WHEN excluded.customer IS NULL THEN order_details.customer
+                            ELSE json_patch(excluded.customer, order_details.customer) END,
+    shipping_address = COALESCE(order_details.shipping_address, excluded.shipping_address),
+    billing_address  = COALESCE(order_details.billing_address, excluded.billing_address),
+    last_event_id    = excluded.last_event_id,
+    updated_at       = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+
+function orderDetailsParams(storeId: string, event: OrderEvent, values: OrderDetailsValues): unknown[] {
+  const json = (v: object | null) => (v === null ? null : JSON.stringify(v));
+  return [storeId, event.order.id, values.order_number, values.placed_at, values.currency,
+    json(values.totals), json(values.customer), json(values.shipping_address), json(values.billing_address),
+    event.eventId];
+}
+
+type StoredDetails = { [K in keyof OrderDetailsValues]: string | null };
+
+/** Names of the stored fields an incoming event disagrees with (values are never returned). */
+export function detailConflicts(stored: StoredDetails, incoming: OrderDetailsValues): string[] {
+  const conflicts: string[] = [];
+  const scalar = (key: 'order_number' | 'placed_at' | 'currency') => {
+    if (stored[key] !== null && incoming[key] !== null && stored[key] !== incoming[key]) conflicts.push(key);
+  };
+  scalar('order_number');
+  scalar('placed_at');
+  scalar('currency');
+  const parse = (v: string | null): Record<string, unknown> | null => (v === null ? null : JSON.parse(v));
+  for (const key of ['totals', 'customer'] as const) {
+    const before = parse(stored[key]);
+    const after = incoming[key] as Record<string, unknown> | null;
+    if (!before || !after) continue;
+    for (const [k, v] of Object.entries(after)) {
+      if (before[k] !== undefined && before[k] !== v) conflicts.push(`${key}.${k}`);
+    }
+  }
+  for (const key of ['shipping_address', 'billing_address'] as const) {
+    if (stored[key] === null || incoming[key] === null) continue;
+    const before = parse(stored[key])!;
+    const after = incoming[key] as Record<string, unknown>;
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    if ([...keys].some((k) => before[k] !== after[k])) conflicts.push(key);
+  }
+  return conflicts;
+}
 
 /** A line failing a business rule is `rejected` with this reason; everything else is not caught here. */
 function reasonOf(error: ApiError): string {
@@ -164,11 +317,17 @@ export class OrderCallbackService {
       // Still 'processing' after polling: treat the other attempt as stalled and reprocess ourselves.
     }
 
+    const details = orderDetailsOf(event.order);
+    if (details) await this.warnOnDetailConflicts(storeId, event, details);
+
     // 2./3. Each line commits independently; a rejected line does not affect the others.
     const results: LineResult[] = [];
     for (const line of event.lines) {
       try {
-        results.push(await this.applyLine(db, storeId, event, line));
+        const result = await this.applyLine(db, storeId, event, line, details);
+        // A line linked by an earlier event may still gain details this event adds (fill-only).
+        if (result.status === 'duplicate') await this.fillDetails(db, storeId, event, line, details);
+        results.push(result);
       } catch (error) {
         if (!(error instanceof ApiError) || error.status >= 500) throw error;
         results.push({ lineId: line.id, status: 'rejected', reason: reasonOf(error) });
@@ -184,11 +343,58 @@ export class OrderCallbackService {
     return { eventId: event.eventId, duplicate: false, results };
   }
 
+  /** Logs which stored order fields this event disagrees with — field names only, never values. */
+  private async warnOnDetailConflicts(storeId: string, event: OrderEvent, details: OrderDetailsValues): Promise<void> {
+    const { rows } = await this.ctx.db.query<StoredDetails>(
+      `SELECT order_number, placed_at, currency, totals, customer, shipping_address, billing_address
+         FROM order_details WHERE store_id = $1 AND external_order_id = $2`,
+      [storeId, event.order.id],
+    );
+    if (!rows[0]) return;
+    const fields = detailConflicts(rows[0], details);
+    if (fields.length > 0) {
+      this.ctx.logger.warn('order details conflict: stored values kept', {
+        eventId: event.eventId,
+        orderId: event.order.id,
+        fields,
+      });
+    }
+  }
+
+  /**
+   * For a line that was already linked: fill its still-NULL line columns and the order's details. Same
+   * fill-only rule as `ORDER_DETAILS_UPSERT`; one batch, so both or neither.
+   */
+  private async fillDetails(
+    db: Database,
+    storeId: string,
+    event: OrderEvent,
+    line: OrderEventLine,
+    details: OrderDetailsValues | null,
+  ): Promise<void> {
+    const statements: Statement[] = [
+      {
+        text: `UPDATE order_links
+                  SET variant_external_id = COALESCE(variant_external_id, $4),
+                      quantity = COALESCE(quantity, $5),
+                      line_title = COALESCE(line_title, $6),
+                      line_sku = COALESCE(line_sku, $7),
+                      unit_price = COALESCE(unit_price, $8)
+                WHERE store_id = $1 AND external_order_id = $2 AND external_line_id = $3`,
+        params: [storeId, event.order.id, line.id, line.variantId ?? null, line.quantity ?? null,
+          line.title ?? null, line.sku ?? null, line.unitPrice ?? null],
+      },
+    ];
+    if (details) statements.push({ text: ORDER_DETAILS_UPSERT, params: orderDetailsParams(storeId, event, details) });
+    await db.batch(statements);
+  }
+
   private async applyLine(
     db: Database,
     storeId: string,
     event: OrderEvent,
     line: OrderEventLine,
+    details: OrderDetailsValues | null,
   ): Promise<LineResult> {
     const now = (this.ctx.now ?? (() => new Date()))();
     const repo = new CustomizationRepository(db);
@@ -243,15 +449,19 @@ export class OrderCallbackService {
     // "this customization already has a link" or "this order line already has a different
     // customization"), that EXISTS check fails too, so the status never flips — batch() cannot branch
     // between statements, so the precondition has to be re-expressed in the second statement's WHERE.
+    //
+    // The order's details (when the event carries any) ride in the same batch, after the link insert:
+    // the upsert only fires once the order has a link in this store, see ORDER_DETAILS_UPSERT.
     const linkId = crypto.randomUUID();
     const [linkResult, updateResult] = await db.batch([
       {
         text: `INSERT INTO order_links
                  (id, store_id, customization_id, external_order_id, external_line_id, product_external_id,
-                  event_id, occurred_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                  event_id, occurred_at, variant_external_id, quantity, line_title, line_sku, unit_price)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                ON CONFLICT DO NOTHING`,
-        params: [linkId, storeId, row.id, orderId, line.id, row.product_external_id, event.eventId, event.occurredAt],
+        params: [linkId, storeId, row.id, orderId, line.id, row.product_external_id, event.eventId, event.occurredAt,
+          line.variantId ?? null, line.quantity ?? null, line.title ?? null, line.sku ?? null, line.unitPrice ?? null],
       },
       {
         text: `UPDATE customizations
@@ -262,6 +472,7 @@ export class OrderCallbackService {
                                WHERE customization_id = $2 AND external_order_id = $5 AND external_line_id = $6)`,
         params: [storeId, row.id, now, now.getTime(), orderId, line.id],
       },
+      ...(details ? [{ text: ORDER_DETAILS_UPSERT, params: orderDetailsParams(storeId, event, details) }] : []),
     ]);
 
     if (linkResult.rowCount === 0) {

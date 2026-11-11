@@ -42,5 +42,15 @@ export const adminRoutes: Routes = [
     loadComponent: () =>
       import('../mapping/mapping-page.component').then((m) => m.MappingPageComponent),
   },
+  {
+    path: 'orders',
+    loadComponent: () =>
+      import('../orders/orders-page.component').then((m) => m.OrdersPageComponent),
+  },
+  {
+    path: 'orders/:orderId',
+    loadComponent: () =>
+      import('../orders/order-detail.component').then((m) => m.OrderDetailComponent),
+  },
   { path: '**', redirectTo: 'configurations' },
 ];

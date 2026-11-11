@@ -260,8 +260,12 @@ export const storefrontConfigQuerySchema = z.object({
 
 export const MAX_CUSTOMIZATION_DATA_BYTES = 256 * 1024;
 export const MAX_CUSTOMIZATION_ASSETS = 20;
-/** The callback body is a handful of short strings; anything larger is refused before parsing. */
-export const MAX_CALLBACK_BODY_BYTES = 16 * 1024;
+/**
+ * The callback body is short strings only; anything larger is refused before parsing. Sized for the
+ * worst case the schema below allows to be realistic: 100 lines with a title, SKU and price each, plus
+ * the optional order/customer/address block (every string in it is capped individually).
+ */
+export const MAX_CALLBACK_BODY_BYTES = 64 * 1024;
 export const ORDER_EVENT_TYPE_CONFIRMED = 'order.confirmed';
 
 const uuidSchema = z.string().trim().pipe(z.uuid());
@@ -317,6 +321,111 @@ export function validateCustomizationData(raw: unknown): ConfigValidation {
   return { ok: issues.length === 0, issues };
 }
 
+// ---- optional order / customer details (contract v1 section 7, [proposed – optional]) ----------
+//
+// Every field is optional so events in the original id-only shape keep working. Strings are trimmed and
+// an empty string counts as absent. Objects are `.strict()` like the rest of the envelope: an unknown
+// key is a 422, never silently widened. These values are customer PII — never log them (see
+// order-callback-service.ts).
+
+/** Trimmed, length-capped, '' -> absent. */
+const optText = (max: number) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' ? v.trim() || undefined : v),
+    z.string().max(max).optional(),
+  );
+
+/**
+ * Money is a DECIMAL STRING in the currency's major unit ("12.50", "1000", "0.125"): non-negative, at
+ * most 12 integer and 4 fraction digits. A string, not a JSON number, so no amount is ever a float;
+ * major units, not minor, so the receiver needs no per-currency exponent table (JPY 0, KWD 3).
+ * `discount` is the positive amount taken off.
+ */
+export const AMOUNT_PATTERN = /^\d{1,12}(\.\d{1,4})?$/;
+const amountSchema = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim() || undefined : v),
+  z.string().regex(AMOUNT_PATTERN, 'Amounts are non-negative decimal strings, e.g. "12.50".').optional(),
+);
+
+/** Deliberately loose: one "@", something on each side, no whitespace. Unusual valid addresses pass. */
+const emailSchema = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim() || undefined : v),
+  z.string().max(254).regex(/^[^\s@]+@[^\s@]+$/, 'Not a valid email address.').optional(),
+);
+
+const phoneSchema = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim() || undefined : v),
+  z.string().max(40).regex(/^[0-9+()./\s#*xX-]*[0-9][0-9+()./\s#*xX-]*$/, 'Not a valid phone number.').optional(),
+);
+
+/** ISO 3166-1 alpha-2, officially assigned codes. */
+const ISO_COUNTRIES = new Set(
+  ('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV ' +
+    'BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ' +
+    'ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE ' +
+    'IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY ' +
+    'MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU ' +
+    'NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM ' +
+    'SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE ' +
+    'VG VI VN VU WF WS YE YT ZA ZM ZW').split(' '),
+);
+const countrySchema = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim().toUpperCase() || undefined : v),
+  z.string().refine((c) => ISO_COUNTRIES.has(c), 'Not an ISO 3166-1 alpha-2 country code.').optional(),
+);
+
+const currencySchema = z.preprocess(
+  (v) => (typeof v === 'string' ? v.trim().toUpperCase() || undefined : v),
+  z.string().regex(/^[A-Z]{3}$/, 'Not an ISO 4217 currency code.').optional(),
+);
+
+const addressSchema = z
+  .object({
+    name: optText(200),
+    line1: optText(200),
+    line2: optText(200),
+    city: optText(100),
+    region: optText(100),
+    postalCode: optText(20),
+    country: countrySchema,
+    phone: phoneSchema,
+  })
+  .strict()
+  .optional();
+
+const orderSchema = z
+  .object({
+    id: externalIdSchema,
+    number: optText(100),
+    placedAt: z.preprocess(
+      (v) => (typeof v === 'string' ? v.trim() || undefined : v),
+      z.iso.datetime({ offset: true }).optional(),
+    ),
+    currency: currencySchema,
+    totals: z
+      .object({
+        subtotal: amountSchema,
+        shipping: amountSchema,
+        tax: amountSchema,
+        discount: amountSchema,
+        total: amountSchema,
+      })
+      .strict()
+      .optional(),
+    customer: z
+      .object({
+        id: optText(200),
+        name: optText(200),
+        email: emailSchema,
+        phone: phoneSchema,
+      })
+      .strict()
+      .optional(),
+    shippingAddress: addressSchema,
+    billingAddress: addressSchema,
+  })
+  .strict();
+
 /**
  * The signed order-event envelope (Extension Platform Contract v1, section 7). Strict: unknown keys are
  * rejected so a typo in the integration (e.g. `order_id`) fails loudly instead of being silently ignored.
@@ -329,6 +438,10 @@ const orderLineSchema = z
     /** Optional: the purchased variant. When present and the customization recorded one, they must match. */
     variantId: externalIdSchema.optional(),
     quantity: z.number().int().min(1).max(1_000_000).optional(),
+    /** Optional display details of the line, for the merchant's Orders page. */
+    title: optText(200),
+    sku: optText(100),
+    unitPrice: amountSchema,
     /** The extension's own namespace, keys without the prefix, e.g. `{ customizationId }`. */
     extensions: z.record(z.string().min(1).max(40), z.string().max(512)).default({}),
   })
@@ -343,7 +456,7 @@ export const orderEventSchema = z
     type: z.string().trim().min(1).max(64),
     occurredAt: z.iso.datetime({ offset: true }),
     storeId: z.string().trim().min(1).max(256),
-    order: z.object({ id: externalIdSchema }).strict(),
+    order: orderSchema,
     lines: z.array(orderLineSchema).min(1).max(MAX_ORDER_EVENT_LINES),
   })
   .strict()
@@ -351,6 +464,8 @@ export const orderEventSchema = z
     message: 'Line ids must be unique within an event.',
     path: ['lines'],
   });
+
+export type ParsedOrderEvent = z.infer<typeof orderEventSchema>;
 
 export const credentialCreateSchema = z.object({
   label: z.string().trim().max(120).default(''),
@@ -367,3 +482,17 @@ export const customizationListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   cursor: z.string().trim().min(1).max(256).optional(),
 });
+
+/** `GET /orders`. Dates are ISO dates (whole UTC days, `to` inclusive) or ISO date-times (exact). */
+const dateBoundSchema = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
+
+export const orderListQuerySchema = z.object({
+  q: z.string().trim().min(1).max(200).optional(),
+  productId: externalIdSchema.optional(),
+  from: dateBoundSchema.optional(),
+  to: dateBoundSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(50).default(25),
+  cursor: z.string().trim().min(1).max(512).optional(),
+});
+
+export const orderIdParamSchema = externalIdSchema;

@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ADMIN,
   DEV_TOKEN,
@@ -205,7 +205,7 @@ describe('signed order events — authentication', () => {
 
   it('rejects oversized bodies and malformed JSON (after authentication)', async () => {
     const { credential } = await setup();
-    expect((await postOrderEvent(credential, 'x'.repeat(20 * 1024))).status).toBe(413);
+    expect((await postOrderEvent(credential, 'x'.repeat(65 * 1024))).status).toBe(413);
     const res = await postOrderEvent(credential, '{not json');
     expect(res.status).toBe(400);
   });
@@ -550,5 +550,312 @@ describe('configurations with customizations', () => {
   it('can still be deleted when nobody has customized it', async () => {
     await seedPersonalizableProduct();
     expect((await call(`${ADMIN}/configs/cfg-cz1`, { method: 'DELETE' })).status).toBe(204);
+  });
+});
+
+// ---- optional order / customer details (contract v1 section 7, [proposed – optional]) ----------------
+//
+// The platform dispatcher does not send these yet: every event below is a signed fixture.
+
+const FULL_ORDER = {
+  id: 'ORD-1001',
+  number: '#1001',
+  placedAt: '2026-10-29T09:31:30+02:00',
+  currency: 'EUR',
+  totals: { subtotal: '40.00', shipping: '4.95', tax: '8.00', discount: '2.00', total: '50.95' },
+  customer: { id: 'cust-77', name: 'Zelda Quill', email: 'zelda.quill@example.test', phone: '+33 6 12 34 56 78' },
+  shippingAddress: {
+    name: 'Zelda Quill', line1: '12 Rue Imaginaire', line2: 'Apt 4', city: 'Lyon', region: 'ARA',
+    postalCode: '69001', country: 'fr', phone: '+33 6 12 34 56 78',
+  },
+  billingAddress: { name: 'Zelda Quill', line1: '1 Billing Way', city: 'Paris', postalCode: '75001', country: 'FR' },
+};
+/** Every PII value in FULL_ORDER; none of them may appear in logs, audit rows or the replay record. */
+const PII = ['Zelda Quill', 'zelda.quill@example.test', '+33 6 12 34 56 78', '12 Rue Imaginaire', '1 Billing Way', 'cust-77', '69001'];
+
+const orderOf = async (orderId = 'ORD-1001', storeId = STORE_A) =>
+  call(`${ADMIN}/orders/${encodeURIComponent(orderId)}`, { storeId });
+
+describe('signed order events — optional order details', () => {
+  it('applies a minimal legacy event exactly as before, with every detail null', async () => {
+    const { credential, customization } = await setup();
+    const res = await postOrderEvent(credential, orderEvent(customization.customizationId));
+    expect((await resultsOf(res))[0].status).toBe('applied');
+    expect(await count('order_details')).toBe(0);
+    const [link] = await queryDb<any>('SELECT variant_external_id, line_title, line_sku, unit_price, quantity FROM order_links');
+    expect(link).toEqual({ variant_external_id: null, line_title: null, line_sku: null, unit_price: null, quantity: 1 });
+
+    const order = (await json(await orderOf())).data;
+    expect(order).toMatchObject({
+      orderId: 'ORD-1001', orderNumber: null, placedAt: null, currency: null,
+      totals: { subtotal: null, shipping: null, tax: null, discount: null, total: null },
+      customer: { id: null, name: null, email: null, phone: null },
+      shippingAddress: null, billingAddress: null,
+    });
+  });
+
+  it('answers a replay of an event stored BEFORE the details existed from its stored results (hash unchanged)', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEvent(customization.customizationId);
+    // The canonical hash exactly as the original (id-only) receiver computed it.
+    const lines = event.lines.map((l) => [l.id, l.productId, l.variantId ?? null, l.quantity ?? null, Object.entries(l.extensions).sort()]);
+    const legacy = JSON.stringify([event.contract, event.type, event.storeId, event.order.id, event.occurredAt, lines]);
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update(legacy).digest('hex');
+    await queryDb(
+      `INSERT INTO integration_events (store_id, event_id, event_type, payload_sha256, occurred_at, status, results)
+       VALUES ($1, $2, $3, $4, $5, 'completed', $6)`,
+      [STORE_A, event.eventId, event.type, hash, event.occurredAt, JSON.stringify([{ lineId: 'LINE-1', status: 'applied' }])],
+    );
+    const body = await json(await postOrderEvent(credential, event));
+    expect(body.duplicate).toBe(true);
+  });
+
+  it('stores a full event and returns it from the merchant order API (normalised)', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEventWith(
+      [orderLine(customization.customizationId, { variantId: 'v-1', quantity: 2, title: '  Mug — personalised ', sku: 'MUG-01', unitPrice: '20.00' })],
+      { order: FULL_ORDER },
+    );
+    expect((await resultsOf(await postOrderEvent(credential, event)))[0].status).toBe('applied');
+
+    const [link] = await queryDb<any>('SELECT variant_external_id, quantity, line_title, line_sku, unit_price FROM order_links');
+    expect(link).toEqual({ variant_external_id: 'v-1', quantity: 2, line_title: 'Mug — personalised', line_sku: 'MUG-01', unit_price: '20.00' });
+
+    const res = await orderOf();
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    const order = (await json(res)).data;
+    expect(order).toMatchObject({
+      orderId: 'ORD-1001',
+      orderNumber: '#1001',
+      placedAt: '2026-10-29T07:31:30.000Z',
+      currency: 'EUR',
+      totals: FULL_ORDER.totals,
+      customer: FULL_ORDER.customer,
+      shippingAddress: { ...FULL_ORDER.shippingAddress, country: 'FR' },
+      billingAddress: { ...FULL_ORDER.billingAddress, line2: null, region: null, phone: null },
+    });
+    expect(order.lines[0]).toMatchObject({ lineId: 'LINE-1', variantId: 'v-1', quantity: 2, title: 'Mug — personalised', sku: 'MUG-01', unitPrice: '20.00' });
+
+    // The list carries only the number, dates and customer NAME.
+    const list = (await json(await call(`${ADMIN}/orders`))).data;
+    expect(list[0]).toMatchObject({ orderId: 'ORD-1001', orderNumber: '#1001', customerName: 'Zelda Quill' });
+    const listed = JSON.stringify(list);
+    for (const value of ['zelda.quill@example.test', '+33 6 12 34 56 78', '12 Rue Imaginaire', 'Lyon']) {
+      expect(listed).not.toContain(value);
+    }
+  });
+
+  it('stores a partial event (customer only) and leaves the rest null; empty strings count as absent', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEvent(customization.customizationId, {
+      order: { id: 'ORD-1001', number: '   ', customer: { name: 'Zelda Quill', email: '' } },
+    });
+    expect((await resultsOf(await postOrderEvent(credential, event)))[0].status).toBe('applied');
+    const [row] = await queryDb<any>('SELECT * FROM order_details');
+    expect(row).toMatchObject({ order_number: null, placed_at: null, currency: null, totals: null, shipping_address: null, billing_address: null });
+    expect(row.customer).toEqual({ name: 'Zelda Quill' });
+    const order = (await json(await orderOf())).data;
+    expect(order.customer).toEqual({ id: null, name: 'Zelda Quill', email: null, phone: null });
+    expect(order.orderNumber).toBeNull();
+  });
+
+  it('fills missing fields from a later event / line, never wipes stored ones, and keeps (and warns about) a conflicting value', async () => {
+    const { credential, customization } = await setup();
+    const second = await saveCustomization();
+    const first = orderEventWith([orderLine(customization.customizationId, { id: 'L-1' })], {
+      order: { id: 'ORD-1001', number: '#1001', customer: { name: 'Zelda Quill' }, totals: { total: '50.95' } },
+    });
+    expect((await resultsOf(await postOrderEvent(credential, first)))[0].status).toBe('applied');
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      // Second event for the same order, another line: adds email/currency/address, omits the number,
+      // and disagrees on the customer's name and the total.
+      const later = orderEventWith([orderLine(second.customizationId, { id: 'L-2', title: 'Second line' })], {
+        order: {
+          id: 'ORD-1001',
+          currency: 'EUR',
+          customer: { name: 'Someone Else', email: 'zelda.quill@example.test' },
+          totals: { total: '99.00', tax: '8.00' },
+          shippingAddress: FULL_ORDER.shippingAddress,
+        },
+      });
+      const res = await postOrderEvent(credential, later, { env: { LOG_LEVEL: 'debug' } });
+      expect((await resultsOf(res))[0].status).toBe('applied');
+
+      const order = (await json(await orderOf())).data;
+      expect(order.orderNumber).toBe('#1001'); // not wiped by an absent value
+      expect(order.currency).toBe('EUR'); // filled
+      expect(order.customer).toMatchObject({ name: 'Zelda Quill', email: 'zelda.quill@example.test' }); // kept + filled
+      expect(order.totals).toMatchObject({ total: '50.95', tax: '8.00' });
+      expect(order.shippingAddress).toMatchObject({ line1: '12 Rue Imaginaire' });
+      expect(order.lines.map((l: any) => l.lineId)).toEqual(['L-1', 'L-2']);
+
+      const warnings = warn.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('order details conflict'));
+      expect(warnings).toHaveLength(1);
+      expect(JSON.parse(warnings[0]).fields.sort()).toEqual(['customer.name', 'totals.total']);
+      const everything = [...warn.mock.calls, ...log.mock.calls].map((c) => String(c[0])).join('\n');
+      for (const value of [...PII, 'Someone Else', '99.00']) expect(everything).not.toContain(value);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+
+    // An address is one unit: a different second address never replaces or merges into the first.
+    const third = orderEventWith([orderLine(customization.customizationId, { id: 'L-1' })], {
+      order: { id: 'ORD-1001', shippingAddress: { line1: 'Elsewhere 1', city: 'Nice', country: 'FR' } },
+    });
+    expect((await resultsOf(await postOrderEvent(credential, third)))[0].status).toBe('duplicate');
+    const order = (await json(await orderOf())).data;
+    expect(order.shippingAddress).toMatchObject({ line1: '12 Rue Imaginaire', city: 'Lyon' });
+  });
+
+  it('lets a duplicate line (new eventId) fill details the first event lacked', async () => {
+    const { credential, customization } = await setup();
+    expect((await resultsOf(await postOrderEvent(credential, orderEvent(customization.customizationId))))[0].status).toBe('applied');
+    const retry = orderEventWith([orderLine(customization.customizationId, { title: 'Late title', sku: 'SKU-9' })], {
+      order: { id: 'ORD-1001', number: '#1001' },
+    });
+    expect((await resultsOf(await postOrderEvent(credential, retry)))[0].status).toBe('duplicate');
+    const order = (await json(await orderOf())).data;
+    expect(order.orderNumber).toBe('#1001');
+    expect(order.lines[0]).toMatchObject({ title: 'Late title', sku: 'SKU-9' });
+  });
+
+  it('stores no details when every line of the event is rejected', async () => {
+    const { credential } = await setup();
+    const res = await postOrderEvent(credential, orderEventWith([orderLine(crypto.randomUUID())], { order: FULL_ORDER }));
+    expect((await resultsOf(res))[0].status).toBe('rejected');
+    expect(await count('order_details')).toBe(0);
+  });
+
+  it('replays the same event as a duplicate with the same results; the same eventId with different details is a 409', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEventWith([orderLine(customization.customizationId)], { order: FULL_ORDER });
+    const first = await json(await postOrderEvent(credential, event));
+    const again = await json(await postOrderEvent(credential, event));
+    expect(again).toMatchObject({ duplicate: true, results: first.results });
+
+    for (const changed of [
+      { ...event, order: { ...FULL_ORDER, customer: { ...FULL_ORDER.customer, email: 'other@example.test' } } },
+      { ...event, order: { ...FULL_ORDER, totals: { ...FULL_ORDER.totals, total: '1.00' } } },
+      { ...event, lines: [{ ...event.lines[0], title: 'changed' }] },
+    ]) {
+      const res = await postOrderEvent(credential, changed);
+      expect(res.status).toBe(409);
+      expect((await errorOf(res)).details.reason).toBe('event_id_reused');
+    }
+  });
+
+  it('rejects invalid details with 422 naming just that field, and writes nothing', async () => {
+    const { credential, customization } = await setup();
+    const id = customization.customizationId;
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ order: { id: 'O', customer: { email: 'not-an-email' } } }, 'order.customer.email'],
+      [{ order: { id: 'O', customer: { email: 'two words@example.test' } } }, 'order.customer.email'],
+      [{ order: { id: 'O', shippingAddress: { country: 'XX' } } }, 'order.shippingAddress.country'],
+      [{ order: { id: 'O', billingAddress: { country: 'FRA' } } }, 'order.billingAddress.country'],
+      [{ order: { id: 'O', customer: { name: 'x'.repeat(201) } } }, 'order.customer.name'],
+      [{ order: { id: 'O', number: 'x'.repeat(101) } }, 'order.number'],
+      [{ order: { id: 'O', totals: { total: '-1.00' } } }, 'order.totals.total'],
+      [{ order: { id: 'O', totals: { total: 'ten' } } }, 'order.totals.total'],
+      [{ order: { id: 'O', totals: { total: 12.5 } } }, 'order.totals.total'],
+      [{ order: { id: 'O', totals: { total: '1.23456' } } }, 'order.totals.total'],
+      [{ order: { id: 'O', currency: 'EURO' } }, 'order.currency'],
+      [{ order: { id: 'O', placedAt: 'yesterday' } }, 'order.placedAt'],
+      [{ order: { id: 'O', customer: { phone: 'call me' } } }, 'order.customer.phone'],
+      [{ order: { id: 'O', customer: { address: 'unknown key' } } }, 'order.customer'],
+      [{ lines: [orderLine(id, { unitPrice: '-5' })] }, 'lines.0.unitPrice'],
+      [{ lines: [orderLine(id, { sku: 'x'.repeat(101) })] }, 'lines.0.sku'],
+    ];
+    for (const [overrides, path] of cases) {
+      const event = { ...orderEvent(id), ...overrides };
+      const res = await postOrderEvent(credential, event as any);
+      expect(res.status, path).toBe(422);
+      const issues = (await errorOf(res)).details.issues as Array<{ path: string; message: string }>;
+      expect(issues.map((i) => i.path), path).toEqual([path]);
+      // The rejected value itself is not echoed back.
+      expect(JSON.stringify(issues)).not.toContain('two words');
+    }
+    expect(await count('order_links')).toBe(0);
+    expect(await count('order_details')).toBe(0);
+  });
+
+  it('accepts unusual but valid emails and a realistic 100-line event within the body limit', async () => {
+    const { credential, customization } = await setup();
+    const res = await postOrderEvent(
+      credential,
+      orderEvent(customization.customizationId, { order: { id: 'ORD-1001', customer: { email: '"o\'hara+tag"@sub.example.museum' } } }),
+    );
+    expect((await resultsOf(res))[0].status).toBe('applied');
+
+    const lines = Array.from({ length: 100 }, (_, i) =>
+      orderLine(crypto.randomUUID(), { id: `LINE-${i}`, title: 't'.repeat(200), sku: 's'.repeat(100), unitPrice: '123456789012.1234' }));
+    const big = orderEventWith(lines, { order: { ...FULL_ORDER, id: 'ORD-BIG' } });
+    expect(JSON.stringify(big).length).toBeLessThan(64 * 1024);
+    expect((await postOrderEvent(credential, big)).status).toBe(200);
+  });
+
+  it('fails the signature when a new field is tampered with', async () => {
+    const { credential, customization } = await setup();
+    const event = orderEventWith([orderLine(customization.customizationId)], { order: FULL_ORDER });
+    const ts = Math.floor(Date.now() / 1000);
+    const signature = signBody(credential.secret, ts, JSON.stringify(event));
+    const tampered = { ...event, order: { ...FULL_ORDER, shippingAddress: { ...FULL_ORDER.shippingAddress, line1: '1 Attacker Rd' } } };
+    const res = await call(`${INTEGRATIONS}/events`, {
+      method: 'POST', token: null,
+      rawBody: new TextEncoder().encode(JSON.stringify(tampered)),
+      headers: { 'X-ZB-Key-Id': credential.id, 'X-ZB-Timestamp': String(ts), 'X-ZB-Signature': signature },
+    });
+    expect(res.status).toBe(401);
+    expect(await count('order_details')).toBe(0);
+  });
+
+  it('never lets store B read store A’s order details', async () => {
+    const { credential, customization } = await setup();
+    await postOrderEvent(credential, orderEventWith([orderLine(customization.customizationId)], { order: FULL_ORDER }));
+    await seedPersonalizableProduct(STORE_B, 'p-b', 'cfg-b');
+    const res = await orderOf('ORD-1001', STORE_B);
+    expect(res.status).toBe(404);
+    expect(JSON.stringify(await json(res))).not.toContain('Zelda');
+    expect((await json(await call(`${ADMIN}/orders`, { storeId: STORE_B }))).data).toEqual([]);
+    // Nor through the public storefront routes, which have no order endpoint at all.
+    expect((await call(`${STOREFRONT}/orders/ORD-1001?storeId=${STORE_A}`, { token: null })).status).toBe(404);
+  });
+
+  it('keeps customer data out of logs, audit rows, the replay record and the shopper read', async () => {
+    const { credential, customization } = await setup();
+    const spies = (['log', 'warn', 'error'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
+    try {
+      const event = orderEventWith([orderLine(customization.customizationId)], { order: FULL_ORDER });
+      const env = { LOG_LEVEL: 'debug' };
+      expect((await postOrderEvent(credential, event, { env })).status).toBe(200);
+      expect((await postOrderEvent(credential, event, { env })).status).toBe(200); // replay
+      await postOrderEvent(credential, { ...event, order: { ...FULL_ORDER, number: 'changed' } }, { env }); // 409
+      await postOrderEvent(credential, { ...event, eventId: 'bad', order: { ...FULL_ORDER, customer: { email: 'Zelda Quill' } } }, { env }); // 422
+      await orderOf(); // merchant read
+      const logged = spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
+      expect(logged.length).toBeGreaterThan(0);
+      for (const value of PII) expect(logged).not.toContain(value);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+    }
+    const audit = await queryDb<any>('SELECT * FROM audit_logs');
+    expect(audit.find((a) => a.action === 'order.link').metadata).toEqual({
+      orderId: 'ORD-1001', lineId: 'LINE-1', eventId: expect.any(String),
+    });
+    const events = await queryDb<any>('SELECT * FROM integration_events');
+    const stored = JSON.stringify([audit, events]);
+    for (const value of PII) expect(stored).not.toContain(value);
+    // The shopper's own read of the customization carries no order details.
+    const shopper = await call(
+      `${STOREFRONT}/customizations/${customization.customizationId}?storeId=${STORE_A}`,
+      { token: null, headers: { Authorization: `Bearer ${customization.accessToken}` } },
+    );
+    expect(shopper.status).toBe(200);
+    const shopperBody = await shopper.text();
+    for (const value of PII) expect(shopperBody).not.toContain(value);
   });
 });

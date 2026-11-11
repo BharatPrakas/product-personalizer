@@ -252,6 +252,7 @@ export async function applyMigrations(): Promise<void> {
  *  sequence to reset. */
 const TABLES_CHILD_FIRST = [
   'order_links',
+  'order_details',
   'customization_assets',
   'customizations',
   'config_versions',
@@ -489,7 +490,22 @@ export interface OrderEventLineBody {
   productId: string;
   variantId?: string;
   quantity?: number;
+  title?: string;
+  sku?: string;
+  unitPrice?: string;
   extensions: Record<string, string>;
+}
+
+/** The optional order details (contract v1 section 7, [proposed – optional]). */
+export interface OrderBody {
+  id: string;
+  number?: string;
+  placedAt?: string;
+  currency?: string;
+  totals?: Record<string, string>;
+  customer?: Record<string, string>;
+  shippingAddress?: Record<string, string>;
+  billingAddress?: Record<string, string>;
 }
 
 /** The contract-v1 order event envelope (docs/extension-platform-contract-v1.md, section 7). */
@@ -499,7 +515,7 @@ export interface OrderEventBody {
   type: string;
   occurredAt: string;
   storeId: string;
-  order: { id: string };
+  order: OrderBody;
   lines: OrderEventLineBody[];
 }
 

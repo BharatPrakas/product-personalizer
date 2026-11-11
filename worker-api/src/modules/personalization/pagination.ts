@@ -35,3 +35,37 @@ export function decodeCursor(raw: string | undefined): Cursor | null {
   }
   throw new BadRequestError('The cursor is not valid.');
 }
+
+/**
+ * Cursor for the Orders list, ordered by `(linkedAt DESC, orderId DESC)`. Order ids are the platform's
+ * own strings (not UUIDs), so this is a separate shape: base64url of `<iso>\n<orderId>` as UTF-8.
+ */
+export interface OrderCursor {
+  linkedAt: string;
+  orderId: string;
+}
+
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function encodeOrderCursor(cursor: OrderCursor): string {
+  const bytes = new TextEncoder().encode(`${cursor.linkedAt}\n${cursor.orderId}`);
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+export function decodeOrderCursor(raw: string | undefined): OrderCursor | null {
+  if (!raw) return null;
+  try {
+    const padded = raw.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+    const newline = text.indexOf('\n');
+    const linkedAt = text.slice(0, newline);
+    const orderId = text.slice(newline + 1);
+    if (newline > 0 && ISO_UTC.test(linkedAt) && orderId.length >= 1 && orderId.length <= 200) {
+      return { linkedAt, orderId };
+    }
+  } catch {
+    // fall through
+  }
+  throw new BadRequestError('The cursor is not valid.');
+}

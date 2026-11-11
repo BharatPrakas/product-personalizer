@@ -24,6 +24,7 @@ describe('database schema', () => {
       'integration_events',
       'mappings',
       'markups',
+      'order_details',
       'order_links',
       'store_settings',
     ]);
@@ -59,5 +60,32 @@ describe('database schema', () => {
       'status',
       'store_id',
     ]);
+  });
+
+  it('adds the optional order details as nullable columns and one order_details row per order', async () => {
+    const links = await queryDb<{ name: string; notnull: number }>(`PRAGMA table_info(order_links)`);
+    for (const name of ['variant_external_id', 'quantity', 'line_title', 'line_sku', 'unit_price']) {
+      expect(links.find((c) => c.name === name), name).toMatchObject({ notnull: 0 });
+    }
+    const details = await queryDb<{ name: string; notnull: number; pk: number }>(`PRAGMA table_info(order_details)`);
+    expect(details.map((c) => c.name).sort()).toEqual([
+      'billing_address', 'created_at', 'currency', 'customer', 'external_order_id', 'last_event_id',
+      'order_number', 'placed_at', 'shipping_address', 'store_id', 'totals', 'updated_at',
+    ]);
+    expect(details.filter((c) => c.pk > 0).map((c) => c.name)).toEqual(['store_id', 'external_order_id']);
+    for (const name of ['order_number', 'placed_at', 'currency', 'totals', 'customer', 'shipping_address', 'billing_address']) {
+      expect(details.find((c) => c.name === name)!.notnull, name).toBe(0);
+    }
+    const indexes = await queryDb<{ name: string }>(`PRAGMA index_list(order_details)`);
+    expect(indexes.map((i) => i.name)).toContain('order_details_number_idx');
+  });
+
+  it('refuses non-JSON-object order detail columns', async () => {
+    await expect(
+      queryDb(`INSERT INTO order_details (store_id, external_order_id, customer, last_event_id) VALUES ('s', 'o', 'not json', 'e')`),
+    ).rejects.toThrow();
+    await expect(
+      queryDb(`INSERT INTO order_details (store_id, external_order_id, totals, last_event_id) VALUES ('s', 'o', '[1]', 'e')`),
+    ).rejects.toThrow();
   });
 });

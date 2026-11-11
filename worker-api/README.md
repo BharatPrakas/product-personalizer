@@ -196,7 +196,8 @@ ISO-8601 `TEXT`.
 |---|---|
 | `customizations` | A shopper's saved design: pins `(config_id, store_id, config_version)` through a composite FK to `config_versions` (`ON DELETE RESTRICT`), records the ZenBasket `product_external_id` / `variant_external_id` and the mapping that matched, `data` JSON-as-`TEXT`, `status` (`saved` → `ordered` \| `expired`) with a CHECK tying status to its timestamps, `expires_at` for the 30-day inactivity expiry, and `pending_attach_count` — not business state, a counter two triggers use to make "create the customization and claim its uploaded files" all-or-nothing without a transaction (see "Database access" below). |
 | `customization_assets` | Customer files (private object-storage prefix `…/customizations/`): `kind` upload / preview / artwork (the print-ready file of a printable area), `status` uploaded → attached → released → deleting → deleted, `delete_after` (grace period), retry bookkeeping. Owner FK `(customization_id, store_id)`. Kept apart from `assets` so merchant-asset logic and public delivery can never touch customer files. |
-| `order_links` | The ZenBasket order line a customization was bought on. `UNIQUE (customization_id)` and `UNIQUE (store_id, external_order_id, external_line_id)` give the idempotency/conflict guarantees. |
+| `order_links` | The ZenBasket order line a customization was bought on. `UNIQUE (customization_id)` and `UNIQUE (store_id, external_order_id, external_line_id)` give the idempotency/conflict guarantees. It also keeps the line's optional display details when the event carries them — `variant_external_id`, `quantity`, `line_title`, `line_sku`, `unit_price` (decimal string) — all nullable, filled only while NULL. |
+| `order_details` | **Customer PII.** One row per order, `PRIMARY KEY (store_id, external_order_id)`, with the optional order-level details of `order.confirmed` (contract v1 section 7, [proposed – optional]): `order_number`, `placed_at` (UTC ISO), `currency`, and JSON-as-`TEXT` `totals`, `customer`, `shipping_address`, `billing_address` (`json_valid` + object checks), plus `last_event_id`, `created_at`, `updated_at`. Every detail column is nullable; a row exists only once the order has at least one linked line in that store. Indexed on `(store_id, order_number)` for search. **Plain text at rest** — D1 has no field-level encryption — and only returned by the authenticated merchant `/orders` routes. Nothing purges it (see "Limitations"). |
 | `integration_events` | Durable event-id deduplication for order events, `PRIMARY KEY (store_id, event_id)` + a payload hash. One row per processed event (it may carry several order lines); `results` (JSON-as-`TEXT`) stores the per-line outcome so a replay answers identically, `line_count` the number of lines, and `status` (`processing` → `completed`) lets a crashed or genuinely concurrent duplicate delivery be resumed safely instead of answering with incomplete results — see "Order callback concurrency" below. |
 | `cleanup_runs` | One row per scheduled cleanup run with its counts and outcome. |
 
@@ -412,6 +413,45 @@ server-to-server event — is specified for the ZenBasket team in
   "Database access" above for how this replaced the single-transaction-with-savepoints design.
 - **Privacy:** the `customizationId` authorizes nothing by itself. Shoppers use a scoped, expiring token;
   merchants are store-scoped; customer files sit in a private prefix streamed only after an access check.
+- **Optional order and customer details** *(contract v1 section 7, [proposed – optional]; the platform
+  dispatcher does not send them yet — only signed test fixtures exercise them)*: `order.number`,
+  `placedAt`, `currency`, `totals` (`subtotal` / `shipping` / `tax` / `discount` / `total`), `customer`
+  (`id`, `name`, `email`, `phone`), `shippingAddress` / `billingAddress` (`name`, `line1`, `line2`, `city`,
+  `region`, `postalCode`, `country`, `phone`) and per line `title`, `sku`, `unitPrice`. **Amounts are
+  decimal strings in the currency's major unit** (`"12.50"`, non-negative, ≤ 12 integer and ≤ 4 fraction
+  digits; `discount` is the positive amount taken off) — never JSON numbers, so no float rounding and no
+  per-currency exponent table. Strings are trimmed, `""` counts as absent, every string is length-capped,
+  objects are `.strict()` (unknown keys are a 422 naming the field), the email check is deliberately loose
+  (`x@y`, no whitespace), `country` must be an assigned ISO 3166-1 alpha-2 code and `currency` three
+  letters. The callback body limit is **64 KiB** (was 16 KiB) so a 100-line order with titles fits.
+  Events in the original id-only shape behave exactly as before, and their replay hash is unchanged (the
+  new fields only enter the canonical hash when present). The HMAC still covers the exact raw body, so
+  the new fields are signed like everything else.
+- **Merge rule** (`ORDER_DETAILS_UPSERT` in `order-callback-service.ts`): *fill-only, first value wins.*
+  A later event or line fills NULL fields; an absent value never blanks a stored one; a stored value is
+  never replaced — `totals` and `customer` merge per key, an address only as a whole — and a differing
+  value is dropped with a `warn` log listing the field **names** only. Events are not ordered (section
+  7), so "latest wins" is not knowable and a replayed old event must not roll a value back. The details
+  are written in the same atomic `batch()` as the line's link insert and status flip, only when the order
+  has a link in that store; a line that was already linked (`duplicate`) still fills NULLs.
+- **PII handling:** customer and address values never go to logs (conflict warnings name fields, not
+  values), audit metadata (`order.link` stays `{ orderId, lineId, eventId }`), error messages, or the
+  replay record (`integration_events.results` stays per-line outcomes). They are returned only by the
+  authenticated, store-scoped merchant API below; the storefront and shopper routes never read them.
+
+### Merchant order API
+
+Authenticated and store-scoped exactly like `/customizations` (the store comes from the verified token),
+under `/api/v1/plugins/personalization`. Responses are `Cache-Control: private, no-store`.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/orders` | Orders with at least one linked line, grouped by `external_order_id`, newest first by first-link time; keyset paging `?limit=` (1..50, default 25) `&cursor=`. Filters: `q` (order id or number, exact or prefix; `%`/`_` are literal), `productId` (orders containing that product), `from` / `to` (ISO date = whole UTC day, `to` inclusive; or ISO date-time), applied to `placedAt`, else the link time. Each item: `{ orderId, orderNumber, placedAt, customerName, linkedAt, lineCount, lines: [{ lineId, productId, title, quantity, status, customizationId, previewAssetId }] }` (at most 10 lines summarised). **Only the customer's name** — never email, phone or addresses — is in the list. |
+| GET | `/orders/:orderId` | `{ orderId, orderNumber, placedAt, currency, totals: {subtotal, shipping, tax, discount, total}, customer: {id, name, email, phone}, shippingAddress, billingAddress, linkedAt, lines: [{ lineId, productId, variantId, quantity, title, sku, unitPrice, linkedAt, customization: { id, status, configId, configVersion }, assets: [{ assetId, kind, contentType, sizeBytes, width, height, filename }] }] }`. Every field the store did not send is `null` (an address the store never sent is `null` as a whole). 404 for an unknown order or another store's. |
+
+The full design and the file bytes stay on `GET /customizations/:id` and
+`GET /customizations/:id/assets/:assetId/content` (private, `X-Checksum-Sha256`); the order API only
+lists them.
 - **Cleanup:** an hourly cron (`scheduled()` → `CleanupService`) expires inactive `saved` customizations
   (30 days), releases abandoned uploads, deletes released files after a grace period, and purges empty
   tombstones. `ordered` customizations are never touched. Runs are recorded in `cleanup_runs`. Claims
@@ -595,8 +635,9 @@ inspection/recovery.
 
 ## Database migrations
 
-- One baseline migration, `migrations/0001_baseline.sql`, holds the whole schema; later changes are
-  appended as `0002_…` and so on.
+- One baseline migration, `migrations/0001_baseline.sql`, holds the whole schema (including the order
+  line details and `order_details`, folded in while only a dev environment existed). Once real data
+  exists, append `0002_…` and so on instead of editing it.
 - Applied with `wrangler d1 migrations apply`/`list` (the `migrate`/`migrate:status` npm scripts), not
   a custom runner — wrangler tracks applied migrations itself in a `d1_migrations` table, so there is
   no hand-rolled checksum ledger to maintain.
@@ -760,6 +801,14 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
   plus config-delete cleanup; the scheduled sweep covers *customer* files only.
 - **Ordered-customization retention is undefined.** Nothing deletes `ordered` customizations or their
   files; define the business retention policy (and a purge) before this grows unbounded.
+- **Order details (customer PII) are kept forever and are plain text at rest.** Nothing purges
+  `order_details` or the line details on `order_links`; this is the same open decision as the retention
+  of ordered customizations (contract decision 8) and must be settled together with it. D1 offers no
+  field-level encryption, so customer names, emails, phones and addresses are stored unencrypted (D1's
+  own at-rest encryption only). Do not add fields beyond what fulfilment needs.
+- **The platform does not send order details yet.** The webhook accepts them (all optional) and the
+  Orders page shows "Not provided by the store" until the ZenBasket dispatcher populates them; verified
+  only with signed fixtures.
 - **Customer-upload abuse** is bounded by per-IP limits (in-memory, per isolate — add Cloudflare rate-limit
   rules), the upload size cap, per-file image sniffing and the 24 h unattached-upload sweep; there is no
   per-store quota on pending customizations or stored bytes yet.

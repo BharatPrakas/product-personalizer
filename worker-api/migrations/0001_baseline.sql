@@ -29,6 +29,10 @@
 -- D1 enables foreign-key enforcement by default; this migration relies on that (composite FKs below
 -- require the referenced composite UNIQUE indexes, created alongside each table, same as Postgres).
 --
+-- `order_links` line details and `order_details` (optional order/customer details of `order.confirmed`)
+-- were folded in here from a short-lived 0002 while only the dev environment existed. Once real data
+-- exists, stop editing this file and append 0002, 0003, ... instead.
+--
 -- Applied via `wrangler d1 migrations apply` (see migrations_dir in wrangler.jsonc), not the
 -- Postgres-specific scripts/migrate.mjs runner.
 
@@ -285,6 +289,14 @@ CREATE TABLE IF NOT EXISTS order_links (
   product_external_id  TEXT NOT NULL,
   event_id             TEXT NOT NULL,
   occurred_at          TEXT NOT NULL,
+  -- Optional line details from `order.confirmed` (contract v1 section 7.1, [proposed – optional]). All
+  -- nullable: an event in the original id-only shape leaves them NULL. Filled only while NULL.
+  variant_external_id  TEXT CHECK (variant_external_id IS NULL OR length(variant_external_id) BETWEEN 1 AND 200),
+  quantity             INTEGER CHECK (quantity IS NULL OR quantity BETWEEN 1 AND 1000000),
+  line_title           TEXT CHECK (line_title IS NULL OR length(line_title) BETWEEN 1 AND 200),
+  line_sku             TEXT CHECK (line_sku IS NULL OR length(line_sku) BETWEEN 1 AND 100),
+  -- Decimal string in the order currency's major unit, e.g. '12.50' (see validation.ts `amountSchema`).
+  unit_price           TEXT CHECK (unit_price IS NULL OR length(unit_price) BETWEEN 1 AND 20),
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   CONSTRAINT order_links_customization_fk FOREIGN KEY (customization_id, store_id)
     REFERENCES customizations (id, store_id) ON DELETE RESTRICT,
@@ -294,6 +306,39 @@ CREATE TABLE IF NOT EXISTS order_links (
 
 CREATE INDEX IF NOT EXISTS order_links_order_idx
   ON order_links (store_id, external_order_id);
+-- The Orders list groups links by order and pages newest first.
+CREATE INDEX IF NOT EXISTS order_links_store_created_idx
+  ON order_links (store_id, created_at DESC, external_order_id);
+
+-- Order-level details, one row per order. They repeat on every line and arrive once per event, so they
+-- live here instead of on each order_links row. Written in the same atomic batch as the line's link
+-- insert + status flip, with a fill-only merge (see order-callback-service.ts): a later event fills
+-- NULLs but never blanks or silently replaces a stored value.
+--
+-- PII: `customer`, `shipping_address` and `billing_address` hold the shopper's name, email, phone and
+-- addresses. They are PLAIN TEXT AT REST — D1 has no field-level encryption — and are only ever returned
+-- by the authenticated, store-scoped merchant order API. Nothing purges them yet; that is the same open
+-- retention decision as ordered customizations (contract decision 8).
+CREATE TABLE IF NOT EXISTS order_details (
+  store_id           TEXT NOT NULL,
+  external_order_id  TEXT NOT NULL CHECK (length(external_order_id) BETWEEN 1 AND 200),
+  order_number       TEXT CHECK (order_number IS NULL OR length(order_number) BETWEEN 1 AND 100),
+  -- ISO-8601 UTC with milliseconds, like every other timestamp column (normalised app-side).
+  placed_at          TEXT,
+  currency           TEXT CHECK (currency IS NULL OR length(currency) = 3),
+  totals             TEXT CHECK (totals IS NULL OR (json_valid(totals) AND json_type(totals) = 'object')),
+  customer           TEXT CHECK (customer IS NULL OR (json_valid(customer) AND json_type(customer) = 'object')),
+  shipping_address   TEXT CHECK (shipping_address IS NULL OR (json_valid(shipping_address) AND json_type(shipping_address) = 'object')),
+  billing_address    TEXT CHECK (billing_address IS NULL OR (json_valid(billing_address) AND json_type(billing_address) = 'object')),
+  last_event_id      TEXT NOT NULL,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (store_id, external_order_id)
+);
+
+-- Merchant search by the display order number.
+CREATE INDEX IF NOT EXISTS order_details_number_idx
+  ON order_details (store_id, order_number);
 
 -- `status` lets a crashed or concurrently-retried event be safely re-run: 'processing' means "don't
 -- trust `results` yet, re-apply every line" (each line's own write is already conditional, so

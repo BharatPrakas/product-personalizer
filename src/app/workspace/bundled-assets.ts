@@ -17,7 +17,7 @@
  * Must end in `/assets/` (the folder `build:element` copies static files into) and be reachable
  * with CORS from every storefront origin (the browser fetches fonts directly from it).
  */
-export const BUNDLED_ASSET_BASE_URL = 'http://localhost:4200/assets/';
+export const BUNDLED_ASSET_BASE_URL = 'http://localhost:4600/assets/';
 
 /**
  * True for anything the Worker can already resolve server-side (an absolute http(s) URL). False for

@@ -25,7 +25,13 @@ import { ConfigurationRepository } from '../workspace/configuration-repository';
 import { RuntimeConfig } from '../workspace/cloud/runtime-config';
 import { AdminEvents } from './admin-events.service';
 import { AdminHost } from './admin-host.service';
-import { NAVIGATE_HOOK, coerceView, parseUrl, urlFor } from './admin-navigation';
+import {
+  type AdminLocation,
+  NAVIGATE_HOOK,
+  coerceView,
+  parseUrl,
+  urlFor,
+} from './admin-navigation';
 import { I18n, TranslatePipe } from './i18n/i18n.service';
 
 const asPersistence = (value: unknown): AdminPersistence | null =>
@@ -34,7 +40,7 @@ const asString = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() ? value.trim() : null;
 
 /**
- * `<zb-personalization-admin>`: the merchant side of product personalization (templates, editor,
+ * `<zb-personalization-admin>`: the merchant side of product personalization (templates, editor, orders,
  * product mapping, markup library) as one self-contained element.
  *
  * Inputs here are the public contract (`customizer/models/admin-element-contract.ts`); Angular
@@ -57,6 +63,7 @@ const asString = (value: unknown): string | null =>
   host: {
     '[attr.data-view]': 'current().view',
     '[attr.data-config-id]': 'current().configId',
+    '[attr.data-order-id]': 'current().orderId',
   },
   template: `
     <div class="zb-admin" [attr.dir]="i18n.dir()" [attr.lang]="i18n.tag()">
@@ -88,6 +95,9 @@ const asString = (value: unknown): string | null =>
             <a routerLink="/mapping" routerLinkActive="is-active" ariaCurrentWhenActive="page">
               {{ 'nav.mapping' | t }}
             </a>
+            <a routerLink="/orders" routerLinkActive="is-active" ariaCurrentWhenActive="page">
+              {{ 'nav.orders' | t }}
+            </a>
           </nav>
           <span class="grow"></span>
           <span class="storage-chip" [class.storage-chip--local]="storageKind() === 'local'">
@@ -115,6 +125,7 @@ export class AdminElementComponent {
   readonly productSearchUrl = input<string | null, unknown>(null, { transform: asString });
   readonly view = input<AdminView, unknown>('list', { transform: coerceView });
   readonly configId = input<string | null, unknown>(null, { transform: asString });
+  readonly orderId = input<string | null, unknown>(null, { transform: asString });
   // Angular Elements exposes the class field name as the element property, so it must be `readonly`.
   readonly readonly = input<boolean, unknown>(false, { transform: coerceBoolean });
   readonly locale = input<string | null, unknown>(null, { transform: asString });
@@ -133,10 +144,7 @@ export class AdminElementComponent {
   private readonly repository = inject(ConfigurationRepository);
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
 
-  protected readonly current = signal<{ view: AdminView; configId: string | null }>({
-    view: 'list',
-    configId: null,
-  });
+  protected readonly current = signal<AdminLocation>({ view: 'list', configId: null, orderId: null });
   protected readonly announcement = signal('');
   protected readonly immersive = computed(
     () => this.current().view === 'editor' || this.current().view === 'preview',
@@ -183,6 +191,7 @@ export class AdminElementComponent {
     effect(() => {
       this.view();
       this.configId();
+      this.orderId();
       untracked(() => this.followInputs());
     });
     // The element class calls this on every assignment, including repeats of the same value.
@@ -203,14 +212,18 @@ export class AdminElementComponent {
   }
 
   private followInputs(): void {
-    const url = urlFor(this.view(), this.configId());
+    const url = urlFor(this.view(), this.configId(), this.orderId());
     if (this.router.url !== url) void this.router.navigateByUrl(url);
   }
 
   private onNavigated(url: string): void {
     const next = parseUrl(url);
     const previous = this.current();
-    if (previous.view !== next.view || previous.configId !== next.configId) {
+    if (
+      previous.view !== next.view ||
+      previous.configId !== next.configId ||
+      previous.orderId !== next.orderId
+    ) {
       this.current.set(next);
       this.events.viewChange(next);
     }

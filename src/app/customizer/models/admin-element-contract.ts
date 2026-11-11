@@ -51,8 +51,11 @@ export interface ProductMapping {
   updatedAt: number;
 }
 
-/** The sub-views the element can show; `view` / `config-id` deep-link into them. */
-export type AdminView = 'list' | 'editor' | 'mapping' | 'preview';
+/**
+ * The sub-views the element can show; `view` / `config-id` / `order-id` deep-link into them.
+ * `orders` lists orders with personalized lines (needs the connected API); with `order-id` it shows one.
+ */
+export type AdminView = 'list' | 'editor' | 'mapping' | 'preview' | 'orders';
 
 export type AdminPersistence = 'local' | 'cloud';
 
@@ -76,6 +79,8 @@ export interface AdminReadyDetail {
 export interface ViewChangeDetail {
   view: AdminView;
   configId: string | null;
+  /** The order shown by the `orders` view; `null` for the order list and every other view. */
+  orderId: string | null;
 }
 
 export interface ConfigSavedDetail {
@@ -149,6 +154,8 @@ export interface ZbPersonalizationAdminElement extends HTMLElement {
   view: AdminView;
   /** Template shown by the `editor`, `preview` and `mapping` views (attribute `config-id`). */
   configId: string | null;
+  /** Order shown by the `orders` view (attribute `order-id`); `null` shows the order list. */
+  orderId: string | null;
   /** Hides every control that changes data (attribute `readonly`). */
   readonly: boolean;
   /** BCP-47 language tag for the interface (attribute `locale`). Right-to-left languages mirror the layout. */

@@ -83,7 +83,7 @@ describe('I18n', () => {
       [...enKeys].filter((k) => !(k in catalog));
     // Mapping / markup chrome predates this check; everything added for the editor is complete.
     const editorKeys = (k: string) =>
-      /^(list|newconfig|editor|sidebar|mockups|areas|artworks|layers|inspector|addarea|preview|ready|ui|shape|stage|storage\.detail|error|status|app\.(brand|brand-aria|nav-primary)|common\.(all|just-now|duplicate|delete-ellipsis|remove|remove-ellipsis|move-earlier|move-later|edit-artwork))\b/.test(
+      /^(orders|nav\.orders|view\.orders|list|newconfig|editor|sidebar|mockups|areas|artworks|layers|inspector|addarea|preview|ready|ui|shape|stage|storage\.detail|error|status|app\.(brand|brand-aria|nav-primary)|common\.(all|just-now|duplicate|delete-ellipsis|remove|remove-ellipsis|move-earlier|move-later|edit-artwork))\b/.test(
         k,
       );
     expect(missing(FR).filter(editorKeys)).toEqual([]);

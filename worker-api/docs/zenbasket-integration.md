@@ -133,6 +133,66 @@ await fetch(url, { method: 'POST', body, headers: {
 | `lines[].quantity` | Optional, informational. |
 | `lines[].extensions.customizationId` | The uuid the bridge put on the cart line. |
 
+### 4.2.1 Optional order and customer details — **[proposed – optional]**, **Confirm**
+
+So the merchant can fulfil an order from the plugin's Orders page, the event MAY also carry the order's
+display details. **Every field is optional**; an event without any of them (the shape above) keeps
+working unchanged, and the Worker never fetches what is missing — the Orders page shows "Not provided by
+the store". The ZenBasket dispatcher does **not** send these yet: populating them is a platform-team
+task (contract §7 open items). Send only what fulfilment needs.
+
+```json
+{
+  "contract": 1,
+  "eventId": "ord-5521-confirmed-1",
+  "type": "order.confirmed",
+  "occurredAt": "2026-10-29T07:31:30Z",
+  "storeId": "766",
+  "order": {
+    "id": "ORD-5521",
+    "number": "#5521",
+    "placedAt": "2026-10-29T07:30:02Z",
+    "currency": "EUR",
+    "totals": { "subtotal": "40.00", "shipping": "4.95", "tax": "8.00", "discount": "2.00", "total": "50.95" },
+    "customer": { "id": "c-981", "name": "Ana Example", "email": "ana@example.com", "phone": "+33 6 00 00 00 00" },
+    "shippingAddress": { "name": "Ana Example", "line1": "12 Rue Exemple", "line2": "Apt 4", "city": "Lyon",
+                         "region": "ARA", "postalCode": "69001", "country": "FR", "phone": "+33 6 00 00 00 00" },
+    "billingAddress": { "name": "Ana Example", "line1": "12 Rue Exemple", "city": "Lyon", "postalCode": "69001", "country": "FR" }
+  },
+  "lines": [
+    { "id": "5521-1", "productId": "42", "variantId": "421", "quantity": 2,
+      "title": "Photo mug — white", "sku": "MUG-W-11", "unitPrice": "20.00",
+      "extensions": { "customizationId": "687a9554-28d3-4b47-80aa-17d840d47b70" } }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `order.number` | Display order number, 1–100 chars. |
+| `order.placedAt` | ISO-8601 with offset. |
+| `order.currency` | ISO 4217, three letters. |
+| `order.totals.*`, `lines[].unitPrice` | **Decimal strings in the currency's major unit** — `"12.50"`, never `12.5` and never minor units. Non-negative, ≤ 12 integer and ≤ 4 fraction digits. `discount` is the positive amount taken off. |
+| `order.customer` | `id` ≤200, `name` ≤200, `email` ≤254 (loose `x@y` check), `phone` ≤40 (digits and `+ ( ) . / - # * x`, at least one digit). |
+| `order.shippingAddress`, `order.billingAddress` | `name`, `line1`, `line2` ≤200; `city`, `region` ≤100; `postalCode` ≤20; `country` ISO 3166-1 alpha-2; `phone` as above. |
+| `lines[].title`, `lines[].sku` | ≤200 and ≤100 chars. |
+
+Strings are trimmed and `""` counts as absent; unknown keys inside these objects are rejected (422, naming
+the field) like everywhere else in the envelope. The body limit is **64 KiB**. These fields are covered by
+the same HMAC over the exact body — changing any of them after signing fails with 401 — and are part of
+the event's identity: resending the same `eventId` with different details is `409 event_id_reused`.
+
+When several events or lines concern one order, the Worker keeps the **first** value of each field and
+only fills fields that are still empty (an address only as a whole); a later different value is ignored
+and logged by field name. To correct a stored value, a future `order.updated` event would be needed —
+not part of v1.
+
+**Personal data:** the Worker stores these in its own D1 database (plain text at rest; no field-level
+encryption), never logs them, never puts them in audit records or the replay record, and returns them
+only through the authenticated, store-scoped merchant API (§7) — never through storefront or shopper
+routes. There is **no retention/purge yet**: it is the same open decision as ordered customizations
+(**Confirm**, §6).
+
 ### 4.3 What the Worker verifies (never just the payload)
 
 Per **event**: HMAC signature, timestamp window, credential active and not expired (401, all causes alike);
@@ -236,6 +296,12 @@ deleted** (409 `config_has_customizations`) — archive it instead.
 `GET /plugins/personalization/customizations[?status=saved|ordered|expired&orderId=…&productId=…&limit=…&cursor=…]`
 (keyset pagination, `meta.page.nextCursor`), `GET …/customizations/{id}` (includes `data`, `assets`, `order`),
 `GET …/customizations/{id}/assets/{assetId}/content` (private file stream).
+
+`GET /plugins/personalization/orders[?q=…&productId=…&from=…&to=…&limit=…&cursor=…]` lists orders with
+personalized lines (newest first, keyset `meta.pagination.nextCursor`; only the customer's name), and
+`GET …/orders/{orderId}` returns one order with its optional details (§4.2.1, `null` when not sent) and its
+lines, each with its customization summary and file list. Files and full design data come from the
+customization routes above.
 
 ## 8. Configuration
 

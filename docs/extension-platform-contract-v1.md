@@ -232,7 +232,8 @@ enabled extension that lists the event in `events.receive`. One dispatcher serve
 ```
 
 - **Data minimisation:** `lines` contains only the lines that carry the receiving extension's namespace,
-  and `extensions` only that namespace (keys without the prefix). No customer data.
+  and `extensions` only that namespace (keys without the prefix). The envelope above carries no customer
+  data. The order and customer details of §7.1 are an **opt-in exception [proposed – optional]**.
 - **Event types v1:** `order.confirmed` — the order is accepted **and** payment is authorized/captured (or
   committed under a cash-on-delivery style method) and it will be fulfilled. It is never sent for a cart,
   a pending/unpaid order, or on mere creation. `order.cancelled` is reserved for v1.x.
@@ -250,6 +251,58 @@ enabled extension that lists the event in `events.receive`. One dispatcher serve
   line, the platform sends a new `eventId`. Envelope-level problems (signature, store, unsupported type, an
   `eventId` reused with a different payload) are ordinary HTTP errors, not `results`.
 - Ordering of events is not guaranteed; receivers MUST NOT depend on it.
+
+### 7.1 Optional order and customer details **[proposed – optional]**
+
+An extension that fulfils orders (personalization: production files per line) needs to show the merchant
+which order it is fulfilling. The dispatcher MAY add these fields. **All of them are optional.** A receiver
+MUST accept an event without them, MUST NOT fetch them from core when they are missing (goal 3), and
+shows them as not provided instead.
+
+```json
+{
+  "contract": 1, "eventId": "ord-5521-confirmed-1", "type": "order.confirmed",
+  "occurredAt": "2026-10-29T07:31:30Z", "storeId": "766",
+  "order": {
+    "id": "ORD-5521",
+    "number": "#5521",
+    "placedAt": "2026-10-29T07:30:02Z",
+    "currency": "EUR",
+    "totals": { "subtotal": "40.00", "shipping": "4.95", "tax": "8.00", "discount": "2.00", "total": "50.95" },
+    "customer": { "id": "c-981", "name": "Ana Example", "email": "ana@example.com", "phone": "+33 6 00 00 00 00" },
+    "shippingAddress": { "name": "Ana Example", "line1": "12 Rue Exemple", "line2": "Apt 4", "city": "Lyon",
+                         "region": "ARA", "postalCode": "69001", "country": "FR", "phone": "+33 6 00 00 00 00" },
+    "billingAddress": { "name": "Ana Example", "line1": "12 Rue Exemple", "city": "Lyon", "postalCode": "69001", "country": "FR" }
+  },
+  "lines": [
+    { "id": "5521-1", "productId": "42", "variantId": "421", "quantity": 2,
+      "title": "Photo mug — white", "sku": "MUG-W-11", "unitPrice": "20.00",
+      "extensions": { "customizationId": "687a9554-28d3-4b47-80aa-17d840d47b70" } }
+  ]
+}
+```
+
+- **Amounts** are decimal strings in the currency's major unit (`"12.50"`). They are never JSON numbers
+  and never minor units, are non-negative, and have at most 12 integer and 4 fraction digits. `discount`
+  is the positive amount taken off. `currency` is ISO 4217. `country` is ISO 3166-1 alpha-2.
+  `placedAt` is ISO-8601 with an offset.
+- **Bounds:** every string is capped: `number` 100; `title`, names and address lines 200; `sku` 100;
+  `city` and `region` 100; `postalCode` 20; `email` 254; `phone` 40. The whole body is at most 64 KiB.
+  Empty strings count as absent. Unknown keys are rejected, as in the rest of the envelope.
+- **Signature and identity:** these fields are inside the signed body. They are also part of the event's
+  identity, so resending an `eventId` with different details is an `event_id_reused` conflict.
+- **Several events for one order:** receivers SHOULD treat the details as fill-only. The first stored
+  value of a field wins, and a missing field never erases one. Events are unordered, so "latest wins"
+  cannot be implemented safely. Correcting a stored value would need a future `order.updated` event,
+  which is outside v1.
+- **Handling (receiver duties for this personal data):** receivers MUST NOT write these values to logs,
+  audit records, error messages or event replay records. They MUST expose them only to the
+  authenticated merchant of the same store, and never through storefront or shopper endpoints. They
+  MUST store only what fulfilment needs, and MUST document retention. Personalization keeps the values
+  in plain text in its own database (no field-level encryption). It does not purge them yet; that is
+  open decision 8.
+- **Implementation status:** the personalization receiver accepts, validates, stores and shows these
+  fields. The platform dispatcher does not send them yet; see open decision 9.
 
 ## 8. Identity and authentication
 
@@ -351,6 +404,7 @@ secret is scoped to one (store, extension) pair and rotatable.
 | `context` object, `locale` attribute | **not yet** (attributes cover the personalization needs) |
 | Storeadmin hosting | POC branch with a hardcoded route and menu entry; manifest-driven `/app/apps/:extensionId` is the platform team's |
 | Storefront hosting: slot renderer, module loader, bridge in the product page, `lineExtensions` in the cart API and order lines, webhook dispatcher | **platform teams** (decisions 3, 5, 6) |
+| Optional order/customer details in `order.confirmed` (§7.1): accepted, stored, shown on the admin **Orders** page and downloadable per line/order | **receiver implemented** (Worker + admin element); the dispatcher populating them is **platform team** (decision 9) |
 
 ## 14. Open decisions
 
@@ -363,7 +417,8 @@ secret is scoped to one (store, extension) pair and rotatable.
 | 5 | **Webhook dispatcher** (queue, retries, dead-letter, merchant-visible failures). | Backend | order events |
 | 6 | **CSP and SRI** policy for loading third-party bundles on storefront pages. | Storefront | loader |
 | 7 | **Data retention on uninstall** (extension data vs order-line data). | Product / legal | lifecycle |
-| 8 | **Business retention of ordered customizations** (how long artwork is kept after fulfilment). | Product | personalization only |
+| 8 | **Business retention of ordered customizations** (how long artwork is kept after fulfilment). This now also covers the order and customer details stored for the Orders page (§7.1), which nothing purges yet. | Product / legal | personalization only |
+| 9 | **Dispatcher populates the optional order details (§7.1)**: which fields core sends, where it reads them from (order, customer and address tables), and whether an extension must opt in (for example, a manifest permission such as `order.details:read`) before it receives customer data. | Platform (backend) | Orders page details |
 
 ## 15. Conformance checklist for an extension
 

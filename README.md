@@ -361,16 +361,18 @@ page**: instances share one session (storage, API, token) and a second instance 
 | `authToken` | none | Host-issued short-lived session token for the signed-in merchant. **Never persisted** by the element and re-read on every request, so assigning a fresh token is all a refresh needs. The Worker takes the store from the verified token claims; the element never sends a store id |
 | `productCatalog` | none | The host's products for the mapping UI: `{ id, title, sku?, imageUrl?, variants?: {id, title, sku?}[], collections?: {id, title}[] }[]`. The element never invents products; malformed entries and non-http(s) images are dropped |
 | `productSearchUrl` | `product-search-url` | Alternative to `productCatalog`: `GET <url>?q=<text>&limit=50` answering `ProductRef[]`, `{items: ProductRef[]}` or `{data: ...}`. The session token is only ever sent to the personalization API's own origin, never to this URL |
-| `view` | `view` | `list` \| `editor` \| `mapping` \| `preview`. Assigning it (even to the same value) navigates there |
+| `view` | `view` | `list` \| `editor` \| `mapping` \| `preview` \| `orders`. Assigning it (even to the same value) navigates there |
 | `configId` | `config-id` | Template shown by `editor` / `preview` / `mapping` |
+| `orderId` | `order-id` | Order shown by `orders` (any platform order id; `null` shows the order list) |
 | `readonly` | `readonly` | Disables every control that changes data (the editor shows the customer preview instead) |
 | `locale` | `locale` | BCP-47 tag. Built-in: `en`, `fr`, `ar` (right-to-left languages mirror the layout); missing messages fall back to English |
 | `allowedAssetOrigins` | none | Extra origins template images and fonts may load from |
 | `persistence` | `persistence` | `'local'` / `'cloud'` override (default: cloud when `apiBaseUrl` is set) |
 
-`view` and `configId` are *commands*: the merchant can navigate on their own, and the element reports where it is
-through `data-view` / `data-config-id` attributes on itself and the `view-change` event. Routing is in memory
-(a custom `LocationStrategy`), so the host URL never changes; deep-link by assigning `view` / `config-id`.
+`view`, `configId` and `orderId` are *commands*: the merchant can navigate on their own, and the element reports
+where it is through `data-view` / `data-config-id` / `data-order-id` attributes on itself and the `view-change`
+event. Routing is in memory (a custom `LocationStrategy`), so the host URL never changes; deep-link by assigning
+`view` / `config-id` / `order-id`.
 
 ### Events
 
@@ -380,12 +382,28 @@ product titles, tokens) beyond what is listed.
 | Event | `event.detail` |
 |---|---|
 | `admin-ready` | `{ version, persistence }`, once, after the first view rendered |
-| `view-change` | `{ view, configId }` |
+| `view-change` | `{ view, configId, orderId }` (`orderId` is `null` outside the `orders` view) |
 | `config-saved` | `{ configId, name, updatedAt }`, after a draft was stored |
 | `config-published` | `{ configId, name, version, publishedAt }` |
 | `config-archived` | `{ configId, name, archived, affectedMappings }`; `archived: false` is a restore |
 | `mapping-changed` | `{ action: 'created'\|'reassigned'\|'updated'\|'deleted'\|'bulk', configId, mappings, deletedIds }` |
 | `admin-error` | `{ code, message, recoverable }`; codes `auth`, `network`, `conflict`, `invalid`, `not-found`, `storage`, `forbidden`, `rate-limited`, `unexpected`. Messages are fixed strings chosen by error class: server messages and tokens never reach the host |
+
+### Orders
+
+`view = 'orders'` lists the store's orders that carry personalized lines (from the signed `order.confirmed`
+webhook; needs `apiBaseUrl` — in browser-only mode the page says orders need the connected backend). Search by
+order id/number, filter by product id and date, page with "Load more". An order shows its header (number, date,
+customer, addresses, totals — each "Not provided by the store" until the platform sends it, see contract §7.1)
+and one card per line: product/variant/SKU/quantity, template and version, a preview gallery with a lightbox,
+every customer input labelled from the pinned template version (raw field ids if that version cannot be read),
+and the production files with their pixel sizes. Files download through the authenticated API (the token is
+never put in a URL): one file, "Download all" per line (`order-<orderId>-line-<lineId>.zip` with `production/`,
+`previews/`, `uploads/`, `customization.json`) or "Download order" (a folder per line). ZIPs are built in the
+browser by a small store-only writer (`src/app/orders/zip.ts`, no dependency: the files are already-compressed
+PNG/JPEG); progress is announced, failed files are listed and only those are retried. `customization.json`
+carries order/line identifiers and the design, not the customer's contact details. Uploads are named after the
+field they were submitted for — the shopper's original file name is not stored by the storefront.
 
 ### Templates, editor, preview
 

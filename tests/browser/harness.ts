@@ -58,8 +58,11 @@ export interface MockApi {
   /** productId (or '*') -> what the endpoint answers. */
   responses: Map<string, { status?: number; body?: unknown; delayMs?: number }>;
   requests: { method: string; url: string; headers: Record<string, string | string[] | undefined> }[];
-  /** `"GET /api/v1/plugins/personalization/configs"` -> answer, for the admin API. */
-  admin: Map<string, { status?: number; body?: unknown }>;
+  /**
+   * `"GET /api/v1/plugins/personalization/configs"` -> answer, for the admin API (path as sent, so
+   * still percent-encoded). `bytes` answers with a binary file of `contentType` instead of JSON.
+   */
+  admin: Map<string, { status?: number; body?: unknown; bytes?: Buffer; contentType?: string }>;
   reset(): void;
 }
 
@@ -97,6 +100,11 @@ function createMockApi(): { api: MockApi; handler: Handler } {
       }
       api.requests.push({ method: req.method ?? 'GET', url: req.url ?? '', headers: req.headers });
       const answer = api.admin.get(`${req.method} ${url.pathname}`) ?? { status: 404, body: { error: { code: 'not_found' } } };
+      if (answer.bytes) {
+        res.writeHead(answer.status ?? 200, { 'content-type': answer.contentType ?? 'application/octet-stream', 'cache-control': 'private, no-store' });
+        res.end(answer.bytes);
+        return true;
+      }
       res.writeHead(answer.status ?? 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       res.end(JSON.stringify(answer.body ?? { data: [] }));
       return true;

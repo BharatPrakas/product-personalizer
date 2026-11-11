@@ -26,6 +26,8 @@ import { ADMIN_TAG } from './app/customizer/models/admin-element-contract';
 import { ConfigurationRepository } from './app/workspace/configuration-repository';
 import { AdminProductMappingRepository } from './app/mapping/admin-product-mapping-repository';
 import { ProductMappingRepository } from './app/mapping/product-mapping-repository';
+import { AdminOrderRepository } from './app/orders/admin-order-repository';
+import { OrderRepository } from './app/orders/order-repository';
 import { AdminMarkupRepository } from './app/markups/admin-markup-repository';
 import { MarkupRepository } from './app/markups/markup-repository';
 import { AdminFontRepository } from './app/fonts/admin-font-repository';
@@ -72,6 +74,7 @@ export function registerPersonalizationAdmin(): Promise<void> {
         { provide: TitleStrategy, useClass: NoTitleStrategy },
         { provide: ConfigurationRepository, useExisting: AdminConfigurationRepository },
         { provide: ProductMappingRepository, useExisting: AdminProductMappingRepository },
+        { provide: OrderRepository, useExisting: AdminOrderRepository },
         { provide: MarkupRepository, useExisting: AdminMarkupRepository },
         { provide: FontRepository, useExisting: AdminFontRepository },
         ...(nonce ? [{ provide: CSP_NONCE, useValue: nonce }] : []),
@@ -101,7 +104,7 @@ type AttributeCallback = (
 ) => void;
 
 /**
- * `view` and `config-id` act as navigation commands: assigning them always navigates, even when
+ * `view`, `config-id` and `order-id` act as navigation commands: assigning them always navigates, even when
  * the value equals the one the host assigned before (the merchant may have moved elsewhere since).
  * Angular Elements skips repeated equal assignments, so the element class re-triggers the router.
  */
@@ -116,10 +119,10 @@ function withNavigationCommands(Base: CustomElementConstructor): CustomElementCo
     AdminElement.prototype as unknown as { attributeChangedCallback: AttributeCallback }
   ).attributeChangedCallback = function (name, old, value, ns) {
     attributeChanged.call(this, name, old, value, ns);
-    if (name === 'view' || name === 'config-id') poke(this);
+    if (name === 'view' || name === 'config-id' || name === 'order-id') poke(this);
   };
 
-  for (const prop of ['view', 'configId']) {
+  for (const prop of ['view', 'configId', 'orderId']) {
     const original = Object.getOwnPropertyDescriptor(Base.prototype, prop);
     if (!original?.set) continue;
     Object.defineProperty(AdminElement.prototype, prop, {

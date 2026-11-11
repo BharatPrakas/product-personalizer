@@ -21,6 +21,7 @@ import * as controller from './modules/personalization/controller';
 import * as customizations from './modules/personalization/customization-controller';
 import * as integration from './modules/personalization/integration-controller';
 import * as mappings from './modules/personalization/mapping-controller';
+import * as orders from './modules/personalization/order-controller';
 import * as storefront from './modules/personalization/storefront-controller';
 import { ok } from './shared/responses';
 import { RateLimiter, type RateLimitStore } from './shared/rate-limit';
@@ -79,6 +80,10 @@ function merchantRoutes(): Hono<AppEnv> {
   router.get('/customizations', customizations.listCustomizations);
   router.get('/customizations/:id', customizations.getCustomization);
   router.get('/customizations/:id/assets/:assetId/content', customizations.getCustomizationAssetContent);
+
+  // Orders with personalized lines (files and full design data stay on the customization routes above)
+  router.get('/orders', orders.listOrders);
+  router.get('/orders/:orderId', orders.getOrder);
 
   // Per-store signing secrets for the order callback (needs the `integrations:manage` scope)
   router.get('/integration/credentials', integration.listCredentials);

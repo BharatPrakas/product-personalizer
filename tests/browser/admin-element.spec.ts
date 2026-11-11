@@ -178,6 +178,7 @@ describe('host contract', () => {
     expect((await adminHost.events(page, 'a', 'view-change')).at(-1)!.detail).toEqual({
       view: 'mapping',
       configId: null,
+      orderId: null,
     });
 
     await adminHost.set(page, 'a', 'view', 'list');
@@ -321,6 +322,7 @@ describe('host contract', () => {
       'Visuels',
       'Calques',
       'Gabarits',
+      'Polices',
     ]);
     await page.close();
   });

@@ -117,6 +117,29 @@ export class ApiClient {
     );
   }
 
+  /**
+   * A binary response (private files). The token travels in the Authorization header like every other
+   * call — never in the URL — and the bytes come back as a Blob for `downloadBlob` / object URLs.
+   */
+  async getBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+    try {
+      const request = firstValueFrom(
+        this.http.get(`${this.base()}${path}`, { headers: this.headers(false), responseType: 'blob' }),
+      );
+      if (!signal) return await request;
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      return await Promise.race([
+        request,
+        new Promise<never>((_, reject) =>
+          signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }),
+        ),
+      ]);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') throw error;
+      throw this.toError(error);
+    }
+  }
+
   async post<T>(path: string, body: unknown): Promise<Envelope<T>> {
     return this.request(() =>
       firstValueFrom(this.http.post<Envelope<T>>(`${this.base()}${path}`, body, { headers: this.headers() })),

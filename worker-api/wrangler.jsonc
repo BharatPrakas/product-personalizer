@@ -62,7 +62,7 @@
       "vars": {
         "ENVIRONMENT": "development",
         "API_VERSION": "v1",
-        "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300",
+        "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300, http://localhost:4600, http://localhost:4601",
         "ASSET_PUBLIC_BASE_URL": "",
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "info",
