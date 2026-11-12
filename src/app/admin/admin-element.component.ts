@@ -22,7 +22,8 @@ import { coerceBoolean, coerceStringList } from '../customizer/util/coerce';
 import { ConfirmHostComponent } from '../ui/confirm-host.component';
 import { ToastHostComponent } from '../ui/toast-host.component';
 import { ConfigurationRepository } from '../workspace/configuration-repository';
-import { RuntimeConfig } from '../workspace/cloud/runtime-config';
+import { RuntimeConfig, type TokenProvider } from '../workspace/cloud/runtime-config';
+import { ZenBasketBridge } from '../zenbasket/zenbasket-bridge';
 import { AdminEvents } from './admin-events.service';
 import { AdminHost } from './admin-host.service';
 import {
@@ -140,6 +141,7 @@ export class AdminElementComponent {
   protected readonly i18n = inject(I18n);
   private readonly router = inject(Router);
   private readonly runtime = inject(RuntimeConfig);
+  private readonly bridge = inject(ZenBasketBridge);
   private readonly events = inject(AdminEvents);
   private readonly repository = inject(ConfigurationRepository);
   private readonly element = inject<ElementRef<HTMLElement>>(ElementRef);
@@ -164,9 +166,16 @@ export class AdminElementComponent {
     }
     this.host.embedded.set(true);
     this.events.attach(this.element.nativeElement);
+    // ZenBasket host SDK (`element.zbService`): where short-lived tokens and products come from.
+    // The provider is harmless without an SDK: it is only asked when a token is needed and then fails.
+    this.bridge.attach(this.element.nativeElement);
+    const tokenProvider: TokenProvider = (request) => this.bridge.requestToken(request);
+    this.runtime.setTokenProvider(tokenProvider);
     inject(DestroyRef).onDestroy(() => {
       AdminElementComponent.instances--;
       this.events.attach(null);
+      this.bridge.detach(this.element.nativeElement);
+      this.runtime.clearTokenProvider(tokenProvider);
     });
 
     // Host properties -> services.

@@ -550,7 +550,7 @@ export class MappingPageComponent {
       });
     });
 
-    // Search: instant for a host catalog, debounced for a search endpoint.
+    // Search: instant for a host catalog, debounced for a remote search (endpoint or host SDK).
     effect(() => {
       this.query();
       this.catalog.source();
@@ -584,7 +584,7 @@ export class MappingPageComponent {
 
   private scheduleSearch(): void {
     if (this.searchTimer) clearTimeout(this.searchTimer);
-    const delay = this.catalog.source() === 'url' ? 250 : 0;
+    const delay = this.catalog.isRemote() ? 250 : 0;
     this.searchTimer = setTimeout(() => void this.loadProducts(), delay);
   }
 
@@ -592,7 +592,7 @@ export class MappingPageComponent {
     this.searchAbort?.abort();
     const controller = new AbortController();
     this.searchAbort = controller;
-    if (this.catalog.source() === 'url') this.catalogState.set('loading');
+    if (this.catalog.isRemote()) this.catalogState.set('loading');
     try {
       const found = await this.catalog.search(this.query(), controller.signal);
       if (controller.signal.aborted) return;

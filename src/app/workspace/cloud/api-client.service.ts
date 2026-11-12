@@ -59,6 +59,10 @@ export class ApiClientError extends Error {
   }
 }
 
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
 @Service()
 export class ApiClient {
   private readonly http = inject(HttpClient);
@@ -78,11 +82,35 @@ export class ApiClient {
     return headers;
   }
 
-  private async request<T>(fn: () => Promise<Envelope<T>>): Promise<Envelope<T>> {
+  /**
+   * Runs one API call with the session token. The token is obtained first (the host SDK issues
+   * short-lived ones), and when the API answers 401 the host is asked for a new token and the call is
+   * repeated once. `fn` must build its headers when it runs, so the repeat carries the new token.
+   * Aborts are passed through untouched; every other failure becomes an {@link ApiClientError}.
+   */
+  private async request<T>(fn: () => Promise<T>): Promise<T> {
+    this.base(); // not configured: fail before asking the host for a token
+    let used: string | null;
+    try {
+      used = await this.runtime.ensureToken();
+    } catch {
+      throw new ApiClientError(401, 'unauthenticated', 'The session token could not be obtained.');
+    }
     try {
       return await fn();
     } catch (error) {
-      throw this.toError(error);
+      if (isAbort(error)) throw error;
+      const failure = this.toError(error);
+      if (failure.status !== 401) throw failure;
+      // Another request may already have renewed the token this one was sent with.
+      const renewed = this.runtime.authToken() !== used || (await this.runtime.refreshToken());
+      if (!renewed) throw failure;
+      try {
+        return await fn();
+      } catch (retryError) {
+        if (isAbort(retryError)) throw retryError;
+        throw this.toError(retryError);
+      }
     }
   }
 
@@ -122,7 +150,7 @@ export class ApiClient {
    * call — never in the URL — and the bytes come back as a Blob for `downloadBlob` / object URLs.
    */
   async getBlob(path: string, signal?: AbortSignal): Promise<Blob> {
-    try {
+    return this.request(async () => {
       const request = firstValueFrom(
         this.http.get(`${this.base()}${path}`, { headers: this.headers(false), responseType: 'blob' }),
       );
@@ -134,10 +162,7 @@ export class ApiClient {
           signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }),
         ),
       ]);
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') throw error;
-      throw this.toError(error);
-    }
+    });
   }
 
   async post<T>(path: string, body: unknown): Promise<Envelope<T>> {

@@ -1,0 +1,55 @@
+{
+  "name": "product-personalization",
+  "version": "1.0.0",
+  "development": {
+    "storeadmin": {
+      "elementName": "zb-personalization-admin",
+      "script": "http://localhost:4600/personalizedproduct/store-admin.js",
+      "styles": [],
+      "sdkVersion": 1,
+      "config": {
+        "apiBaseUrl": "http://localhost:8787",
+        "persistence": "cloud"
+      }
+    },
+    "storefront": {
+      "elementName": "zb-product-customizer",
+      "script": "http://localhost:4600/personalizedproduct/storefront.js",
+      "styles": [],
+      "config": {
+        "apiBaseUrl": "http://localhost:8787"
+      }
+    }
+  },
+  "production": {
+    "storeadmin": {
+      "elementName": "zb-personalization-admin",
+      "script": "store-admin.js",
+      "styles": [],
+      "sdkVersion": 1,
+      "config": {
+        "apiBaseUrl": "https://zb-product-personalizer-api-dev.bharathprakash.workers.dev",
+        "persistence": "cloud"
+      },
+      "subMenus": [
+        {
+          "name": "Settings",
+          "path": "/products",
+          "isDefault": true
+        },
+        {
+          "name": "Products",
+          "path": "/settings"
+        }
+      ]
+    },
+    "storefront": {
+      "elementName": "zb-product-customizer",
+      "script": "storefront.js",
+      "styles": [],
+      "config": {
+        "apiBaseUrl": "https://zb-product-personalizer-api-dev.bharathprakash.workers.dev"
+      }
+    }
+  }
+}
