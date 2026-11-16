@@ -28,6 +28,13 @@
     // (cached at the edge). If set, it must front ONLY `stores/*/product-personalization/assets/*` of the
     // bucket — never the whole bucket, which also holds private customer files. See docs/direct-uploads.md.
     "ASSET_PUBLIC_BASE_URL": "",
+    // Where THIS environment serves the element's own bundled files (default fonts, sample images) —
+    // the `assets/` folder of the deployed `dist/product-personalization/`. Templates store only relative
+    // references (`assets/`); the storefront route resolves them against this, so the plugin's hosting
+    // path can change per environment/deploy without touching stored data. Must end in `/assets/`, be
+    // publicly reachable and allow CORS from every storefront origin. Empty = bundled fonts are not
+    // servable and templates using them answer `personalizable: false`.
+    "BUNDLED_ASSET_BASE_URL": "http://localhost:4600/assets/",
     "MAX_UPLOAD_BYTES": "15728640",
     "LOG_LEVEL": "info",
     // Local / dev object storage is AWS S3. Replace the placeholders once the bucket and region exist.
@@ -65,11 +72,11 @@
         "API_VERSION": "v1",
         "CORS_ALLOWED_ORIGINS": "http://localhost:4200,http://localhost:4300, http://localhost:4600, http://localhost:4601",
         "ASSET_PUBLIC_BASE_URL": "",
+        // Dev: the plugin served by the local Store Admin host (reachable only from machines running it).
+        "BUNDLED_ASSET_BASE_URL": "http://localhost:4600/PRODUCT_PERSONALIZATION/assets/",
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "info",
         "STORAGE_DRIVER": "r2",
-        "DEV_AUTH_BYPASS": "true",
-        "DEV_STORE_ID": "dev_store",
         // Direct (presigned) uploads on R2 use R2's S3 API. The binding does not expose the bucket name or
         // account, so they are set here; the R2 API token goes in `.dev.vars` / `wrangler secret put`:
         //   R2_ACCOUNT_ID (var), R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY (secrets).
@@ -99,6 +106,8 @@
         "API_VERSION": "v1",
         "CORS_ALLOWED_ORIGINS": "https://staging-admin.example.com,https://staging-shop.example.com,http://localhost:4200",
         "ASSET_PUBLIC_BASE_URL": "",
+        // TODO(staging): set to this environment's hosted `.../assets/` URL (see the top-level var).
+        "BUNDLED_ASSET_BASE_URL": "",
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "info",
         "STORAGE_DRIVER": "s3",
@@ -120,6 +129,8 @@
         "API_VERSION": "v1",
         "CORS_ALLOWED_ORIGINS": "https://admin.example.com,https://shop.example.com,http://localhost:4200",
         "ASSET_PUBLIC_BASE_URL": "",
+        // TODO(production): set to this environment's hosted `.../assets/` URL (see the top-level var).
+        "BUNDLED_ASSET_BASE_URL": "",
         "MAX_UPLOAD_BYTES": "15728640",
         "LOG_LEVEL": "warn",
         "STORAGE_DRIVER": "r2",

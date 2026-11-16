@@ -79,6 +79,7 @@ export class StorefrontService {
     const opts = {
       apiVersion: this.ctx.config.apiVersion,
       assetPublicBaseUrl: this.ctx.config.assetPublicBaseUrl,
+      bundledAssetBaseUrl: this.ctx.config.bundledAssetBaseUrl,
       publicOrigin: this.ctx.publicOrigin,
     };
     const locators = collectAssetLocators(match.published, opts);

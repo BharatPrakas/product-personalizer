@@ -62,6 +62,20 @@ describe('resolveBase (F01 / section 8)', () => {
   });
 });
 
+describe('resolveBase: plugin hosted on another origin than the host page', () => {
+  it('resolves the default relative assets/ against the explicit plugin base, not the host document', () => {
+    const base = resolveBase({
+      configUrl: null,
+      baseUrl: 'http://localhost:4600/PRODUCT_PERSONALIZATION/',
+      documentBase: 'http://localhost:4300/',
+    });
+    expect(resolveAssetDir('assets/', base, policy)).toEqual({
+      ok: true,
+      url: 'http://localhost:4600/PRODUCT_PERSONALIZATION/assets/',
+    });
+  });
+});
+
 describe('checkAssetSrc', () => {
   const base = 'https://shop.example/customizer/assets/';
 

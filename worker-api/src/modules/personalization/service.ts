@@ -163,6 +163,7 @@ export class PersonalizationService {
     const { ids } = collectAssetLocators(draft, {
       apiVersion: this.ctx.config.apiVersion,
       assetPublicBaseUrl: this.ctx.config.assetPublicBaseUrl,
+      bundledAssetBaseUrl: this.ctx.config.bundledAssetBaseUrl,
     });
     if (ids.size === 0) return;
     const unverified = await this.direct.uploads.unverifiedAssetIds(this.ctx.storeId, [...ids]);
@@ -189,6 +190,7 @@ export class PersonalizationService {
     return collectAssetLocators(config, {
       apiVersion: this.ctx.config.apiVersion,
       assetPublicBaseUrl: this.ctx.config.assetPublicBaseUrl,
+      bundledAssetBaseUrl: this.ctx.config.bundledAssetBaseUrl,
     });
   }
 

@@ -375,7 +375,7 @@ config keeps its mappings (restore brings them back); deleting it removes them.
 and `thumbnailSrc` (mockups, overlays, fixed-image layers, fonts, artwork choices) is classified. Worker delivery URLs
 (`.../plugins/personalization/assets/<id>/content`, any origin) and R2 custom-domain URLs (`ASSET_PUBLIC_BASE_URL/<object key>`) that belong
 to the requesting store become `<request origin>/api/v1/storefront/personalization/assets/<id>`; other absolute `http(s)` URLs are kept; relative
-paths resolve against an absolute `assetBaseUrl`; `assetBaseUrl` is then dropped (all references are absolute). The origin is the origin the
+paths resolve against an absolute `assetBaseUrl`, or — when the template's base is relative/missing (the editor's default `assets/`) — against this environment's `BUNDLED_ASSET_BASE_URL` var (the hosted `.../assets/` of the built element; set it per environment in `wrangler.jsonc`, it is what lets the plugin's hosting path change per deploy without touching stored templates; unset = such templates answer `personalizable:false`); `assetBaseUrl` is then dropped (all references are absolute). The origin is the origin the
 request arrived on (https behind Cloudflare). `GET /assets/:assetId` only serves a `stored` asset whose store's published, non-archived config
 references it (by id or object key); it sets `Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`, a strong
 `ETag` (the stored SHA-256), `nosniff` and `Cross-Origin-Resource-Policy: cross-origin`, and applies the owning store's CORS list.

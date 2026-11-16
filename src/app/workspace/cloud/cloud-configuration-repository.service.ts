@@ -16,7 +16,6 @@ import {
 } from '../configuration-repository';
 import type { ConfigurationRecord } from '../configuration.models';
 import { emptyConfiguration } from '../empty-configuration';
-import { withCloudAssetBase } from '../bundled-assets';
 import { ApiClient, ApiClientError } from './api-client.service';
 import { AssetSyncService } from './asset-sync.service';
 
@@ -106,7 +105,7 @@ export class CloudConfigurationRepository extends ConfigurationRepository {
 
   async create(input: NewConfigurationInput): Promise<ConfigurationRecord> {
     const id = this.newId();
-    let draft = withCloudAssetBase(emptyConfiguration(id, input.name.trim() || 'Untitled configuration'));
+    let draft = emptyConfiguration(id, input.name.trim() || 'Untitled configuration');
     if (input.mockupSrc) {
       draft = addMockup(draft, {
         name: input.mockupName?.trim() || 'Front view',
@@ -118,7 +117,7 @@ export class CloudConfigurationRepository extends ConfigurationRepository {
 
   async createFromDraft(draft: ProductConfig): Promise<ConfigurationRecord> {
     const id = this.newId();
-    return this.persistNew(id, withCloudAssetBase({ ...draft, id, status: 'draft', version: 1 }));
+    return this.persistNew(id, { ...draft, id, status: 'draft', version: 1 });
   }
 
   private async persistNew(id: string, draft: ProductConfig): Promise<ConfigurationRecord> {

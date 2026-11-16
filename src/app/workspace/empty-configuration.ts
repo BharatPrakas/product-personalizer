@@ -4,11 +4,10 @@ import { PRODUCT_SCHEMA_VERSION, type ProductConfig } from '../customizer/models
  * A genuinely empty configuration: one variant and the bundled fonts, nothing else. The merchant
  * adds the mockup, printable areas, artwork and customer inputs.
  *
- * `assetBaseUrl` stays RELATIVE here on purpose: this factory is shared by the standalone app
- * (where relative resolves correctly against its own origin — see workspace/asset-base.ts) and the
- * cloud-backed repository, which overrides it to an absolute URL before anything is sent to the
- * Worker (see bundled-assets.ts, applied in cloud/cloud-configuration-repository.service.ts). Do
- * not change this default without checking both callers.
+ * `assetBaseUrl` stays RELATIVE here on purpose, for the standalone app (where relative resolves
+ * against its own origin — see workspace/asset-base.ts) AND for cloud templates: the Worker resolves a
+ * relative base against its per-environment `BUNDLED_ASSET_BASE_URL`, so no environment-specific URL is
+ * ever stored in a template. Never bake a host into this default.
  */
 export function emptyConfiguration(id: string, name: string): ProductConfig {
   return {

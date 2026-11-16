@@ -6,7 +6,8 @@
  *   - the authorized Worker delivery URL   `<origin>/api/<v>/<ADMIN_SEGMENT>/assets/<uuid>/content`
  *   - an R2 custom-domain URL              `<ASSET_PUBLIC_BASE_URL>/<object key>`
  *   - any other absolute http(s) URL       (host/CDN hosted; passed through untouched)
- *   - a path relative to `assetBaseUrl`    (resolved against it when that is absolute)
+ *   - a path relative to `assetBaseUrl`    (resolved against it when that is absolute; otherwise against
+ *                                          this deployment's `BUNDLED_ASSET_BASE_URL`, see below)
  *   - `idb:` / `data:` / other schemes     (browser-local; can NEVER be served)
  *
  * The storefront rewrites every Worker-managed reference to
@@ -35,6 +36,13 @@ export interface AssetUrlOptions {
   apiVersion: string;
   /** R2 custom-domain base (no trailing slash), when configured. */
   assetPublicBaseUrl: string | null;
+  /**
+   * Where THIS deployment hosts the element's own bundled files (the default fonts and the rest of
+   * `dist/product-personalization/assets/`). A relative reference whose template carries no absolute
+   * `assetBaseUrl` (the editor's default `assets/`) resolves against this instead, so the stored
+   * template holds no environment-specific URL and the path can change per deploy/environment.
+   */
+  bundledAssetBaseUrl?: string | null;
 }
 
 export type ReferenceClass =
@@ -46,6 +54,16 @@ export type ReferenceClass =
   | { kind: 'external'; url: string }
   /** Cannot be turned into an absolute http(s) URL (idb:, data:, relative without a base, ...). */
   | { kind: 'unresolved'; reason: string };
+
+/** `value` as a URL when it is an absolute http(s) URL; otherwise null. */
+function absoluteHttpBase(value: string | undefined): URL | null {
+  try {
+    const base = new URL(value ?? '');
+    return base.protocol === 'https:' || base.protocol === 'http:' ? base : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Classify one stored reference. Pure; `assetBaseUrl` is the config's own (possibly relative) base. */
 export function classifyReference(
@@ -69,15 +87,10 @@ export function classifyReference(
   } else {
     // Relative reference: only resolvable against an ABSOLUTE http(s) asset base.
     if (value.startsWith('//')) return { kind: 'unresolved', reason: 'protocol-relative' };
-    let base: URL;
-    try {
-      base = new URL(assetBaseUrl ?? '');
-    } catch {
-      return { kind: 'unresolved', reason: 'relative-without-absolute-base' };
-    }
-    if (base.protocol !== 'https:' && base.protocol !== 'http:') {
-      return { kind: 'unresolved', reason: 'relative-without-absolute-base' };
-    }
+    // A template's own absolute base wins (a deliberate CDN); a relative/missing/`idb:` one falls back
+    // to this environment's bundled-assets base.
+    const base = absoluteHttpBase(assetBaseUrl) ?? absoluteHttpBase(opts.bundledAssetBaseUrl ?? undefined);
+    if (!base) return { kind: 'unresolved', reason: 'relative-without-absolute-base' };
     if (!base.pathname.endsWith('/')) base.pathname += '/';
     try {
       url = new URL(value, base);

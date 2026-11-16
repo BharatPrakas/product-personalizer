@@ -127,6 +127,26 @@ describe('asset reference classification', () => {
     expect(classifyReference('a.png', undefined, OPTS).kind).toBe('unresolved');
     expect(classifyReference('a.png', 'file:///tmp/', OPTS).kind).toBe('unresolved');
   });
+
+  it('resolves a relative reference against the environment bundled-assets base when the template has no absolute base', () => {
+    const opts = { ...OPTS, bundledAssetBaseUrl: 'https://plugins.example.com/v7/assets' };
+    const expected = { kind: 'external', url: 'https://plugins.example.com/v7/assets/fonts/inter.woff2' };
+    // The editor's relative default, a missing base and a browser-local one all fall back to it.
+    expect(classifyReference('fonts/inter.woff2', 'assets/', opts)).toEqual(expected);
+    expect(classifyReference('fonts/inter.woff2', undefined, opts)).toEqual(expected);
+    expect(classifyReference('fonts/inter.woff2', 'idb:abc123', opts)).toEqual(expected);
+    // A template's own absolute base (a deliberate CDN) still wins.
+    expect(classifyReference('fonts/inter.woff2', 'https://cdn.example.com/x/', opts)).toEqual({
+      kind: 'external',
+      url: 'https://cdn.example.com/x/fonts/inter.woff2',
+    });
+    // An unusable environment base is the same as none: the reference stays unresolved.
+    for (const bundledAssetBaseUrl of [null, '', 'assets/', 'ftp://x/assets/']) {
+      expect(classifyReference('fonts/inter.woff2', 'assets/', { ...OPTS, bundledAssetBaseUrl }).kind).toBe(
+        'unresolved',
+      );
+    }
+  });
 });
 
 describe('rewriteAssetReferences', () => {

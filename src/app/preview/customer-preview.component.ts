@@ -12,6 +12,7 @@ import { IconComponent } from '../ui/icon.component';
 import { MenuComponent } from '../ui/menu.component';
 import { ToastService } from '../ui/toast.service';
 import { inject } from '@angular/core';
+import { assetBaseUrl } from '../workspace/asset-base';
 
 type Device = 'desktop' | 'mobile';
 
@@ -97,6 +98,7 @@ type Device = 'desktop' | 'mobile';
       <div class="preview-frame" [class.preview-frame--mobile]="device() === 'mobile'">
         <app-product-customizer
           [config]="config()"
+          [baseUrl]="assetBase"
           [allowLocalAssets]="true"
           [saveResult]="saveResult()"
           (customizer-save)="onSave($event)"
@@ -114,6 +116,12 @@ type Device = 'desktop' | 'mobile';
 export class CustomerPreviewComponent {
   private readonly toasts = inject(ToastService);
   private readonly i18n = inject(I18n);
+
+  /**
+   * Relative asset paths (the bundled fonts, `assets/`) resolve against where the plugin was loaded from.
+   * Inside a host such as Store Admin the document base is the HOST's origin, which does not serve them.
+   */
+  protected readonly assetBase = assetBaseUrl();
 
   readonly config = input.required<ProductConfig>();
   readonly sourceLabel = input('');

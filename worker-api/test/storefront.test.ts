@@ -462,6 +462,18 @@ describe('storefront assets', () => {
     expect(d.config.assetBaseUrl).toBeUndefined();
   });
 
+  it('serves a template with the relative default assetBaseUrl from the environment BUNDLED_ASSET_BASE_URL', async () => {
+    await seedPublished('cfg-bundled', STORE_A, draftWith('cfg-bundled', 'fonts/inter.woff2'));
+    await mapTo('cfg-bundled', 'product', 'prod-bundled');
+    // No bundled base configured for this environment: nothing can resolve it, so the config is withheld.
+    expect(await data(await pub(cfgUrl('prod-bundled', STORE_A)))).toEqual({ personalizable: false });
+    // The same stored template, served by two environments, resolves against each one's own base.
+    for (const base of ['https://dev-plugins.example.com/p1/assets/', 'https://plugins.example.com/p2/assets/']) {
+      const d = await data(await pub(cfgUrl('prod-bundled', STORE_A), { env: { BUNDLED_ASSET_BASE_URL: base } }));
+      expect(d.config.mockups[0].src).toBe(`${base}fonts/inter.woff2`);
+    }
+  });
+
   it('hands out the signed Worker URL for drafts and the public asset host only for PUBLISHED assets', async () => {
     const env = { ASSET_PUBLIC_BASE_URL: 'https://assets.example.com' };
     const asset = await upload(STORE_A, env);

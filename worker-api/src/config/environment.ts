@@ -21,6 +21,11 @@ export interface Env {
   API_VERSION?: string;
   CORS_ALLOWED_ORIGINS?: string;
   ASSET_PUBLIC_BASE_URL?: string;
+  /**
+   * Public URL of the element's own bundled files for THIS environment (ends in `/assets/`). Relative
+   * template references resolve against it; see `storefront-assets.ts`. Per environment, not per build.
+   */
+  BUNDLED_ASSET_BASE_URL?: string;
   MAX_UPLOAD_BYTES?: string;
   LOG_LEVEL?: string;
   /** `r2` (production, uses the binding) or `s3` (local / dev / staging). Defaults to `r2`. */
@@ -131,6 +136,8 @@ export interface AppConfig {
   corsAllowedOrigins: readonly string[];
   /** Optional public delivery base for intentionally-public assets (an R2 custom domain). */
   assetPublicBaseUrl: string | null;
+  /** Where this environment hosts the element's bundled files (fonts etc.); null = not configured. */
+  bundledAssetBaseUrl: string | null;
   maxUploadBytes: number;
   logLevel: LogLevel;
   jwtSigningSecret: string | null;
@@ -224,6 +231,7 @@ export function loadConfig(env: Env): AppConfig {
     apiVersion: env.API_VERSION?.trim() || 'v1',
     corsAllowedOrigins: parseOrigins(env.CORS_ALLOWED_ORIGINS),
     assetPublicBaseUrl: env.ASSET_PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || null,
+    bundledAssetBaseUrl: env.BUNDLED_ASSET_BASE_URL?.trim() || null,
     maxUploadBytes: Number.isFinite(maxUpload) && maxUpload > 0 ? maxUpload : DEFAULT_MAX_UPLOAD_BYTES,
     logLevel: parseLogLevel(env.LOG_LEVEL),
     jwtSigningSecret: env.JWT_SIGNING_SECRET?.trim() || null,
