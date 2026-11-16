@@ -4,6 +4,7 @@ import { firstValueFrom } from 'rxjs';
 import type { ProductConfig } from '../../customizer/models/product.models';
 import type { ConfigurationRecord } from '../configuration.models';
 import { uuid } from '../../customizer/util/ids';
+import { DirectUploadError, uploadDirect, type UploadGateway, type UploadOptions } from '../../customizer/util/direct-upload';
 import { RuntimeConfig } from './runtime-config';
 
 /** Success envelope returned by the Worker. */
@@ -34,6 +35,33 @@ export interface AssetDto {
   clientRef: string | null;
   createdAt: number;
   deliveryUrl: string;
+}
+
+/** What the Worker returns when it confirms a direct upload: the asset, plus the upload contract's fields. */
+export interface UploadedAssetDto extends AssetDto {
+  uploadId: string | null;
+  assetId: string;
+  size: number;
+  /** Only set for an asset approved for public delivery; a fresh upload is never public. */
+  publicUrl: string | null;
+}
+
+/** Response to `POST /assets/upload-url`. `uploadUrl` is null when the file is already stored. */
+interface UploadInitiationDto {
+  uploadId: string | null;
+  assetId: string;
+  status: 'pending' | 'stored';
+  uploadUrl: string | null;
+  method: 'PUT' | null;
+  headers: Record<string, string>;
+  expiresIn: number;
+  asset?: UploadedAssetDto;
+}
+
+export interface UploadAssetOptions extends UploadOptions {
+  clientRef?: string;
+  configId?: string;
+  filename?: string;
 }
 
 export interface ConfigVersionSummaryDto {
@@ -259,7 +287,46 @@ export class ApiClient {
 
   // ---- assets ----
 
-  async uploadAsset(blob: Blob, opts: { clientRef?: string; configId?: string; filename?: string }): Promise<AssetDto> {
+  /**
+   * Uploads a merchant asset (image or font) straight to object storage and returns the asset the Worker
+   * verified. The browser never learns which provider is behind the URL: the Worker returns a presigned
+   * PUT, the bytes go directly to R2 / S3, and the Worker then checks them. Idempotent per `clientRef`:
+   * a retried or repeated upload resolves to the same asset. When the Worker has direct uploads switched
+   * off (503 `direct_upload_not_configured`) it falls back to the proxied route.
+   */
+  async uploadAsset(blob: Blob, opts: UploadAssetOptions = {}): Promise<UploadedAssetDto> {
+    const gateway: UploadGateway<UploadedAssetDto> = {
+      initiate: async (renewUploadId) => {
+        const { data } = await this.post<UploadInitiationDto>('/assets/upload-url', {
+          contentType: blob.type || 'application/octet-stream',
+          size: blob.size,
+          purpose: 'merchant-asset',
+          ...(opts.filename ? { filename: opts.filename } : {}),
+          ...(opts.configId ? { configId: opts.configId } : {}),
+          ...(opts.clientRef ? { clientRef: opts.clientRef } : {}),
+          ...(renewUploadId ? { uploadId: renewUploadId } : {}),
+        });
+        if (data.status === 'stored' && data.asset) return { kind: 'stored', result: data.asset };
+        if (!data.uploadId || !data.uploadUrl || data.method !== 'PUT') {
+          throw new ApiClientError(502, 'bad_upload_response', 'The upload service answered unexpectedly.');
+        }
+        return {
+          kind: 'pending',
+          put: { uploadId: data.uploadId, uploadUrl: data.uploadUrl, method: 'PUT', headers: data.headers, expiresIn: data.expiresIn },
+        };
+      },
+      complete: async (uploadId) => (await this.post<UploadedAssetDto>('/assets/complete', { uploadId })).data,
+    };
+    try {
+      return await uploadDirect(blob, gateway, opts);
+    } catch (error) {
+      if (error instanceof DirectUploadError && error.code === 'not-configured') return this.uploadAssetProxied(blob, opts);
+      throw error;
+    }
+  }
+
+  /** The legacy route: the bytes pass through the Worker. Kept only as a fallback for environments without presigning. */
+  private async uploadAssetProxied(blob: Blob, opts: UploadAssetOptions): Promise<UploadedAssetDto> {
     let params = new HttpParams();
     if (opts.clientRef) params = params.set('clientRef', opts.clientRef);
     if (opts.configId) params = params.set('configId', opts.configId);
@@ -268,7 +335,14 @@ export class ApiClient {
     const envelope = await this.request(() =>
       firstValueFrom(this.http.post<Envelope<AssetDto>>(`${this.base()}/assets`, blob, { headers, params })),
     );
-    return envelope.data;
+    const asset = envelope.data;
+    return { ...asset, uploadId: null, assetId: asset.id, size: asset.sizeBytes, publicUrl: null };
+  }
+
+  /** A short-lived presigned GET for a private merchant asset. Generated per call; never store it. */
+  async getAssetDownloadUrl(id: string): Promise<{ url: string; expiresIn: number }> {
+    const { data } = await this.get<{ url: string; expiresIn: number }>(`/assets/${encodeURIComponent(id)}/url`);
+    return data;
   }
 
   async listAssets(opts: { kind?: 'image' | 'font'; configId?: string } = {}): Promise<AssetDto[]> {

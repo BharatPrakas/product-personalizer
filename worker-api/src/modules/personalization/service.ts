@@ -16,13 +16,14 @@ import type { AppConfig } from '../../config/environment';
 import type { Logger } from '../../shared/logger';
 import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 import { recordAudit } from '../audit/audit';
-import { type ObjectStorage, assetKeyPrefix, generateObjectKey } from '../../storage/object-storage';
+import { type ObjectStorage, StorageConfigError, assetKeyPrefix, generateObjectKey } from '../../storage/object-storage';
 import { sniffImage } from '../../shared/image-sniff';
 import { sniffFont } from '../../shared/font-sniff';
 import {
   ConflictError,
   NotFoundError,
   PayloadTooLargeError,
+  ServiceUnavailableError,
   UnsupportedMediaTypeError,
   ValidationError,
 } from '../../shared/errors';
@@ -30,8 +31,12 @@ import { PersonalizationRepository, parseConfigRow, type AssetRow, type ConfigRo
 import { isForeignKeyViolation } from './support';
 import { signAsset, upgradeLegacyAssetUrls } from './asset-signature';
 import { validateProductConfig } from './validation';
+import { collectAssetLocators } from './storefront-assets';
+import { DirectUploadService } from './direct-upload-service';
 import {
   type AssetDto,
+  type UploadInitiationDto,
+  type UploadedAssetDto,
   type ConfigRecordDto,
   type ConfigVersionDto,
   type ConfigVersionSummaryDto,
@@ -56,9 +61,16 @@ function toNum(value: number | null): number | null {
 
 export class PersonalizationService {
   private readonly repo: PersonalizationRepository;
+  private readonly direct: DirectUploadService;
 
   constructor(private readonly ctx: ServiceContext) {
     this.repo = new PersonalizationRepository(ctx.db);
+    this.direct = new DirectUploadService({
+      db: ctx.db,
+      storage: () => ctx.storage,
+      config: ctx.config,
+      logger: ctx.logger,
+    });
   }
 
   // ---- mapping ----
@@ -77,9 +89,9 @@ export class PersonalizationService {
   }
 
   private deliveryUrl(row: AssetRow): string {
-    if (this.ctx.config.assetPublicBaseUrl) {
-      return `${this.ctx.config.assetPublicBaseUrl}/${row.object_key}`;
-    }
+    // Always the signed Worker URL, never `ASSET_PUBLIC_BASE_URL`: an asset only becomes eligible for the
+    // public host once a PUBLISHED configuration references it (see the storefront rewrite), so a draft
+    // or unreferenced upload is never handed out as a public URL.
     // The renderer loads images with plain browser requests (<img>, fetch), which cannot carry a Bearer
     // token, so the stored reference is a signed URL on the public asset route. The signature binds it
     // to this store and asset, so draft assets stay private. The Bearer-protected `/assets/:id/content`
@@ -142,10 +154,51 @@ export class PersonalizationService {
     if (!result.ok) throw new ValidationError(result.issues);
   }
 
+  /**
+   * A configuration may only reference assets whose upload was verified. A direct upload's asset id is
+   * known to the browser as soon as it is initiated, so a draft could name one that is still pending (or
+   * failed); refuse that here, before it can be saved or published.
+   */
+  private async assertNoUnverifiedUploads(draft: ProductConfigLike): Promise<void> {
+    const { ids } = collectAssetLocators(draft, {
+      apiVersion: this.ctx.config.apiVersion,
+      assetPublicBaseUrl: this.ctx.config.assetPublicBaseUrl,
+    });
+    if (ids.size === 0) return;
+    const unverified = await this.direct.uploads.unverifiedAssetIds(this.ctx.storeId, [...ids]);
+    if (unverified.length > 0) {
+      throw new ValidationError(
+        unverified.map((id) => ({
+          path: 'assets',
+          code: 'upload_unverified',
+          message: `Asset ${id} has not finished uploading. Wait for the upload to be confirmed.`,
+        })),
+      );
+    }
+  }
+
   /** Refuse to touch any object outside this store's own asset prefix. */
   private assertOwnKey(objectKey: string): void {
     if (!objectKey.startsWith(assetKeyPrefix(this.ctx.storeId))) {
       throw new Error('Asset key is outside this store\'s asset prefix.');
+    }
+  }
+
+  /** Asset ids and object keys a config document references (draft, published or a version snapshot). */
+  private locate(config: ProductConfigLike) {
+    return collectAssetLocators(config, {
+      apiVersion: this.ctx.config.apiVersion,
+      assetPublicBaseUrl: this.ctx.config.assetPublicBaseUrl,
+    });
+  }
+
+  /** Link freshly uploaded (still unowned) assets to the config that now references them. Best effort. */
+  private async adoptReferencedAssets(configDbId: string, draft: ProductConfigLike): Promise<void> {
+    try {
+      const { ids } = this.locate(draft);
+      if (ids.size > 0) await this.repo.adoptAssets(this.ctx.storeId, configDbId, [...ids]);
+    } catch (error) {
+      this.ctx.logger.warn('asset adoption failed', { error: String(error) });
     }
   }
 
@@ -183,6 +236,7 @@ export class PersonalizationService {
 
   async createConfig(input: { clientConfigId?: string; draft: unknown }): Promise<ConfigRecordDto> {
     this.assertValid(input.draft);
+    await this.assertNoUnverifiedUploads(input.draft);
     const draft = input.draft;
     const clientId = input.clientConfigId ?? this.newClientId();
 
@@ -202,12 +256,14 @@ export class PersonalizationService {
       draft: normalized,
       nowMs: now,
     });
+    await this.adoptReferencedAssets(row.id, normalized);
     await this.audit('config.create', clientId, { schemaVersion: row.schema_version });
     return this.toRecord(row);
   }
 
   async saveDraft(clientId: string, draft: unknown, expectedUpdatedAt: number): Promise<ConfigRecordDto> {
     this.assertValid(draft);
+    await this.assertNoUnverifiedUploads(draft);
     const normalized: ProductConfigLike = { ...draft, id: clientId, status: 'draft' };
     const result = await this.repo.updateDraft({
       storeId: this.ctx.storeId,
@@ -222,6 +278,7 @@ export class PersonalizationService {
     if (result === 'conflict') {
       throw new ConflictError('This configuration was changed somewhere else since you opened it.');
     }
+    await this.adoptReferencedAssets(result.id, normalized);
     await this.audit('config.save_draft', clientId);
     return this.toRecord(result);
   }
@@ -233,6 +290,7 @@ export class PersonalizationService {
       throw new ConflictError('This configuration was changed somewhere else since you opened it.');
     }
     this.assertValid(current.draft);
+    await this.assertNoUnverifiedUploads(current.draft);
     this.assertPublishable(current.draft);
 
     const version = typeof current.draft.version === 'number' ? current.draft.version : 1;
@@ -326,7 +384,22 @@ export class PersonalizationService {
     // is self-correcting, never destructive).
     const current = await this.repo.getByClientId(this.ctx.storeId, clientId);
     if (!current) throw new NotFoundError(`Configuration "${clientId}" was not found.`);
-    const candidates = await this.repo.assetsForConfig(this.ctx.storeId, current.id);
+    // Candidates = assets linked to this config PLUS anything its draft / published copy / versions
+    // reference. Linking alone misses assets uploaded before the config row existed (the editor uploads a
+    // new configuration's images first), which would otherwise stay in storage forever.
+    const linked = await this.repo.assetsForConfig(this.ctx.storeId, current.id);
+    const ids = new Set<string>();
+    const keys = new Set<string>();
+    for (const doc of await this.repo.contentsForConfig(this.ctx.storeId, current.id)) {
+      const found = this.locate(doc);
+      found.ids.forEach((id) => ids.add(id));
+      found.keys.forEach((key) => keys.add(key));
+    }
+    // Fonts are a store-wide library (listed and deleted separately), so a config never takes them with it.
+    const referenced = (await this.repo.findAssetRows(this.ctx.storeId, [...ids], [...keys])).filter(
+      (a) => !a.content_type.startsWith('font/'),
+    );
+    const candidates = [...new Map([...linked, ...referenced].map((a) => [a.id, a])).values()];
     try {
       await this.repo.deleteByClientId(this.ctx.storeId, clientId);
     } catch (error) {
@@ -438,6 +511,97 @@ export class PersonalizationService {
     });
     await this.audit('asset.upload', row.id, { sizeBytes: size, contentType: sniffed.type });
     return this.toAsset(row);
+  }
+
+  // ---- direct uploads (presigned PUT -> verify) ----
+
+  /**
+   * Step 1 of a direct upload: validate the declared file and hand back a presigned PUT for ONE staging
+   * object. The store comes from the verified token, never from the request. The bytes never touch the
+   * Worker; `completeUpload` verifies them afterwards.
+   */
+  async initiateUpload(input: {
+    filename?: string;
+    contentType: string;
+    size: number;
+    sha256?: string;
+    clientRef?: string;
+    configClientId?: string;
+    uploadId?: string;
+  }): Promise<UploadInitiationDto> {
+    // Idempotent: a clientRef that already has a verified asset needs no upload at all.
+    if (input.clientRef) {
+      const stored = await this.repo.getAssetByClientRef(this.ctx.storeId, input.clientRef);
+      if (stored) {
+        const asset = this.toUploadedAsset(stored, null);
+        return { uploadId: null, assetId: stored.id, status: 'stored', uploadUrl: null, method: null, headers: {}, expiresIn: 0, asset };
+      }
+    }
+    let configDbId: string | null = null;
+    if (input.configClientId) {
+      const config = await this.repo.getByClientId(this.ctx.storeId, input.configClientId);
+      configDbId = config?.id ?? null;
+    }
+    const { upload, request } = await this.direct.initiate({
+      scope: 'merchant',
+      storeId: this.ctx.storeId,
+      purpose: 'merchant-asset',
+      filename: input.filename,
+      contentType: input.contentType,
+      size: input.size,
+      sha256: input.sha256,
+      clientRef: input.clientRef,
+      configDbId,
+      renewUploadId: input.uploadId,
+    });
+    await this.audit('asset.upload_initiated', upload.asset_id, { uploadId: upload.id, size: upload.expected_size });
+    return {
+      uploadId: upload.id,
+      assetId: upload.asset_id,
+      status: 'pending',
+      uploadUrl: request.url,
+      method: 'PUT',
+      headers: request.headers,
+      expiresIn: request.expiresIn,
+    };
+  }
+
+  /** Step 3: verify the uploaded object and create the asset. Idempotent and safe to call concurrently. */
+  async completeUpload(uploadId: string): Promise<UploadedAssetDto> {
+    const { upload, assetId, fresh } = await this.direct.complete(this.ctx.storeId, uploadId, 'merchant');
+    const row = await this.repo.getAssetById(this.ctx.storeId, assetId);
+    if (!row || row.status === 'deleted') throw new NotFoundError('That asset was not found.');
+    if (fresh) {
+      await this.audit('asset.upload', row.id, { sizeBytes: Number(row.size_bytes), contentType: row.content_type, direct: true });
+    }
+    return this.toUploadedAsset(row, upload.id);
+  }
+
+  private toUploadedAsset(row: AssetRow, uploadId: string | null): UploadedAssetDto {
+    const dto = this.toAsset(row);
+    return { ...dto, uploadId, assetId: dto.id, size: dto.sizeBytes, publicUrl: null };
+  }
+
+  /**
+   * A short-lived presigned GET for a merchant asset. The URL is generated per request and never stored.
+   * Merchant assets are private until a published configuration references them, so this is the
+   * authorized-read path for the editor and API clients (the Bearer-protected `/content` stream remains).
+   */
+  async getAssetDownloadUrl(assetId: string): Promise<{ url: string; method: 'GET'; expiresIn: number }> {
+    const row = await this.repo.getAssetById(this.ctx.storeId, assetId);
+    if (!row || row.status === 'deleted') throw new NotFoundError('That asset was not found.');
+    this.assertOwnKey(row.object_key);
+    try {
+      const signed = await this.ctx.storage.presignGet(row.object_key, {
+        expiresInSeconds: this.ctx.config.privateUrlTtlSeconds,
+      });
+      return { url: signed.url, method: 'GET', expiresIn: signed.expiresIn };
+    } catch (error) {
+      if (error instanceof StorageConfigError) {
+        throw new ServiceUnavailableError('direct_download_not_configured', 'Direct downloads are not configured on this environment.');
+      }
+      throw error;
+    }
   }
 
   async getAsset(assetId: string): Promise<AssetDto> {

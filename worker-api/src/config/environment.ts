@@ -29,6 +29,22 @@ export interface Env {
   S3_REGION?: string;
   /** Optional S3-compatible endpoint (for example MinIO). Leave unset for AWS. */
   S3_ENDPOINT?: string;
+  /** Cloudflare account id; with R2_BUCKET_NAME it forms the R2 S3 endpoint used to presign direct uploads. */
+  R2_ACCOUNT_ID?: string;
+  /** The R2 bucket's name (the binding does not expose it). Required for R2 direct uploads. */
+  R2_BUCKET_NAME?: string;
+  /** Overrides the R2 S3 endpoint, e.g. an EU-jurisdiction bucket: `https://<acct>.eu.r2.cloudflarestorage.com`. */
+  R2_S3_ENDPOINT?: string;
+  /** Lifetime of a presigned upload URL, in seconds (default 300). */
+  UPLOAD_URL_TTL_SECONDS?: string;
+  /** Lifetime of a presigned private-download URL, in seconds (default 60). */
+  PRIVATE_URL_TTL_SECONDS?: string;
+  /** Minutes an unconfirmed upload is kept after its URL expires before cleanup reaps it (default 30). */
+  PENDING_UPLOAD_GRACE_MINUTES?: string;
+  /** Most unconfirmed direct uploads one store may have open at once (default 500). */
+  MAX_OPEN_UPLOADS_PER_STORE?: string;
+  /** `false` disables the legacy byte-proxying upload routes (POST assets / storefront uploads). Default `true`. */
+  LEGACY_PROXY_UPLOADS?: string;
   /** Public storefront limiter: requests allowed per store + client IP per window (default 120). */
   STOREFRONT_RATE_LIMIT?: string;
   /** Public storefront limiter window in seconds (default 60). */
@@ -96,6 +112,13 @@ export interface Env {
    * credentials expire, so use long-term IAM user keys for staging.
    */
   AWS_SESSION_TOKEN?: string;
+  /**
+   * R2 API token (S3-compatible credentials) scoped to the one bucket, Object Read & Write. Used ONLY to
+   * presign direct-upload / private-download URLs; server-side R2 operations use the binding. Only needed
+   * when STORAGE_DRIVER is `r2`. Never log it or expose it to the browser.
+   */
+  R2_ACCESS_KEY_ID?: string;
+  R2_SECRET_ACCESS_KEY?: string;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -120,6 +143,14 @@ export interface AppConfig {
   s3Bucket: string | null;
   s3Region: string | null;
   s3Endpoint: string | null;
+  /** Normalised R2 S3 endpoint (no trailing slash), or null when R2_ACCOUNT_ID / R2_S3_ENDPOINT are unset. */
+  r2S3Endpoint: string | null;
+  r2BucketName: string | null;
+  uploadUrlTtlSeconds: number;
+  privateUrlTtlSeconds: number;
+  pendingUploadGraceMinutes: number;
+  maxOpenUploadsPerStore: number;
+  legacyProxyUploads: boolean;
   storefrontRateLimit: number;
   storefrontRateWindowSeconds: number;
   storefrontWriteRateLimit: number;
@@ -135,6 +166,10 @@ export interface AppConfig {
 }
 
 const DEFAULT_MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
+const DEFAULT_UPLOAD_URL_TTL_SECONDS = 300;
+const DEFAULT_PRIVATE_URL_TTL_SECONDS = 60;
+const DEFAULT_PENDING_UPLOAD_GRACE_MINUTES = 30;
+const DEFAULT_MAX_OPEN_UPLOADS_PER_STORE = 500;
 const DEFAULT_STOREFRONT_RATE_LIMIT = 120;
 const DEFAULT_STOREFRONT_RATE_WINDOW_SECONDS = 60;
 const DEFAULT_STOREFRONT_WRITE_RATE_LIMIT = 30;
@@ -171,6 +206,13 @@ function parseEnvironment(raw: string | undefined): AppConfig['environment'] {
   return raw === 'staging' || raw === 'production' ? raw : 'development';
 }
 
+function r2Endpoint(env: Env): string | null {
+  const explicit = env.R2_S3_ENDPOINT?.trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const account = env.R2_ACCOUNT_ID?.trim();
+  return account && /^[A-Za-z0-9]{8,64}$/.test(account) ? `https://${account}.r2.cloudflarestorage.com` : null;
+}
+
 let cached: { env: Env; config: AppConfig } | null = null;
 
 /** Parse (and cache per-isolate) the validated runtime config from the raw bindings. */
@@ -193,6 +235,14 @@ export function loadConfig(env: Env): AppConfig {
     s3Bucket: env.S3_BUCKET?.trim() || null,
     s3Region: env.S3_REGION?.trim() || null,
     s3Endpoint: env.S3_ENDPOINT?.trim().replace(/\/+$/, '') || null,
+    r2S3Endpoint: r2Endpoint(env),
+    r2BucketName: env.R2_BUCKET_NAME?.trim() || null,
+    // Presigned URLs live minutes, not hours: clamp to SigV4's useful range regardless of what is set.
+    uploadUrlTtlSeconds: Math.min(positiveInt(env.UPLOAD_URL_TTL_SECONDS, DEFAULT_UPLOAD_URL_TTL_SECONDS), 3600),
+    privateUrlTtlSeconds: Math.min(positiveInt(env.PRIVATE_URL_TTL_SECONDS, DEFAULT_PRIVATE_URL_TTL_SECONDS), 900),
+    pendingUploadGraceMinutes: positiveInt(env.PENDING_UPLOAD_GRACE_MINUTES, DEFAULT_PENDING_UPLOAD_GRACE_MINUTES),
+    maxOpenUploadsPerStore: positiveInt(env.MAX_OPEN_UPLOADS_PER_STORE, DEFAULT_MAX_OPEN_UPLOADS_PER_STORE),
+    legacyProxyUploads: env.LEGACY_PROXY_UPLOADS?.trim().toLowerCase() !== 'false',
     storefrontRateLimit: positiveInt(env.STOREFRONT_RATE_LIMIT, DEFAULT_STOREFRONT_RATE_LIMIT),
     storefrontRateWindowSeconds: positiveInt(
       env.STOREFRONT_RATE_WINDOW_SECONDS,

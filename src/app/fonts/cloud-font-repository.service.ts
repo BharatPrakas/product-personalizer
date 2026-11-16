@@ -1,4 +1,5 @@
 import { Service, inject } from '@angular/core';
+import { DirectUploadError } from '../customizer/util/direct-upload';
 import { ApiClient, ApiClientError, type AssetDto } from '../workspace/cloud/api-client.service';
 import { FontRepository } from './font-repository';
 import { FontFileInvalidError, type CustomFont, validateFontLabel } from './font.models';
@@ -33,6 +34,10 @@ export class CloudFontRepository extends FontRepository {
       return { ...toCustomFont(asset), label };
     } catch (error) {
       if (error instanceof ApiClientError && (error.status === 415 || error.status === 413)) {
+        throw new FontFileInvalidError(error.message);
+      }
+      // The direct-upload flow reports a refused font (type, size, or bytes that are not a font) like this.
+      if (error instanceof DirectUploadError && ['unsupported', 'too-large', 'rejected'].includes(error.code)) {
         throw new FontFileInvalidError(error.message);
       }
       throw error;

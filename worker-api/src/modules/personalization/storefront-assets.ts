@@ -153,6 +153,8 @@ export interface AssetIndex {
   ids: ReadonlySet<string>;
   /** object_key -> row id. */
   idByKey: ReadonlyMap<string, string>;
+  /** row id -> object_key; lets a published asset be addressed on the public asset host. */
+  keyById?: ReadonlyMap<string, string>;
 }
 
 export interface RewriteOptions extends AssetUrlOptions {
@@ -168,6 +170,22 @@ export interface RewriteResult {
 
 export function storefrontAssetUrl(opts: RewriteOptions, assetId: string): string {
   return `${opts.publicOrigin}${apiPath(opts.apiVersion, STOREFRONT_SEGMENT)}/assets/${assetId}`;
+}
+
+/** Percent-encodes each path segment of an object key but keeps the `/` separators. */
+const encodeKey = (key: string): string => key.split('/').map(encodeURIComponent).join('/');
+
+/**
+ * The URL a PUBLISHED asset is served from. When a public asset host is configured the asset is addressed
+ * there by object key (CDN-cached, no Worker per image); otherwise — and for any asset the index cannot
+ * map to a key — through the Worker's delivery route. Only assets referenced by a published configuration
+ * ever reach this function, which is what makes them "approved for public delivery". Operators must expose
+ * ONLY the `stores/<store>/product-personalization/assets/` prefix on that host (never `customizations/`
+ * or `pending/`) — see docs/direct-uploads.md.
+ */
+export function publishedAssetUrl(opts: RewriteOptions, index: AssetIndex, assetId: string): string {
+  const key = opts.assetPublicBaseUrl ? index.keyById?.get(assetId) : undefined;
+  return key ? `${opts.assetPublicBaseUrl}/${encodeKey(key)}` : storefrontAssetUrl(opts, assetId);
 }
 
 /**
@@ -191,11 +209,11 @@ export function rewriteAssetReferences(
         case 'external':
           return ref.url;
         case 'asset-id':
-          if (index.ids.has(ref.id)) return storefrontAssetUrl(opts, ref.id);
+          if (index.ids.has(ref.id)) return publishedAssetUrl(opts, index, ref.id);
           break;
         case 'asset-key': {
           const id = index.idByKey.get(ref.key);
-          if (id) return storefrontAssetUrl(opts, id);
+          if (id) return publishedAssetUrl(opts, index, id);
           break;
         }
         case 'unresolved':

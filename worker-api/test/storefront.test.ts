@@ -462,17 +462,36 @@ describe('storefront assets', () => {
     expect(d.config.assetBaseUrl).toBeUndefined();
   });
 
-  it('maps R2 custom-domain URLs (ASSET_PUBLIC_BASE_URL) back to the public asset route', async () => {
+  it('hands out the signed Worker URL for drafts and the public asset host only for PUBLISHED assets', async () => {
     const env = { ASSET_PUBLIC_BASE_URL: 'https://assets.example.com' };
     const asset = await upload(STORE_A, env);
-    expect(asset.deliveryUrl).toBe(`https://assets.example.com/${asset.objectKey}`);
+    // An unpublished asset is never addressed on the public host, even when one is configured.
+    expect(asset.deliveryUrl).toContain(`${STOREFRONT}/assets/${asset.id}?sig=`);
+    expect(asset.deliveryUrl).not.toContain('assets.example.com');
+    expect(asset.publicUrl ?? null).toBeNull();
+
     await seedPublished('cfg-pubbase', STORE_A, draftWith('cfg-pubbase', asset.deliveryUrl), env);
     await mapTo('cfg-pubbase', 'product', 'prod-pubbase');
-    const res = await pub(cfgUrl('prod-pubbase', STORE_A), { env });
-    const d = await data(res);
-    expect(d.config.mockups[0].src).toBe(`http://api.test${STOREFRONT}/assets/${asset.id}`);
-    // The object key reference also makes the asset publicly servable.
+    const published = await data(await pub(cfgUrl('prod-pubbase', STORE_A), { env }));
+    expect(published.config.mockups[0].src).toBe(`https://assets.example.com/${asset.objectKey}`);
+    // Without a public host the same published config is served through the Worker route.
+    const viaWorker = await data(await pub(cfgUrl('prod-pubbase', STORE_A)));
+    expect(viaWorker.config.mockups[0].src).toBe(`http://api.test${STOREFRONT}/assets/${asset.id}`);
+    // The Worker route keeps serving it too (previously published configs and caches keep working).
     expect((await pub(`${STOREFRONT}/assets/${asset.id}`, { env })).status).toBe(200);
+  });
+
+  it('still resolves a config that stored a public-host object-key URL, and refuses another store’s keys', async () => {
+    const env = { ASSET_PUBLIC_BASE_URL: 'https://assets.example.com' };
+    const asset = await upload(STORE_A, env);
+    const legacy = `https://assets.example.com/${asset.objectKey}`;
+    await seedPublished('cfg-legacykey', STORE_A, draftWith('cfg-legacykey', legacy), env);
+    await mapTo('cfg-legacykey', 'product', 'prod-legacykey');
+    expect((await data(await pub(cfgUrl('prod-legacykey', STORE_A), { env }))).config.mockups[0].src).toBe(legacy);
     expect(sharedBucket.objects.has(asset.objectKey)).toBe(true);
+
+    await seedPublished('cfg-foreign', STORE_B, draftWith('cfg-foreign', legacy), env);
+    await mapTo('cfg-foreign', 'product', 'prod-foreign', STORE_B);
+    expect((await data(await pub(cfgUrl('prod-foreign', STORE_B), { env }))).personalizable).toBe(false);
   });
 });

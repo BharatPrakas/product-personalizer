@@ -27,6 +27,7 @@ describe('database schema', () => {
       'order_details',
       'order_links',
       'store_settings',
+      'uploads',
     ]);
   });
 

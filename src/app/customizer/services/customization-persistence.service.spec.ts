@@ -20,18 +20,155 @@ afterEach(() => vi.unstubAllGlobals());
 describe('CustomizationPersistence', () => {
   const service = new CustomizationPersistence();
 
-  it('uploads a file as the raw body with the store and kind in the query, without credentials', async () => {
-    const calls = mockFetch(() => json(201, { data: { assetId: 'a1', uploadToken: 't1' } }));
-    const blob = new Blob(['x'], { type: 'image/png' });
-    const result = await service.upload(target, { kind: 'artwork', blob, filename: 'front' }, signal());
-    expect(result).toEqual({ assetId: 'a1', uploadToken: 't1' });
-    const url = new URL(calls[0].url);
-    expect(url.origin + url.pathname).toBe(`https://api.example.com${SHOPPER_PATH}/uploads`);
-    expect(url.searchParams.get('storeId')).toBe('store 1');
-    expect(url.searchParams.get('kind')).toBe('artwork');
-    expect(url.searchParams.get('filename')).toBe('front');
-    expect(calls[0].init).toMatchObject({ method: 'POST', credentials: 'omit', mode: 'cors', body: blob });
-    expect(new Headers(calls[0].init.headers).get('content-type')).toBe('image/png');
+  describe('direct upload', () => {
+    const png = () => new Blob(['x'], { type: 'image/png' });
+    const initiation = {
+      uploadId: 'up-1',
+      assetId: 'a1',
+      uploadUrl: 'https://bucket.example/pending/up-1?X-Amz-Signature=sig',
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      expiresIn: 300,
+      uploadToken: 'tok-1',
+    };
+
+    /** Routes the Worker calls and the storage PUT through one fetch stub, recording every request. */
+    function stubNetwork(overrides: { complete?: () => Response; initiate?: () => Response; put?: (init: RequestInit) => Response | Promise<Response> } = {}) {
+      const calls: Array<{ url: string; init: RequestInit }> = [];
+      mockFetch((url, init) => {
+        calls.push({ url, init });
+        if (url.startsWith('https://bucket.example/')) return overrides.put?.(init) ?? new Response(null, { status: 200 });
+        if (url.includes('/uploads/url')) return overrides.initiate?.() ?? json(201, { data: initiation });
+        if (url.includes('/uploads/complete')) return overrides.complete?.() ?? json(200, { data: { assetId: 'a1', uploadToken: 'tok-2' } });
+        return json(500, {});
+      });
+      return calls;
+    }
+
+    it('asks the Worker for a URL, sends the bytes straight to storage, then confirms with the upload token', async () => {
+      const calls = stubNetwork();
+      const blob = png();
+      const result = await service.upload(target, { kind: 'artwork', blob, filename: 'front' }, signal(), { retryDelayMs: 1 });
+      expect(result).toEqual({ assetId: 'a1', uploadToken: 'tok-2' });
+      expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
+        `${SHOPPER_PATH}/uploads/url`,
+        '/pending/up-1',
+        `${SHOPPER_PATH}/uploads/complete`,
+      ]);
+
+      const [initiate, storage, complete] = calls;
+      const initUrl = new URL(initiate.url);
+      expect(initUrl.origin).toBe('https://api.example.com');
+      expect(initUrl.searchParams.get('storeId')).toBe('store 1');
+      expect(JSON.parse(initiate.init.body as string)).toEqual({ kind: 'artwork', contentType: 'image/png', size: 1, filename: 'front' });
+      expect(initiate.init).toMatchObject({ method: 'POST', credentials: 'omit', mode: 'cors' });
+
+      // The bytes never go to the Worker; the storage host gets only the signed headers and no credentials.
+      expect(storage.init).toMatchObject({ method: 'PUT', body: blob, credentials: 'omit' });
+      expect(storage.init.headers).toEqual({ 'Content-Type': 'image/png' });
+      expect(new Headers(storage.init.headers).has('authorization')).toBe(false);
+
+      // The upload token authorizes confirmation on the Worker — and only there.
+      expect(new Headers(complete.init.headers).get('authorization')).toBe('Bearer tok-1');
+      expect(JSON.parse(complete.init.body as string)).toEqual({ uploadId: 'up-1' });
+      expect(new URL(complete.url).searchParams.get('storeId')).toBe('store 1');
+    });
+
+    it('works the same for every kind of shopper file', async () => {
+      for (const kind of ['upload', 'preview', 'artwork'] as const) {
+        const calls = stubNetwork();
+        await service.upload(target, { kind, blob: png() }, signal(), { retryDelayMs: 1 });
+        expect(JSON.parse(calls[0].init.body as string).kind).toBe(kind);
+      }
+    });
+
+    it('renews an expired URL with the upload token, and succeeds', async () => {
+      let puts = 0;
+      const calls = stubNetwork({ put: () => new Response(null, { status: ++puts === 1 ? 403 : 200 }) });
+      const result = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1 });
+      expect(result.assetId).toBe('a1');
+      const initiations = calls.filter((c) => c.url.includes('/uploads/url'));
+      expect(initiations).toHaveLength(2);
+      expect(JSON.parse(initiations[1].init.body as string).uploadId).toBe('up-1');
+      expect(new Headers(initiations[1].init.headers).get('authorization')).toBe('Bearer tok-1');
+    });
+
+    it('retries a lost confirmation without sending the file again', async () => {
+      let confirms = 0;
+      const calls = stubNetwork({ complete: () => (++confirms === 1 ? json(503, { error: { code: 'storage_unavailable' } }) : json(200, { data: { assetId: 'a1', uploadToken: 'tok-2' } })) });
+      await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1 });
+      expect(calls.filter((c) => c.url.startsWith('https://bucket.example/'))).toHaveLength(1);
+      expect(calls.filter((c) => c.url.includes('/uploads/complete'))).toHaveLength(2);
+    });
+
+    it.each([
+      ['a rejected file', () => json(422, { error: { code: 'upload_rejected', details: { reason: 'invalid_content' } } }), /images could not be saved/i, false],
+      ['a rate limit', () => json(429, { error: { code: 'rate_limited' } }), /too many requests/i, true],
+    ])('shows a shopper-safe message for %s (no server detail)', async (_name, complete, message, recoverable) => {
+      stubNetwork({ complete });
+      const error = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1, maxAttempts: 1 }).catch((e) => e);
+      expect(error).toBeInstanceOf(CustomizerError);
+      expect(error.code).toBe('save-failed');
+      expect(error.message).toMatch(message);
+      expect(error.message).not.toMatch(/upload_rejected|invalid_content|X-Amz/);
+      expect(error.recoverable).toBe(recoverable);
+    });
+
+    it('reports an unreachable storage host as a recoverable network problem', async () => {
+      stubNetwork({ put: () => Promise.reject(new TypeError('Failed to fetch')) });
+      const error = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1, maxAttempts: 2 }).catch((e) => e);
+      expect(error).toBeInstanceOf(CustomizerError);
+      expect(error.message).toMatch(/could not be reached/i);
+      expect(error.recoverable).toBe(true);
+    });
+
+    it.each([
+      ['an unsupported or oversized file', 415],
+      ['an oversized file', 413],
+    ])('maps initiation of %s (HTTP %s) to the bad-file message', async (_n, status) => {
+      stubNetwork({ initiate: () => json(status, {}) });
+      const error = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1 }).catch((e) => e);
+      expect(error.message).toMatch(/images could not be saved/i);
+      expect(error.recoverable).toBe(false);
+    });
+
+    it('treats a malformed initiation answer as a failure, never as success', async () => {
+      stubNetwork({ initiate: () => json(201, { data: { nothing: true } }) });
+      const error = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1, maxAttempts: 1 }).catch((e) => e);
+      expect(error).toBeInstanceOf(CustomizerError);
+      expect(error.message).toMatch(/could not be saved/i);
+    });
+
+    it('falls back to the proxied upload only where the Worker has direct uploads switched off', async () => {
+      const calls: Array<{ url: string; init: RequestInit }> = [];
+      mockFetch((url, init) => {
+        calls.push({ url, init });
+        if (url.includes('/uploads/url')) return json(503, { error: { code: 'direct_upload_not_configured' } });
+        return json(201, { data: { assetId: 'a9', uploadToken: 't9' } });
+      });
+      const blob = png();
+      const result = await service.upload(target, { kind: 'artwork', blob, filename: 'front' }, signal(), { retryDelayMs: 1 });
+      expect(result).toEqual({ assetId: 'a9', uploadToken: 't9' });
+      const proxied = new URL(calls[1].url);
+      expect(proxied.pathname).toBe(`${SHOPPER_PATH}/uploads`);
+      expect(proxied.searchParams.get('kind')).toBe('artwork');
+      expect(calls[1].init).toMatchObject({ method: 'POST', credentials: 'omit', mode: 'cors', body: blob });
+    });
+
+    it('propagates a caller abort instead of reporting a network error, and never confirms', async () => {
+      const controller = new AbortController();
+      const calls = stubNetwork({
+        // Storage hangs until the browser aborts the request, as a real fetch would.
+        put: (init) => new Promise<Response>((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(new DOMException('a', 'AbortError')))),
+      });
+      const pending = service.upload(target, { kind: 'upload', blob: png() }, controller.signal, { retryDelayMs: 1 }).catch((e) => e);
+      await new Promise((r) => setTimeout(r, 10));
+      controller.abort();
+      const error = await pending;
+      expect(error).toBeInstanceOf(DOMException);
+      expect((error as DOMException).name).toBe('AbortError');
+      expect(calls.some((c) => c.url.includes('/uploads/complete'))).toBe(false);
+    });
   });
 
   it('creates a customization and returns its id, token and expiry', async () => {
@@ -78,7 +215,7 @@ describe('CustomizationPersistence', () => {
 
   it('reports an unreachable service as recoverable, and treats a malformed success body as a failure', async () => {
     mockFetch(() => Promise.reject(new TypeError('Failed to fetch')));
-    const network = await service.upload(target, { kind: 'upload', blob: new Blob(['x']) }, signal()).catch((e) => e);
+    const network = await service.upload(target, { kind: 'upload', blob: new Blob(['x']) }, signal(), { retryDelayMs: 1, maxAttempts: 1 }).catch((e) => e);
     expect(network.message).toMatch(/could not be reached/i);
     expect(network.recoverable).toBe(true);
 

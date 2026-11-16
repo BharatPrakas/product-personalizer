@@ -30,8 +30,9 @@
 -- require the referenced composite UNIQUE indexes, created alongside each table, same as Postgres).
 --
 -- `order_links` line details and `order_details` (optional order/customer details of `order.confirmed`)
--- were folded in here from a short-lived 0002 while only the dev environment existed. Once real data
--- exists, stop editing this file and append 0002, 0003, ... instead.
+-- and the direct-upload `uploads` table (+ the upload counters on `cleanup_runs`) were folded in here
+-- from short-lived 0002 files while only the dev environment existed. Once real data exists, stop
+-- editing this file and append 0002, 0003, ... instead.
 --
 -- Applied via `wrangler d1 migrations apply` (see migrations_dir in wrangler.jsonc), not the
 -- Postgres-specific scripts/migrate.mjs runner.
@@ -371,11 +372,92 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
   assets_deleted           INTEGER NOT NULL DEFAULT 0,
   assets_failed            INTEGER NOT NULL DEFAULT 0,
   tombstones_purged        INTEGER NOT NULL DEFAULT 0,
+  -- Direct-upload phases (see the `uploads` table below).
+  uploads_expired          INTEGER NOT NULL DEFAULT 0,
+  upload_objects_deleted   INTEGER NOT NULL DEFAULT 0,
+  upload_records_purged    INTEGER NOT NULL DEFAULT 0,
   error                    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS cleanup_runs_started_idx
   ON cleanup_runs (started_at DESC);
+
+-- ---- direct (presigned) uploads ------------------------------------------------------------------
+--
+-- Tracks the lifecycle of a browser-to-R2/S3 upload between "the Worker handed out a URL" and "the Worker
+-- verified the bytes and created the asset". It duplicates nothing that lives on `assets` /
+-- `customization_assets`: those rows are created ONLY once an upload has been verified (status 'stored' /
+-- 'uploaded' respectively), so a configuration or customization can never reference an unverified file —
+-- the asset id simply does not exist in them yet.
+--
+-- State machine (`status`), advanced only by conditional UPDATEs (D1 has no row locks / transactions):
+--   pending    URL issued, no object seen yet
+--   uploaded   HEAD found the staged object (size recorded); awaiting content verification
+--   verifying  one request owns verification + promotion (stale claims are retaken after an hour)
+--   stored     verified, promoted to its permanent key and the asset row exists (terminal, idempotent)
+--   failed     verification rejected the file (terminal; `failure_reason` says why)
+--   expired    the URL lapsed with no usable upload (terminal; set by the scheduled cleanup)
+--
+-- Keys: `pending_key` (`.../pending/<upload id>`) is the only key a presigned URL can write. `final_key`
+-- (`.../assets/<uuid>.<ext>` or `.../customizations/<uuid>.<ext>`) is chosen at verification time and
+-- recorded BEFORE the copy so a retry after a crash promotes to the very same key.
+
+CREATE TABLE IF NOT EXISTS uploads (
+  id                     TEXT PRIMARY KEY,
+  store_id               TEXT NOT NULL,
+  scope                  TEXT NOT NULL CHECK (scope IN ('merchant', 'customer')),
+  purpose                TEXT NOT NULL
+                           CHECK (purpose IN ('merchant-asset', 'customer-upload', 'customer-preview', 'customer-artwork')),
+  -- The id the asset row gets on success (assets.id / customization_assets.id). Handed to the client
+  -- up front, so retries and refreshes keep addressing the same asset.
+  asset_id               TEXT NOT NULL UNIQUE,
+  config_id              TEXT REFERENCES configs (id) ON DELETE SET NULL,
+  client_ref             TEXT,
+  original_filename      TEXT,
+  storage_provider       TEXT NOT NULL CHECK (storage_provider IN ('r2', 's3')),
+  pending_key            TEXT NOT NULL UNIQUE,
+  final_key              TEXT,
+  expected_content_type  TEXT NOT NULL,
+  expected_size          INTEGER NOT NULL CHECK (expected_size > 0),
+  -- Optional client-supplied SHA-256 (hex). When present the verified bytes must match it.
+  expected_sha256        TEXT,
+  verified_content_type  TEXT,
+  actual_size            INTEGER,
+  checksum_sha256        TEXT,
+  width                  INTEGER,
+  height                 INTEGER,
+  etag                   TEXT,
+  status                 TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending', 'uploaded', 'verifying', 'stored', 'failed', 'expired')),
+  failure_reason         TEXT,
+  url_expires_at         TEXT NOT NULL,
+  attempts               INTEGER NOT NULL DEFAULT 0,
+  -- 1 once every object this upload may have left behind has been removed (or promoted).
+  cleaned                INTEGER NOT NULL DEFAULT 0 CHECK (cleaned IN (0, 1)),
+  cleanup_attempts       INTEGER NOT NULL DEFAULT 0,
+  last_error             TEXT,
+  created_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at             TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  completed_at           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS uploads_store_status_idx ON uploads (store_id, status);
+
+-- One open upload per (store, client_ref): a retry of the same migration upload re-uses the record
+-- instead of staging a duplicate object.
+CREATE UNIQUE INDEX IF NOT EXISTS uploads_open_client_ref_uq
+  ON uploads (store_id, client_ref)
+  WHERE client_ref IS NOT NULL AND status IN ('pending', 'uploaded', 'verifying');
+
+-- Cleanup scans: uploads whose URL lapsed, and finished uploads that still owe an object deletion.
+CREATE INDEX IF NOT EXISTS uploads_open_expiry_idx
+  ON uploads (url_expires_at) WHERE status IN ('pending', 'uploaded');
+CREATE INDEX IF NOT EXISTS uploads_verifying_idx
+  ON uploads (updated_at) WHERE status = 'verifying';
+CREATE INDEX IF NOT EXISTS uploads_uncleaned_idx
+  ON uploads (updated_at) WHERE cleaned = 0 AND status IN ('stored', 'failed', 'expired');
+CREATE INDEX IF NOT EXISTS uploads_purge_idx
+  ON uploads (updated_at) WHERE cleaned = 1 AND status IN ('stored', 'failed', 'expired');
 
 -- ---- attach-count guard ----------------------------------------------------------------------------
 --

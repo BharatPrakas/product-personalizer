@@ -119,6 +119,32 @@ export const uploadMetadataSchema = z.object({
   configId: clientIdSchema.optional(),
 });
 
+// ---- direct (presigned) uploads ----
+
+const declaredFileSchema = {
+  filename: z.string().trim().max(255).optional(),
+  /** Validated against the allow-list server-side; a hint only — the real bytes decide at completion. */
+  contentType: z.string().trim().min(3).max(100),
+  size: z.number().int().positive(),
+  /** Optional hex SHA-256 of the file; when given, the verified bytes must match it. */
+  sha256: z.string().trim().regex(/^[0-9a-fA-F]{64}$/).optional(),
+};
+
+/** `POST .../assets/upload-url` body. The store is never a field: it comes from the verified token. */
+export const initiateUploadSchema = z.object({
+  ...declaredFileSchema,
+  purpose: z.literal('merchant-asset').default('merchant-asset'),
+  configId: clientIdSchema.optional(),
+  clientRef: z.string().trim().max(128).optional(),
+  /** Renew the URL of an upload that is still open instead of starting a new one. */
+  uploadId: z.string().trim().pipe(z.uuid()).optional(),
+});
+
+/** `POST .../assets/complete` / `.../uploads/complete` body. */
+export const completeUploadSchema = z.object({
+  uploadId: z.string().trim().pipe(z.uuid()),
+});
+
 export const assetListQuerySchema = z.object({
   configId: clientIdSchema.optional(),
   /** Restricts the listing to images (omitted = every asset) or to store-wide custom fonts. */
@@ -278,6 +304,13 @@ export const customerStoreQuerySchema = z.object({
 export const customerUploadQuerySchema = customerStoreQuerySchema.extend({
   kind: z.enum(['upload', 'preview', 'artwork']).default('upload'),
   filename: z.string().trim().max(255).optional(),
+});
+
+/** Shopper `POST .../uploads/url` body (the store key travels in `?storeId=`, as for every shopper route). */
+export const customerInitiateUploadSchema = z.object({
+  ...declaredFileSchema,
+  kind: z.enum(['upload', 'preview', 'artwork']).default('upload'),
+  uploadId: z.string().trim().pipe(z.uuid()).optional(),
 });
 
 const assetRefSchema = z.object({

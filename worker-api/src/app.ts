@@ -53,10 +53,14 @@ function merchantRoutes(): Hono<AppEnv> {
   router.get('/configs/:configId/versions/:versionId', controller.getVersion);
 
   // Assets (binaries live in R2; metadata in Postgres)
-  router.post('/assets', controller.uploadAsset);
+  // Direct upload: browser -> presigned PUT -> R2/S3, then confirm. Registered before `/assets/:assetId`.
+  router.post('/assets/upload-url', controller.initiateUpload);
+  router.post('/assets/complete', controller.completeUpload);
+  router.post('/assets', controller.uploadAsset); // legacy: bytes proxied through the Worker
   router.get('/assets', controller.listAssets);
   router.get('/assets/:assetId', controller.getAsset);
   router.get('/assets/:assetId/content', controller.getAssetContent);
+  router.get('/assets/:assetId/url', controller.getAssetDownloadUrl);
   router.delete('/assets/:assetId', controller.deleteAsset);
 
   // Product mappings (`/mappings/bulk` is registered before `/mappings/:id`)
@@ -80,6 +84,7 @@ function merchantRoutes(): Hono<AppEnv> {
   router.get('/customizations', customizations.listCustomizations);
   router.get('/customizations/:id', customizations.getCustomization);
   router.get('/customizations/:id/assets/:assetId/content', customizations.getCustomizationAssetContent);
+  router.get('/customizations/:id/assets/:assetId/url', customizations.getCustomizationAssetUrl);
 
   // Orders with personalized lines (files and full design data stay on the customization routes above)
   router.get('/orders', orders.listOrders);
@@ -115,8 +120,13 @@ function storefrontRoutes(rateLimiter: RateLimiter): Hono<AppEnv> {
 
   // Shopper customizations: private uploads, save, and token-gated read / update.
   const preflight = customizations.customerPreflight(rateLimiter);
-  router.post('/uploads', customizations.uploadCustomerAsset(rateLimiter));
+  router.post('/uploads', customizations.uploadCustomerAsset(rateLimiter)); // legacy: bytes proxied
   router.options('/uploads', preflight);
+  // Direct upload: presigned PUT straight to R2/S3, then confirm with the upload token.
+  router.post('/uploads/url', customizations.initiateCustomerUpload(rateLimiter));
+  router.options('/uploads/url', preflight);
+  router.post('/uploads/complete', customizations.completeCustomerUpload(rateLimiter));
+  router.options('/uploads/complete', preflight);
   router.post('/customizations', customizations.createCustomization(rateLimiter));
   router.options('/customizations', preflight);
   router.get('/customizations/:id', customizations.getCustomizationForShopper(rateLimiter));
@@ -124,6 +134,8 @@ function storefrontRoutes(rateLimiter: RateLimiter): Hono<AppEnv> {
   router.options('/customizations/:id', preflight);
   router.get('/customizations/:id/assets/:assetId', customizations.getCustomizationAssetForShopper(rateLimiter));
   router.options('/customizations/:id/assets/:assetId', preflight);
+  router.get('/customizations/:id/assets/:assetId/url', customizations.getCustomizationAssetUrlForShopper(rateLimiter));
+  router.options('/customizations/:id/assets/:assetId/url', preflight);
   return router;
 }
 

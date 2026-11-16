@@ -49,6 +49,25 @@ export interface KeyParts {
   type: DetectedAssetType;
 }
 
+/**
+ * `stores/<store>/product-personalization/pending/` — INTERNAL staging area for direct browser
+ * uploads. A presigned PUT only ever targets `pending/<uploadId>`; the Worker verifies the object and
+ * then promotes (copies) it to its permanent `assets/` or `customizations/` key. Nothing under
+ * `pending/` is ever served, listed or referenced by a configuration, so an unverified object can never
+ * be published, and a signed URL that outlives the upload can only touch a throw-away staging key.
+ */
+export function pendingKeyPrefix(storeId: string): string {
+  return `stores/${safeSegment(storeId)}/${NAMESPACE}/pending/`;
+}
+
+/** `stores/<store>/product-personalization/pending/<uploadId>` (the id is a server-generated UUID). */
+export function pendingObjectKey(storeId: string, uploadId: string): string {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uploadId)) {
+    throw new Error('Refusing to build a pending key from a non-UUID upload id.');
+  }
+  return `${pendingKeyPrefix(storeId)}${uploadId.toLowerCase()}`;
+}
+
 /** `stores/<store>/product-personalization/assets/` — every merchant asset of one store. */
 export function assetKeyPrefix(storeId: string): string {
   return `stores/${safeSegment(storeId)}/${NAMESPACE}/assets/`;
@@ -95,6 +114,42 @@ export interface PutOptions {
 export interface StoredObject {
   size: number;
   etag: string;
+  /** Content-Type the object was stored with, when the backend reports it (HEAD/GET). */
+  contentType?: string;
+}
+
+/** A request the BROWSER sends straight to the storage provider. Contains no credentials, only a signature. */
+export interface PresignedRequest {
+  url: string;
+  method: 'PUT' | 'GET';
+  /** Headers the browser MUST send unchanged: they are part of the signature. */
+  headers: Record<string, string>;
+  expiresIn: number;
+}
+
+export interface PresignPutOptions {
+  /** Signed into the URL: the provider rejects an upload whose Content-Type differs. */
+  contentType: string;
+  expiresInSeconds: number;
+}
+
+export interface PresignGetOptions {
+  expiresInSeconds: number;
+}
+
+export interface CopyOptions {
+  contentType: string;
+  storeId: string;
+  sha256?: string;
+  /** Fail (StoragePreconditionError) unless the source still has this ETag — closes the verify→promote race. */
+  ifMatchEtag?: string;
+}
+
+export interface BoundedObject {
+  bytes: Uint8Array;
+  size: number;
+  etag: string;
+  contentType: string;
 }
 
 export interface FetchedObject {
@@ -110,6 +165,66 @@ export interface ObjectStorage {
   get(key: string): Promise<FetchedObject | null>;
   /** Deleting a missing object is not an error. */
   delete(key: string): Promise<void>;
+  /**
+   * A short-lived URL the browser PUTs the file to. Scoped to exactly this key, this method and this
+   * Content-Type. Throws StorageConfigError when signing credentials are not configured.
+   */
+  presignPut(key: string, opts: PresignPutOptions): Promise<PresignedRequest>;
+  /** A short-lived URL for reading exactly this key. Never persist it. */
+  presignGet(key: string, opts: PresignGetOptions): Promise<PresignedRequest>;
+  /**
+   * Reads the whole object into memory, but never more than `maxBytes` (throws ObjectTooLargeError
+   * otherwise). Used by upload verification, which must inspect the real bytes.
+   */
+  readBytes(key: string, maxBytes: number): Promise<BoundedObject | null>;
+  /** Server-side copy within the bucket (promotion of a verified upload). Idempotent for a fixed dest. */
+  copy(sourceKey: string, destKey: string, opts: CopyOptions): Promise<StoredObject>;
+}
+
+/** The two ETag spellings (S3: `"abc"`, R2 binding: `abc`) must compare equal. */
+export function sameEtag(a: string, b: string): boolean {
+  const clean = (v: string) => v.replace(/^W\//, '').replace(/^"|"$/g, '');
+  return clean(a) === clean(b);
+}
+
+/** Reads a stream fully but aborts as soon as it exceeds `maxBytes`. */
+export async function readLimited(stream: ReadableStream, maxBytes: number): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = value as Uint8Array;
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new ObjectTooLargeError();
+    }
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
+export class ObjectTooLargeError extends Error {
+  constructor() {
+    super('The stored object is larger than allowed.');
+    this.name = 'ObjectTooLargeError';
+  }
+}
+
+/** A conditional copy failed because the source object changed (or vanished) since it was verified. */
+export class StoragePreconditionError extends Error {
+  constructor() {
+    super('The source object changed before it could be promoted.');
+    this.name = 'StoragePreconditionError';
+  }
 }
 
 /** Raised when a storage backend is selected but not configured, or the backend call fails. */

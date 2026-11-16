@@ -255,7 +255,9 @@ Base: `/api/v1/storefront/personalization`.
 | Call | Auth | Purpose |
 |---|---|---|
 | `GET /products/{productId}/config?storeId=…[&variantId=…&collectionIds=a,b]` | – | The published config for the product (`configId`, `version`, `config`) or `{personalizable:false}`. |
-| `POST /uploads?storeId=…&kind=upload\|artwork\|preview[&filename=…]` (raw PNG/JPEG/WebP body) | – | Store a private image. `upload` = the shopper's photo, `artwork` = the print-ready file of a printable area, `preview` = a composite. → `{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, uploadTokenExpiresAt }` |
+| `POST /uploads?storeId=…&kind=upload\|artwork\|preview[&filename=…]` (raw PNG/JPEG/WebP body) | – | Store a private image through the Worker (legacy; disabled when `LEGACY_PROXY_UPLOADS=false`). `upload` = the shopper's photo, `artwork` = the print-ready file of a printable area, `preview` = a composite. → `{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, uploadTokenExpiresAt }` |
+| `POST /uploads/url?storeId=…` `{ kind, contentType, size, filename? }` | – | **Preferred.** Start a direct upload: → `201 { uploadId, assetId, uploadUrl, method:"PUT", headers, expiresIn, uploadToken, uploadTokenExpiresAt }`. `PUT` the file to `uploadUrl` with exactly `headers` (straight to object storage — no `Authorization`), then confirm. |
+| `POST /uploads/complete?storeId=…` `{ uploadId }` | `Bearer <uploadToken>` | Verify the stored file. → the same body as `POST /uploads` (`{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, … }`). Idempotent. See `docs/direct-uploads.md`. |
 | `POST /customizations?storeId=…` | – | Save. Body: `{ productId, variantId?, collectionIds?, configId, configVersion, data, assets:[{assetId, uploadToken}] }` → `201 { customizationId, status:"saved", accessToken, accessTokenExpiresAt, expiresAt }` |
 | `GET /customizations/{id}?storeId=…` | `Bearer accessToken` | Read back. 410 once expired. |
 | `PUT /customizations/{id}?storeId=…` | `Bearer accessToken` | Replace `data` and the asset list; refreshes the 30-day window. 409 `customization_not_editable` once ordered. |

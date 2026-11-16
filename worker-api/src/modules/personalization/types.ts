@@ -70,6 +70,33 @@ export interface AssetDto {
   deliveryUrl: string;
 }
 
+/** Returned when a direct upload is confirmed: the asset plus the shape the upload contract promises. */
+export interface UploadedAssetDto extends AssetDto {
+  uploadId: string | null;
+  assetId: string;
+  /** Alias of `sizeBytes`, as named in the upload contract. */
+  size: number;
+  /**
+   * Durable public URL — only ever set for an asset approved for public delivery (referenced by a
+   * published configuration on a store with a public asset host). A merchant upload is not public.
+   */
+  publicUrl: string | null;
+}
+
+/** Response to an upload-initiation request. `uploadUrl` is null when the file is already stored. */
+export interface UploadInitiationDto {
+  uploadId: string | null;
+  assetId: string;
+  status: 'pending' | 'stored';
+  uploadUrl: string | null;
+  method: 'PUT' | null;
+  /** Headers the browser must send with the PUT, exactly as given (they are part of the signature). */
+  headers: Record<string, string>;
+  expiresIn: number;
+  /** Present when `status` is `stored` (an idempotent re-initiation of a finished upload). */
+  asset?: UploadedAssetDto;
+}
+
 // ---- mappings & markups ---------------------------------------------------------------------------
 
 export type MappingScope = 'product' | 'variant' | 'collection';

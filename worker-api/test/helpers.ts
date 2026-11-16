@@ -26,9 +26,13 @@ export const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 export const STORE_A = 'store_alpha';
 export const STORE_B = 'store_beta';
 
-/** Minimal in-memory R2 bucket implementing only the methods AssetStorage uses. */
+/** Minimal in-memory R2 bucket implementing only the methods the storage adapter uses. */
 export class InMemoryR2 {
-  readonly objects = new Map<string, { bytes: Uint8Array; contentType: string; customMetadata?: Record<string, string> }>();
+  readonly objects = new Map<
+    string,
+    { bytes: Uint8Array; contentType: string; customMetadata?: Record<string, string>; etag: string }
+  >();
+  private version = 0;
 
   async put(
     key: string,
@@ -36,21 +40,29 @@ export class InMemoryR2 {
     options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> },
   ): Promise<{ size: number; etag: string }> {
     const bytes = await toBytes(value);
+    // A fresh etag per write (like real R2): overwriting with different — or identical — bytes changes it.
+    const etag = `etag-${++this.version}`;
     this.objects.set(key, {
       bytes,
       contentType: options?.httpMetadata?.contentType ?? 'application/octet-stream',
       customMetadata: options?.customMetadata,
+      etag,
     });
-    return { size: bytes.byteLength, etag: `etag-${bytes.byteLength}` };
+    return { size: bytes.byteLength, etag };
   }
 
-  async head(key: string): Promise<{ size: number; etag: string } | null> {
+  async head(key: string): Promise<{ size: number; etag: string; httpMetadata: { contentType: string } } | null> {
     const object = this.objects.get(key);
-    return object ? { size: object.bytes.byteLength, etag: `etag-${object.bytes.byteLength}` } : null;
+    return object
+      ? { size: object.bytes.byteLength, etag: object.etag, httpMetadata: { contentType: object.contentType } }
+      : null;
   }
 
-  async get(key: string): Promise<{
-    body: ReadableStream;
+  async get(
+    key: string,
+    options?: { onlyIf?: { etagMatches?: string } },
+  ): Promise<{
+    body?: ReadableStream;
     size: number;
     etag: string;
     httpMetadata?: { contentType?: string };
@@ -58,18 +70,16 @@ export class InMemoryR2 {
     const object = this.objects.get(key);
     if (!object) return null;
     const bytes = object.bytes;
+    const meta = { size: bytes.byteLength, etag: object.etag, httpMetadata: { contentType: object.contentType } };
+    // Real R2 answers a failed precondition with the object metadata and NO body.
+    if (options?.onlyIf?.etagMatches && options.onlyIf.etagMatches !== object.etag) return meta;
     const body = new ReadableStream({
       start(controller) {
         controller.enqueue(bytes);
         controller.close();
       },
     });
-    return {
-      body,
-      size: bytes.byteLength,
-      etag: `etag-${bytes.byteLength}`,
-      httpMetadata: { contentType: object.contentType },
-    };
+    return { body, ...meta };
   }
 
   async delete(key: string): Promise<void> {
@@ -251,6 +261,7 @@ export async function applyMigrations(): Promise<void> {
  *  -> configs); SQLite has no `TRUNCATE ... CASCADE`, and ids are app-generated UUIDs so there is no
  *  sequence to reset. */
 const TABLES_CHILD_FIRST = [
+  'uploads',
   'order_links',
   'order_details',
   'customization_assets',

@@ -86,6 +86,7 @@ export class StorefrontService {
     const index: AssetIndex = {
       ids: new Set(assets.map((a) => a.id.toLowerCase())),
       idByKey: new Map(assets.map((a) => [a.object_key, a.id.toLowerCase()])),
+      keyById: new Map(assets.map((a) => [a.id.toLowerCase(), a.object_key])),
     };
     const { config, unresolved } = rewriteAssetReferences(match.published, index, opts);
     if (unresolved.length > 0) {

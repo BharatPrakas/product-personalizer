@@ -222,6 +222,10 @@ describe('failure handling and bookkeeping', () => {
     put: (...a) => inner.put(...a),
     head: (k) => inner.head(k),
     get: (k) => inner.get(k),
+    presignPut: (...a) => inner.presignPut(...a),
+    presignGet: (...a) => inner.presignGet(...a),
+    readBytes: (...a) => inner.readBytes(...a),
+    copy: (...a) => inner.copy(...a),
     delete: async (k) => {
       if (failures.n-- > 0) throw new Error('storage unavailable');
       return inner.delete(k);

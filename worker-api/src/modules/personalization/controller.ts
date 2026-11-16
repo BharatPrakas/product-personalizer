@@ -8,12 +8,14 @@ import type { Context } from 'hono';
 import { createObjectStorage } from '../../storage';
 import { ADMIN_SEGMENT, apiPath } from '../../shared/api-paths';
 import type { AppEnv } from '../../shared/context';
-import { BadRequestError } from '../../shared/errors';
+import { ApiError, BadRequestError } from '../../shared/errors';
 import { created, noContent, ok, paginated } from '../../shared/responses';
 import { PersonalizationService, type ServiceContext } from './service';
 import {
   assetListQuerySchema,
+  completeUploadSchema,
   createConfigSchema,
+  initiateUploadSchema,
   listQuerySchema,
   publishSchema,
   saveDraftSchema,
@@ -109,7 +111,51 @@ export async function getVersion(c: Context<AppEnv>): Promise<Response> {
 
 // ---- assets ----
 
+/** `POST /assets/upload-url` — validate the declared file, return a presigned PUT for one staging object. */
+export async function initiateUpload(c: Context<AppEnv>): Promise<Response> {
+  const body = initiateUploadSchema.parse(await c.req.json().catch(() => {
+    throw new BadRequestError('The request body must be valid JSON.');
+  }));
+  const result = await serviceFor(c).initiateUpload({
+    filename: body.filename,
+    contentType: body.contentType,
+    size: body.size,
+    sha256: body.sha256,
+    clientRef: body.clientRef,
+    configClientId: body.configId,
+    uploadId: body.uploadId,
+  });
+  const res = ok(c, result, result.status === 'stored' ? 200 : 201);
+  // A presigned URL is a bearer capability: it must never be cached or replayed from a cache.
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
+/** `POST /assets/complete` — verify the uploaded object and create the asset. Idempotent. */
+export async function completeUpload(c: Context<AppEnv>): Promise<Response> {
+  const body = completeUploadSchema.parse(await c.req.json().catch(() => {
+    throw new BadRequestError('The request body must be valid JSON.');
+  }));
+  const res = ok(c, await serviceFor(c).completeUpload(body.uploadId));
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
+/** `GET /assets/:assetId/url` — a short-lived presigned GET, generated per request and never stored. */
+export async function getAssetDownloadUrl(c: Context<AppEnv>): Promise<Response> {
+  const res = ok(c, await serviceFor(c).getAssetDownloadUrl(param(c, 'assetId')));
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
+function assertLegacyUploadsEnabled(c: Context<AppEnv>): void {
+  if (!c.get('config').legacyProxyUploads) {
+    throw new ApiError(410, 'legacy_upload_disabled', 'Proxied uploads are disabled. Use the direct upload flow.');
+  }
+}
+
 export async function uploadAsset(c: Context<AppEnv>): Promise<Response> {
+  assertLegacyUploadsEnabled(c);
   const declared = Number(c.req.header('content-length'));
   if (Number.isFinite(declared) && declared > c.get('config').maxUploadBytes) {
     throw new BadRequestError('The declared Content-Length exceeds the upload limit.');

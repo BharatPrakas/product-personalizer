@@ -22,7 +22,9 @@ import { storefrontCorsHeaders } from './storefront-controller';
 import {
   MAX_CUSTOMIZATION_DATA_BYTES,
   STORE_KEY_PATTERN,
+  completeUploadSchema,
   createCustomizationSchema,
+  customerInitiateUploadSchema,
   customerStoreQuerySchema,
   customerUploadQuerySchema,
   customizationListQuerySchema,
@@ -132,8 +134,27 @@ function shopperRoute(
   };
 }
 
+/** `POST /uploads/url` — declare a file, get a presigned PUT for one private staging object. */
+export const initiateCustomerUpload = (limiter: RateLimiter) =>
+  shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
+    const body = customerInitiateUploadSchema.parse(await readJson(c));
+    const initiated = await service.initiateUpload(store, body, bearerToken(c));
+    // A presigned URL is a bearer capability: never cacheable.
+    return created(c, initiated);
+  });
+
+/** `POST /uploads/complete` — verify the uploaded object; the upload token is the credential. */
+export const completeCustomerUpload = (limiter: RateLimiter) =>
+  shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
+    const body = completeUploadSchema.parse(await readJson(c));
+    return ok(c, await service.completeUpload(store, body.uploadId, bearerToken(c)));
+  });
+
 export const uploadCustomerAsset = (limiter: RateLimiter) =>
   shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
+    if (!c.get('config').legacyProxyUploads) {
+      throw new ApiError(410, 'legacy_upload_disabled', 'Proxied uploads are disabled. Use the direct upload flow.');
+    }
     const query = customerUploadQuerySchema.parse(c.req.query());
     const declared = Number(c.req.header('content-length'));
     if (Number.isFinite(declared) && declared > c.get('config').maxUploadBytes) {
@@ -182,6 +203,11 @@ export const getCustomizationAssetForShopper = (limiter: RateLimiter) =>
     );
     return privateFile(object, contentType, checksum);
   });
+
+export const getCustomizationAssetUrlForShopper = (limiter: RateLimiter) =>
+  shopperRoute(limiter, { write: false }, async (c, { store, service }) =>
+    ok(c, await service.getAssetUrlForShopper(store, uuidParam(c, 'id'), uuidParam(c, 'assetId'), bearerToken(c))),
+  );
 
 function privateFile(
   object: { body: ReadableStream; size: number },
@@ -237,4 +263,15 @@ export async function getCustomizationAssetContent(c: Context<AppEnv>): Promise<
     uuidParam(c, 'assetId'),
   );
   return privateFile(object, contentType, checksum);
+}
+
+export async function getCustomizationAssetUrl(c: Context<AppEnv>): Promise<Response> {
+  const result = await serviceFor(c).getAssetUrlForMerchant(
+    c.get('tenant').storeId,
+    uuidParam(c, 'id'),
+    uuidParam(c, 'assetId'),
+  );
+  const res = ok(c, result);
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
 }

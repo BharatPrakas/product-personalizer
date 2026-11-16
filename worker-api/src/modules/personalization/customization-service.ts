@@ -26,7 +26,13 @@ import {
 } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
 import { sniffImage } from '../../shared/image-sniff';
-import { type ObjectStorage, customizationKeyPrefix, generateCustomizationObjectKey } from '../../storage/object-storage';
+import {
+  type ObjectStorage,
+  StorageConfigError,
+  customizationKeyPrefix,
+  generateCustomizationObjectKey,
+} from '../../storage/object-storage';
+import { DirectUploadService } from './direct-upload-service';
 import { decodeCursor, encodeCursor } from './pagination';
 import {
   CustomizationRepository,
@@ -91,6 +97,20 @@ export interface UploadedAssetDto extends CustomerAssetDto {
   uploadTokenExpiresAt: string;
 }
 
+/** Response to a shopper's upload-initiation request. */
+export interface CustomerUploadInitiationDto {
+  uploadId: string;
+  assetId: string;
+  uploadUrl: string;
+  method: 'PUT';
+  /** Headers the browser must send with the PUT, exactly as given (they are part of the signature). */
+  headers: Record<string, string>;
+  expiresIn: number;
+  /** Authorizes confirming (and later attaching) THIS upload; send it as `Authorization: Bearer`. */
+  uploadToken: string;
+  uploadTokenExpiresAt: string;
+}
+
 export interface MerchantCustomizationDto {
   id: string;
   status: 'saved' | 'ordered' | 'expired';
@@ -142,11 +162,19 @@ function uniqueAssetRefs(refs: readonly AssetRefInput[]): AssetRefInput[] {
 export class CustomizationService {
   private readonly repo: CustomizationRepository;
   private readonly storefront: StorefrontRepository;
+  private readonly direct: DirectUploadService;
   private readonly now: () => Date;
 
   constructor(private readonly ctx: CustomizationContext) {
     this.repo = new CustomizationRepository(ctx.db);
     this.storefront = new StorefrontRepository(ctx.db);
+    this.direct = new DirectUploadService({
+      db: ctx.db,
+      storage: ctx.storage,
+      config: ctx.config,
+      logger: ctx.logger,
+      now: ctx.now,
+    });
     this.now = ctx.now ?? (() => new Date());
   }
 
@@ -227,6 +255,93 @@ export class CustomizationService {
       this.now(),
     );
     return { ...toAssetDto(row), uploadToken: token.token, uploadTokenExpiresAt: token.expiresAt.toISOString() };
+  }
+
+  // ---- shopper: direct uploads (presigned PUT -> verify) ----
+
+  /** Verifies a shopper's upload token for ONE upload's asset. All failures look the same. */
+  private authorizeUpload(storeId: string, assetId: string, token: string | null): void {
+    const verdict = token
+      ? verifyCustomerToken(this.tokenSecret(), token, { scope: 'upload', storeId, subject: assetId }, this.now())
+      : 'malformed';
+    if (verdict !== 'ok') {
+      throw new ApiError(401, 'invalid_upload_token', 'A valid upload token for this upload is required.');
+    }
+  }
+
+  /**
+   * Step 1: the shopper declares the file and gets a presigned PUT for one PRIVATE staging object plus
+   * the upload token that later confirms and attaches it. Same trust model as the proxied upload: the
+   * store key + its origin allow-list + rate limits; nothing here grants access to anyone else's files.
+   * Passing `uploadId` (with its token) renews the URL of an upload that is still open.
+   */
+  async initiateUpload(
+    store: ResolvedStore,
+    input: {
+      kind: CustomerAssetKind;
+      filename?: string;
+      contentType: string;
+      size: number;
+      sha256?: string;
+      uploadId?: string;
+    },
+    token: string | null,
+  ): Promise<CustomerUploadInitiationDto> {
+    const secret = this.tokenSecret();
+    if (input.uploadId) {
+      const existing = await this.direct.uploads.get(store.storeId, input.uploadId.toLowerCase());
+      if (!existing || existing.scope !== 'customer') throw new NotFoundError('That upload was not found.');
+      this.authorizeUpload(store.storeId, existing.asset_id, token);
+    }
+    const { upload, request } = await this.direct.initiate({
+      scope: 'customer',
+      storeId: store.storeId,
+      purpose: `customer-${input.kind}`,
+      filename: input.filename,
+      contentType: input.contentType,
+      size: input.size,
+      sha256: input.sha256,
+      renewUploadId: input.uploadId,
+    });
+    const issued = issueCustomerToken(
+      secret,
+      { scope: 'upload', storeId: store.storeId, subject: upload.asset_id },
+      this.ctx.config.customizationTokenTtlSeconds,
+      this.now(),
+    );
+    return {
+      uploadId: upload.id,
+      assetId: upload.asset_id,
+      uploadUrl: request.url,
+      method: 'PUT',
+      headers: request.headers,
+      expiresIn: request.expiresIn,
+      uploadToken: issued.token,
+      uploadTokenExpiresAt: issued.expiresAt.toISOString(),
+    };
+  }
+
+  /**
+   * Step 3: verify the uploaded object and create the (unattached) customer asset. The shopper's upload
+   * token is the credential; the response has the same shape as the proxied upload, so everything after
+   * this point (attach, save) is unchanged. Idempotent.
+   */
+  async completeUpload(store: ResolvedStore, uploadId: string, token: string | null): Promise<UploadedAssetDto> {
+    const secret = this.tokenSecret();
+    const upload = await this.direct.uploads.get(store.storeId, uploadId.toLowerCase());
+    if (!upload || upload.scope !== 'customer') throw new NotFoundError('That upload was not found.');
+    this.authorizeUpload(store.storeId, upload.asset_id, token);
+
+    const { assetId } = await this.direct.complete(store.storeId, upload.id, 'customer');
+    const row = await this.repo.getAsset(store.storeId, assetId);
+    if (!row) throw new NotFoundError('That upload was not found.');
+    const issued = issueCustomerToken(
+      secret,
+      { scope: 'upload', storeId: store.storeId, subject: row.id },
+      this.ctx.config.customizationTokenTtlSeconds,
+      this.now(),
+    );
+    return { ...toAssetDto(row), uploadToken: issued.token, uploadTokenExpiresAt: issued.expiresAt.toISOString() };
   }
 
   /** Each NEW attachment must present the upload token issued with that upload. */
@@ -396,6 +511,38 @@ export class CustomizationService {
     return this.openAsset(asset);
   }
 
+  /** Short-lived presigned GET for a customer file the shopper has already been authorized to read. */
+  async getAssetUrlForShopper(
+    store: ResolvedStore,
+    customizationId: string,
+    assetId: string,
+    token: string | null,
+  ) {
+    this.authorizeShopper(store.storeId, customizationId, token);
+    const asset = await this.repo.getAsset(store.storeId, assetId);
+    if (!asset || asset.customization_id !== customizationId || asset.status !== 'attached') {
+      throw new NotFoundError('That file was not found.');
+    }
+    return this.presignedGet(asset);
+  }
+
+  private async presignedGet(asset: CustomerAssetRow) {
+    if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id))) {
+      throw new NotFoundError('That file was not found.');
+    }
+    try {
+      const signed = await this.ctx.storage().presignGet(asset.object_key, {
+        expiresInSeconds: this.ctx.config.privateUrlTtlSeconds,
+      });
+      return { url: signed.url, method: 'GET' as const, expiresIn: signed.expiresIn, contentType: asset.content_type };
+    } catch (error) {
+      if (error instanceof StorageConfigError) {
+        throw new ServiceUnavailableError('direct_download_not_configured', 'Direct downloads are not configured on this environment.');
+      }
+      throw error;
+    }
+  }
+
   private async openAsset(asset: CustomerAssetRow) {
     if (!asset.object_key.startsWith(customizationKeyPrefix(asset.store_id))) {
       throw new NotFoundError('That file was not found.');
@@ -471,6 +618,14 @@ export class CustomizationService {
         : null,
       true,
     );
+  }
+
+  async getAssetUrlForMerchant(storeId: string, customizationId: string, assetId: string) {
+    const asset = await this.repo.getAsset(storeId, assetId);
+    if (!asset || asset.customization_id !== customizationId || asset.status !== 'attached') {
+      throw new NotFoundError('That file was not found.');
+    }
+    return this.presignedGet(asset);
   }
 
   async getAssetForMerchant(storeId: string, customizationId: string, assetId: string) {

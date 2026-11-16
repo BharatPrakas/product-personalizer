@@ -31,7 +31,7 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ D1 (SQL
 - [Mappings, markups & the public storefront route](#mappings-markups--the-public-storefront-route)
 - [Customizations, order callback & cleanup](#customizations-order-callback--cleanup)
 - [Authentication & tenancy](#authentication--tenancy)
-- [R2 asset workflow](#r2-asset-workflow)
+- [Asset workflow (direct R2 / S3 uploads)](#asset-workflow-direct-r2--s3-uploads)
 - [End-to-end with the Angular elements](#end-to-end-with-the-angular-elements)
 - [Angular integration](#angular-integration)
 - [IndexedDB → cloud migration](#indexeddb--cloud-migration)
@@ -454,7 +454,8 @@ The full design and the file bytes stay on `GET /customizations/:id` and
 lists them.
 - **Cleanup:** an hourly cron (`scheduled()` → `CleanupService`) expires inactive `saved` customizations
   (30 days), releases abandoned uploads, deletes released files after a grace period, and purges empty
-  tombstones. `ordered` customizations are never touched. Runs are recorded in `cleanup_runs`. Claims
+  tombstones. It also reaps abandoned direct uploads (expired presigned uploads, their `pending/` objects
+  and unreferenced promoted copies — see docs/direct-uploads.md). `ordered` customizations are never touched. Runs are recorded in `cleanup_runs`. Claims
   that used `FOR UPDATE SKIP LOCKED` under Postgres are now plain conditional `UPDATE`/`DELETE`
   statements — D1 serializes every write to one logical writer, so there is no concurrent transaction
   to lock against in the first place.
@@ -499,6 +500,7 @@ stores/
     product-personalization/
       assets/<uuid>.<ext>             that store's merchant artwork and mockups
       customizations/<uuid>.<ext>     PRIVATE customer files (never served by the public asset route)
+      pending/<uploadId>              INTERNAL staging for direct uploads (never served or referenced)
 ```
 
 - The `product-personalization` segment namespaces this service inside a bucket that may be shared with
@@ -545,13 +547,14 @@ environment with `STORAGE_DRIVER`:
 
 | Environment | Driver | Backing store | Required settings |
 |---|---|---|---|
-| production | `r2` | Cloudflare R2 (`PERSONALIZATION_ASSETS` binding) | R2 bucket binding in `wrangler.jsonc` |
-| development / staging | `s3` | AWS S3 (or an S3-compatible endpoint) | `S3_BUCKET`, `S3_REGION`, secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| production, `--env dev` | `r2` | Cloudflare R2 (`PERSONALIZATION_ASSETS` binding) | R2 bucket binding in `wrangler.jsonc` (`env.dev` → `zb-personalization-assets-dev`); for direct uploads also `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, secrets `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` |
+| default (`npm run dev`) / staging | `s3` | AWS S3 (or an S3-compatible endpoint) | `S3_BUCKET`, `S3_REGION`, secrets `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
 
 - The S3 adapter (`src/storage/s3-storage.ts`) calls the S3 REST API with SigV4 through `aws4fetch`.
   It does not bundle the AWS SDK.
 - Use an IAM user per environment, limited to that environment's bucket (`s3:GetObject`,
-  `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`). Don't share one key across environments.
+  `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`). Don't share one key across environments. The same
+  credentials sign the browser's presigned URLs, and `s3:ListBucket` is required (see docs/direct-uploads.md).
 - Put local keys in `.dev.vars`; set staging keys with `wrangler secret put AWS_ACCESS_KEY_ID --env staging`
   (and the same for `AWS_SECRET_ACCESS_KEY`).
 - `S3_ENDPOINT` switches to path-style addressing for S3-compatible services such as MinIO. Leave it unset for AWS.
@@ -562,25 +565,43 @@ environment with `STORAGE_DRIVER`:
 - To run locally against R2 instead, add an `r2_buckets` binding for `PERSONALIZATION_ASSETS` and set
   `STORAGE_DRIVER=r2`.
 
-## R2 asset workflow
+## Asset workflow (direct R2 / S3 uploads)
 
-1. Angular `POST`s the image bytes to the **authenticated** `/assets` endpoint (no R2 credentials in
-   the browser).
-2. The Worker validates size and the actual **file contents** (magic-byte sniffing — the browser's
-   Content-Type is not trusted; only PNG/JPEG/WebP accepted), computes a SHA-256 checksum, generates a
-   tenant-scoped, traversal-free object key, and streams the bytes into R2 via the binding.
-3. Metadata is recorded in `personalization.assets`; the configuration references a **stable delivery
-   URL**, never a short-lived signed URL.
+Files go **from the browser straight to object storage** on a short-lived presigned URL; the Worker
+authorizes the upload and verifies the stored object, and never carries the bytes. Full design, API
+contract, provider setup (R2 token, IAM policy, bucket CORS), retry/cleanup behaviour, security limits and
+the staging checklist: **[docs/direct-uploads.md](docs/direct-uploads.md)**.
 
-**Delivery URL strategy** — persisted configs store a stable URL:
-- If `ASSET_PUBLIC_BASE_URL` is set (an R2 custom domain), that public URL is used — recommended for
-  storefront rendering, where assets are intentionally public. Configure CORS on the bucket/domain.
-- Otherwise the Worker's authorized `/assets/:id/content` endpoint is used (CORS-enabled, auth +
-  ownership checked).
+1. Angular asks the **authenticated** `POST /assets/upload-url` for a presigned `PUT` (declaring type and
+   size). The Worker derives the store from the token, validates the declaration, records a `pending` row in
+   `uploads` and signs a URL for one staging key, `…/pending/<uploadId>`.
+2. The browser `PUT`s the file directly to R2 or S3 (no credentials, no Worker).
+3. Angular calls `POST /assets/complete`. The Worker HEADs the object, reads it (bounded), sniffs the real
+   bytes (PNG/JPEG/WebP, or fonts — the browser's Content-Type and extension are not trusted), checks size,
+   dimensions and SHA-256, copies it to its permanent `assets/<uuid>.<ext>` key and, in one atomic D1 batch,
+   creates the `assets` row and marks the upload `stored`. Completion is idempotent and concurrency-safe.
+4. The configuration references the asset's stable delivery URL — never a presigned URL. Presigned reads
+   (`GET /assets/:id/url`, customer-file `…/url`) are generated on demand, last 60 s and are never stored.
+
+Shopper uploads follow the same flow (`POST /storefront/…/uploads/url` → `PUT` → `POST …/uploads/complete`,
+authorized by the upload token) and land in the private `customizations/` prefix. The old proxied routes
+(`POST /assets`, `POST /storefront/…/uploads`) still work unless `LEGACY_PROXY_UPLOADS=false`.
+
+**Delivery** — a published asset is served by the Worker route (referenced-by-published-config check), or,
+if `ASSET_PUBLIC_BASE_URL` is set, rewritten to `<base>/<object key>` for CDN delivery (that host must expose
+only the `assets/` prefix — never the whole bucket, which also holds private customer files). Drafts keep the
+signed Worker URL.
 
 Deletes verify ownership and refuse (409) if any config draft/published copy or historical version
-still references the asset; deleting a config releases only the assets nothing else references. All R2
-network work happens outside DB transactions.
+still references the asset; deleting a config releases only the assets nothing else references. All
+storage network work happens outside database batches.
+
+New settings (all optional): `UPLOAD_URL_TTL_SECONDS` (300), `PRIVATE_URL_TTL_SECONDS` (60),
+`PENDING_UPLOAD_GRACE_MINUTES` (30), `MAX_OPEN_UPLOADS_PER_STORE` (500), `LEGACY_PROXY_UPLOADS` (true); for R2
+direct uploads `R2_ACCOUNT_ID`, `R2_BUCKET_NAME` (vars) and the `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`
+secrets (an R2 API token scoped to the bucket). The bucket also needs a CORS rule (wildcard origin on a private
+bucket — rationale in docs/direct-uploads.md). Without them R2 answers `503 direct_upload_not_configured`
+and the Angular client falls back to the proxied upload.
 
 ## End-to-end with the Angular elements
 
@@ -616,7 +637,8 @@ editor/renderer/component code changes. See `src/app/workspace/cloud/`:
 
 - `runtime-config.ts` — reads host config; default local.
 - `api-client.service.ts` — `HttpClient` wrapper (auth header, request id, typed errors).
-- `asset-sync.service.ts` — uploads `idb:`/`data:` assets to R2, rewrites refs to delivery URLs.
+- `asset-sync.service.ts` — uploads `idb:`/`data:` assets directly to R2/S3 (via `ApiClient.uploadAsset` →
+  `customizer/util/direct-upload.ts`), rewrites refs to delivery URLs.
 - `cloud-configuration-repository.service.ts` — cloud-authoritative repo with an IndexedDB read-cache.
 - `migration.service.ts` — the IndexedDB → cloud migration.
 

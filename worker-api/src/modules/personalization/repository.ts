@@ -4,7 +4,7 @@
  * `Database`, so the service layer can compose multi-statement operations into one atomic `batch()`.
  */
 
-import type { Database, Statement } from '../../database/connection';
+import { chunkForParamLimit, placeholders, type Database, type Statement } from '../../database/connection';
 import type { AssetStatus, ProductConfigLike } from './types';
 
 export interface ConfigRow {
@@ -282,6 +282,69 @@ export class PersonalizationRepository {
       [storeId, configDbId],
     );
     return rows;
+  }
+
+  /**
+   * Every JSON document that can reference assets for this config: the draft, the published copy and all
+   * version snapshots. Read BEFORE deleting the config (versions cascade).
+   */
+  async contentsForConfig(storeId: string, configDbId: string): Promise<ProductConfigLike[]> {
+    const { rows } = await this.db.query<{ doc: string | null }>(
+      `SELECT draft AS doc FROM configs WHERE store_id = $1 AND id = $2
+       UNION ALL SELECT published FROM configs WHERE store_id = $1 AND id = $2
+       UNION ALL SELECT snapshot FROM config_versions WHERE store_id = $1 AND config_id = $2`,
+      [storeId, configDbId],
+    );
+    const docs: ProductConfigLike[] = [];
+    for (const row of rows) {
+      if (!row.doc) continue;
+      try {
+        docs.push(JSON.parse(row.doc) as ProductConfigLike);
+      } catch {
+        // A document that is not valid JSON cannot reference anything we could resolve.
+      }
+    }
+    return docs;
+  }
+
+  /** Stored assets of this store by id and/or object key (the shapes a config can reference). */
+  async findAssetRows(storeId: string, ids: readonly string[], keys: readonly string[]): Promise<AssetRow[]> {
+    const found = new Map<string, AssetRow>();
+    for (const chunk of chunkForParamLimit(ids, 1)) {
+      const { rows } = await this.db.query<AssetRow>(
+        `SELECT ${ASSET_COLS} FROM assets
+          WHERE store_id = $1 AND status = 'stored' AND id IN (${placeholders(2, chunk.length)})`,
+        [storeId, ...chunk],
+      );
+      for (const row of rows) found.set(row.id, row);
+    }
+    for (const chunk of chunkForParamLimit(keys, 1)) {
+      const { rows } = await this.db.query<AssetRow>(
+        `SELECT ${ASSET_COLS} FROM assets
+          WHERE store_id = $1 AND status = 'stored' AND object_key IN (${placeholders(2, chunk.length)})`,
+        [storeId, ...chunk],
+      );
+      for (const row of rows) found.set(row.id, row);
+    }
+    return [...found.values()];
+  }
+
+  /**
+   * Links not-yet-owned assets to a config. An editor uploads a new configuration's images BEFORE the
+   * config row exists, so they are stored unlinked; this attaches them once the config is saved. Never
+   * steals an asset already linked to another config, and never claims a font: custom fonts are a
+   * store-wide library that outlives any one configuration.
+   */
+  async adoptAssets(storeId: string, configDbId: string, assetIds: readonly string[]): Promise<void> {
+    for (const chunk of chunkForParamLimit(assetIds, 1, 2)) {
+      await this.db.query(
+        `UPDATE assets SET config_id = $2
+          WHERE store_id = $1 AND config_id IS NULL AND status = 'stored'
+            AND content_type NOT LIKE 'font/%'
+            AND id IN (${placeholders(3, chunk.length)})`,
+        [storeId, configDbId, ...chunk],
+      );
+    }
   }
 
   async getAssetById(storeId: string, assetId: string): Promise<AssetRow | null> {
