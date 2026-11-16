@@ -9,9 +9,9 @@
 export interface JwtClaims {
   /** Subject (user id), optional. */
   sub?: string;
-  /** Tenant/store id. Accepts `store_id` or `storeId`. */
-  store_id?: string;
-  storeId?: string;
+  /** Tenant/store id. Accepts `store_id` or `storeId`, as a string or (ZenBasket) a positive integer. */
+  store_id?: string | number;
+  storeId?: string | number;
   /** Space- or array-delimited scopes. */
   scope?: string;
   scopes?: string[];

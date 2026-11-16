@@ -21,7 +21,19 @@
 import type { MiddlewareHandler } from 'hono';
 import type { AppEnv, AuthPrincipal } from '../shared/context';
 import { UnauthorizedError } from '../shared/errors';
-import { scopesFromClaims, verifyJwtHs256 } from '../shared/jwt';
+import { scopesFromClaims, verifyJwtHs256, type JwtClaims } from '../shared/jwt';
+
+/**
+ * The store id claim as a string. ZenBasket signs it as a number (`{ storeId: 766 }`), other issuers as
+ * a string; both name the same store. Anything else (missing, empty, zero, negative, fractional, an
+ * object ...) identifies no store.
+ */
+export function storeIdFromClaims(claims: JwtClaims): string | null {
+  const raw = claims.store_id ?? claims.storeId;
+  if (typeof raw === 'string') return raw.length > 0 ? raw : null;
+  if (typeof raw === 'number' && Number.isSafeInteger(raw) && raw > 0) return String(raw);
+  return null;
+}
 
 function bearer(header: string | undefined): string | null {
   if (!header) return null;
@@ -75,8 +87,8 @@ export const authenticate: MiddlewareHandler<AppEnv> = async (c, next) => {
   const result = await verifyJwtHs256(token, config.jwtSigningSecret);
   if (!result.ok) throw new UnauthorizedError(`Invalid token: ${result.reason}.`);
 
-  const storeId = result.claims.store_id ?? result.claims.storeId;
-  if (typeof storeId !== 'string' || storeId.length === 0) {
+  const storeId = storeIdFromClaims(result.claims);
+  if (!storeId) {
     throw new UnauthorizedError('Token does not identify a store.');
   }
   const principal: AuthPrincipal = {

@@ -52,6 +52,50 @@ describe('authentication & authorization', () => {
     expect(body.error.requestId).toBeTruthy();
   });
 
+  describe('ZenBasket plugin token (HS256, numeric storeId)', () => {
+    const SECRET = 'plugin-secret';
+    async function zbToken(payload: Record<string, unknown>, secret = SECRET): Promise<string> {
+      const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      const head = enc({ alg: 'HS256', typ: 'JWT' });
+      const body = enc(payload);
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${head}.${body}`));
+      return `${head}.${body}.${Buffer.from(new Uint8Array(sig)).toString('base64url')}`;
+    }
+    const iat = Math.floor(Date.now() / 1000);
+    const env = { JWT_SIGNING_SECRET: SECRET, DEV_AUTH_TOKEN: undefined, DEV_AUTH_BYPASS: undefined } as const;
+
+    it('accepts the token shape the backend issues ({ storeId: <number>, pluginId, iat, exp })', async () => {
+      const token = await zbToken({ storeId: 766, pluginId: 160, iat, exp: iat + 3600 });
+      expect((await call(`${ADMIN}/configs`, { token, env })).status).toBe(200);
+    });
+
+    it('treats the numeric claim and the same id as a string as one store', async () => {
+      const numeric = await zbToken({ storeId: 766, iat, exp: iat + 3600 });
+      const text = await zbToken({ storeId: '766', iat, exp: iat + 3600 });
+      const create = await call(`${ADMIN}/configs`, {
+        method: 'POST', token: numeric, env,
+        body: { clientConfigId: 'cfg-numeric-claim', draft: sampleDraft({ id: 'cfg-numeric-claim' }) },
+      });
+      expect(create.status).toBe(201);
+      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: text, env })).status).toBe(200);
+      const other = await zbToken({ storeId: 767, iat, exp: iat + 3600 });
+      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: other, env })).status).toBe(404);
+    });
+
+    it.each([[0], [-1], [1.5], [null]])('rejects a token whose storeId claim is %s', async (storeId) => {
+      const token = await zbToken({ storeId, iat, exp: iat + 3600 });
+      expect((await call(`${ADMIN}/configs`, { token, env })).status).toBe(401);
+    });
+
+    it('rejects a token signed with another secret and an expired one', async () => {
+      const wrong = await zbToken({ storeId: 766, iat, exp: iat + 3600 }, 'not-the-secret');
+      expect((await call(`${ADMIN}/configs`, { token: wrong, env })).status).toBe(401);
+      const expired = await zbToken({ storeId: 766, iat: iat - 7200, exp: iat - 3600 });
+      expect((await call(`${ADMIN}/configs`, { token: expired, env })).status).toBe(401);
+    });
+  });
+
   // TEMPORARY: DEV_AUTH_BYPASS (config/environment.ts). Remove this describe block along with the
   // flag once a real ZenBasket token flow is wired up.
   describe('DEV_AUTH_BYPASS (temporary escape hatch)', () => {

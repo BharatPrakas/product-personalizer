@@ -10,6 +10,7 @@ export const AR: Messages = {
   'storage.cloud': 'محفوظ في متجرك',
   'storage.local': 'محفوظ في هذا المتصفح فقط',
   'readonly.banner': 'للقراءة فقط: التعديلات معطّلة.',
+  'config.missing': 'لم يتم إعداد تخصيص المنتجات: لم يوفّر المضيف عنوان واجهة البرمجة (apiBaseUrl). لن يُحفظ أي شيء قبل ذلك.',
   'view.list': 'القوالب',
   'view.editor': 'محرر القالب',
   'view.mapping': 'ربط المنتجات',

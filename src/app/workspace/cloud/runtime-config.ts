@@ -119,9 +119,11 @@ export class RuntimeConfig {
     this.refreshing ??= (async () => {
       try {
         const issued = await provider({ forceRefresh });
-        if (!issued || typeof issued.token !== 'string' || !issued.token) return false;
+        // Hosts may hand over a ready-made header value ("Bearer <jwt>"); the scheme is added on send.
+        const token = typeof issued?.token === 'string' ? issued.token.replace(/^\s*Bearer\s+/i, '').trim() : '';
+        if (!token) return false;
         const expiresAt = Number.isFinite(issued.expiresAt) ? issued.expiresAt : undefined;
-        this.issued.set({ token: issued.token, expiresAt });
+        this.issued.set({ token, expiresAt });
         return true;
       } catch {
         return false;

@@ -13,6 +13,7 @@ export const EN = {
   'storage.cloud': 'Saved to your store',
   'storage.local': 'Saved in this browser only',
   'readonly.banner': 'Read-only: changes are disabled.',
+  'config.missing': 'Product personalization is not configured: the host did not provide the API address (apiBaseUrl). Nothing is saved until it does.',
   'route.announce': 'Showing {view}',
   'view.list': 'templates',
   'view.editor': 'template editor',

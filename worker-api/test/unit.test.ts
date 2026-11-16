@@ -3,6 +3,7 @@ import { sniffImage } from '../src/shared/image-sniff';
 import { sniffFont } from '../src/shared/font-sniff';
 import { assetKeyPrefix, generateObjectKey } from '../src/storage/object-storage';
 import { verifyJwtHs256, scopesFromClaims } from '../src/shared/jwt';
+import { storeIdFromClaims } from '../src/middleware/authentication';
 import { validateProductConfig, CONFIG_LIMITS } from '../src/modules/personalization/validation';
 import { tinyPng, tinyFont, sampleDraft } from './helpers';
 
@@ -140,4 +141,22 @@ describe('config validation', () => {
     expect(result.ok).toBe(false);
     expect(result.issues.some((i) => i.code === 'too_many')).toBe(true);
   });
+});
+
+describe('store id claim', () => {
+  it.each([
+    [{ storeId: 766 }, '766'],
+    [{ store_id: 766 }, '766'],
+    [{ storeId: '766' }, '766'],
+    [{ store_id: 'store_1', storeId: 9 }, 'store_1'],
+  ])('reads %j as %s', (claims, expected) => {
+    expect(storeIdFromClaims(claims)).toBe(expected);
+  });
+
+  it.each([{}, { storeId: '' }, { storeId: 0 }, { storeId: -3 }, { storeId: 1.5 }, { storeId: 2 ** 60 }, { storeId: null }, { storeId: { id: 1 } }])(
+    'rejects %j',
+    (claims) => {
+      expect(storeIdFromClaims(claims as never)).toBeNull();
+    },
+  );
 });

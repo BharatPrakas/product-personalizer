@@ -110,7 +110,13 @@ const asString = (value: unknown): string | null =>
         <p class="notice notice--info readonly-banner" role="status">{{ 'readonly.banner' | t }}</p>
       }
       <main id="main" tabindex="-1" class="app-main" [class.app-main--immersive]="immersive()">
-        <router-outlet />
+        @if (notConfigured()) {
+          <p class="notice notice--danger" role="alert" data-control="config-missing">
+            {{ 'config.missing' | t }}
+          </p>
+        } @else {
+          <router-outlet />
+        }
       </main>
       <p class="sr-only" role="status" aria-live="polite">{{ announcement() }}</p>
       <app-confirm-host />
@@ -151,6 +157,16 @@ export class AdminElementComponent {
   protected readonly immersive = computed(
     () => this.current().view === 'editor' || this.current().view === 'preview',
   );
+  /**
+   * Inside ZenBasket (a host SDK is present) or when cloud storage is requested, the API address is
+   * required. Without it the element would silently save to the browser's IndexedDB, shared by every
+   * store and user of that browser, so it refuses to run and reports `admin-error` instead.
+   */
+  protected readonly notConfigured = computed(() => {
+    if (this.apiBaseUrl() || this.runtime.apiBaseUrl()) return false;
+    if (this.persistence() === 'local') return false;
+    return this.persistence() === 'cloud' || this.bridge.sdk() !== null;
+  });
   protected readonly storage = computed(() => this.repository.storage());
   protected readonly storageKind = computed(() => (this.runtime.useCloud() ? 'cloud' : 'local'));
 
@@ -176,6 +192,18 @@ export class AdminElementComponent {
       this.events.attach(null);
       this.bridge.detach(this.element.nativeElement);
       this.runtime.clearTokenProvider(tokenProvider);
+    });
+
+    // A missing API address is a host configuration error: tell the host (once per change).
+    effect(() => {
+      if (this.notConfigured())
+        untracked(() =>
+          this.events.error({
+            code: 'not-configured',
+            message: 'The API address (apiBaseUrl) was not provided.',
+            recoverable: false,
+          }),
+        );
     });
 
     // Host properties -> services.

@@ -86,6 +86,11 @@ describe('RuntimeConfig token handling', () => {
     expect(await runtime.refreshToken()).toBe(false);
   });
 
+  it('strips a "Bearer " prefix from an issued token', async () => {
+    runtime.setTokenProvider(provider({ token: 'Bearer aaa.bbb.ccc' }));
+    expect(await runtime.ensureToken()).toBe('aaa.bbb.ccc');
+  });
+
   it('lets a token assigned by the host replace the issued one', async () => {
     runtime.setTokenProvider(provider({ token: 'issued' }));
     await runtime.ensureToken();

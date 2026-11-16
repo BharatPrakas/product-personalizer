@@ -10,6 +10,7 @@ export const FR: Messages = {
   'storage.cloud': 'Enregistré dans votre boutique',
   'storage.local': 'Enregistré dans ce navigateur uniquement',
   'readonly.banner': 'Lecture seule : les modifications sont désactivées.',
+  'config.missing': 'La personnalisation de produits n’est pas configurée : l’hôte n’a pas fourni l’adresse de l’API (apiBaseUrl). Rien n’est enregistré tant qu’elle manque.',
   'route.announce': 'Affichage : {view}',
   'view.list': 'modèles',
   'view.editor': 'éditeur de modèle',

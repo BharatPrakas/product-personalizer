@@ -60,6 +60,7 @@ export type AdminView = 'list' | 'editor' | 'mapping' | 'preview' | 'orders';
 export type AdminPersistence = 'local' | 'cloud';
 
 export type AdminErrorCode =
+  | 'not-configured'
   | 'auth'
   | 'network'
   | 'conflict'
