@@ -22,24 +22,34 @@ export interface PriceView {
 @Component({
   selector: 'app-action-bar',
   template: `
-    @if (price(); as p) {
-      <div class="price" aria-label="Display price">
-        <span class="price-total">{{ p.total }}</span>
-        <span class="price-note">
-          {{ p.base }} + {{ p.fee }} personalization. Indicative price supplied by the store; the
-          final price is confirmed at checkout.
-        </span>
-      </div>
-    }
+    @if (price() || blockers().length > 0) {
+      <div class="summary">
+        @if (price(); as p) {
+          <div class="price" aria-label="Display price">
+            <span class="price-total">{{ p.total }}</span>
+            <span class="price-note">
+              {{ p.base }} + {{ p.fee }} personalization. Indicative price supplied by the store; the
+              final price is confirmed at checkout.
+            </span>
+          </div>
+        }
 
-    @if (blockers().length > 0) {
-      <div class="blockers">
-        <p class="blockers-title">{{ blockersTitle() }}</p>
-        <ul>
-          @for (blocker of blockers(); track blocker) {
-            <li>{{ blocker }}</li>
-          }
-        </ul>
+        @if (blockers().length > 0) {
+          <div class="blockers">
+            <svg class="blockers-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5M12 8h.01" />
+            </svg>
+            <div>
+              <p class="blockers-title">{{ blockersTitle() }}</p>
+              <ul>
+                @for (blocker of blockers(); track blocker) {
+                  <li>{{ blocker }}</li>
+                }
+              </ul>
+            </div>
+          </div>
+        }
       </div>
     }
 
@@ -77,7 +87,7 @@ export interface PriceView {
         }
         <button
           type="button"
-          class="btn secondary"
+          class="btn secondary reset"
           #resetButton
           [attr.aria-disabled]="resetDisabled()"
           (click)="askReset()"

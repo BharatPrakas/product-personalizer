@@ -139,7 +139,7 @@ describe.skipIf(!enabled)(
             ) as HTMLElement
         ).click(),
       );
-      await clickText(page, 'a', '.bulk-bar button', 'Map to this template');
+      await clickText(page, 'a', '.bulk-bar button', 'Assign template');
       await page.waitForFunction(
         () => (window as any).adminHost.events('a', 'mapping-changed').length > 0,
         { timeout: 15000 },

@@ -1,4 +1,13 @@
-import { Component, ElementRef, computed, inject, input, signal, viewChild } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  Injector,
+  afterNextRender,
+  inject,
+  input,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { IconComponent, IconName } from './icon.component';
 
 /**
@@ -20,6 +29,7 @@ import { IconComponent, IconName } from './icon.component';
       [class.btn--icon]="!text()"
       [attr.aria-label]="text() ? null : label()"
       [attr.data-tip]="text() ? null : label()"
+      [attr.data-tip-align]="align() === 'end' ? 'end' : null"
       aria-haspopup="menu"
       [attr.aria-expanded]="open()"
       [disabled]="disabled()"
@@ -40,8 +50,6 @@ import { IconComponent, IconName } from './icon.component';
         class="menu"
         role="menu"
         [attr.aria-label]="label()"
-        [style.top.px]="position().top"
-        [style.left.px]="position().left"
         (click)="onPanelClick($event)"
         (keydown)="onPanelKey($event)"
       >
@@ -60,24 +68,11 @@ export class MenuComponent {
   readonly align = input<'start' | 'end'>('start');
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   private readonly trigger = viewChild.required<ElementRef<HTMLButtonElement>>('trigger');
   private readonly panel = viewChild<ElementRef<HTMLElement>>('panel');
 
   protected readonly open = signal(false);
-  private readonly anchor = signal({ top: 0, left: 0, right: 0, bottom: 0 });
-  protected readonly position = computed(() => {
-    const a = this.anchor();
-    const width = 240;
-    const left =
-      this.align() === 'end'
-        ? Math.max(8, a.right - width)
-        : Math.min(a.left, window.innerWidth - width - 8);
-    const spaceBelow = window.innerHeight - a.bottom;
-    return {
-      left,
-      top: spaceBelow < 260 && a.top > spaceBelow ? Math.max(8, a.top - 260) : a.bottom + 4,
-    };
-  });
 
   protected toggle(): void {
     if (this.open()) this.close();
@@ -85,10 +80,39 @@ export class MenuComponent {
   }
 
   private show(): void {
-    const r = this.trigger().nativeElement.getBoundingClientRect();
-    this.anchor.set({ top: r.top, left: r.left, right: r.right, bottom: r.bottom });
     this.open.set(true);
+    afterNextRender(() => this.place(), { injector: this.injector });
     queueMicrotask(() => setTimeout(() => this.items()[0]?.focus()));
+  }
+
+  /**
+   * Lines the panel up with the trigger, using the panel's real size: below it (above when there is
+   * more room there), kept inside the window. `position: fixed` is relative to the window only when
+   * no ancestor is the containing block; the admin element's `contain: layout` (and any host-page
+   * transform) is one, so the panel's actual origin is measured and subtracted. Runs before paint.
+   */
+  private place(): void {
+    const panel = this.panel()?.nativeElement;
+    if (!panel) return;
+    const trigger = this.trigger().nativeElement;
+    const a = trigger.getBoundingClientRect();
+    panel.style.left = '0px';
+    panel.style.top = '0px';
+    const origin = panel.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const rtl = getComputedStyle(trigger).direction === 'rtl';
+    const alignRight = (this.align() === 'end') !== rtl;
+    const preferred = alignRight ? a.right - origin.width : a.left;
+    const left = Math.max(8, Math.min(preferred, viewportWidth - origin.width - 8));
+    const below = viewportHeight - a.bottom - 4;
+    const above = a.top - 4;
+    const top =
+      origin.height > below && above > below
+        ? Math.max(8, a.top - 4 - origin.height)
+        : a.bottom + 4;
+    panel.style.left = `${Math.round(left - origin.left)}px`;
+    panel.style.top = `${Math.round(top - origin.top)}px`;
   }
 
   protected close(returnFocus = false): void {

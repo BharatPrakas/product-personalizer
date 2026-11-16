@@ -1,6 +1,6 @@
 import { Component, DestroyRef, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { I18n, TranslatePipe } from '../admin/i18n/i18n.service';
+import { I18n, PluralPipe, TranslatePipe } from '../admin/i18n/i18n.service';
 import { downloadBlob } from '../editor/util/download';
 import { EmptyStateComponent } from '../ui/empty-state.component';
 import { IconComponent } from '../ui/icon.component';
@@ -17,12 +17,20 @@ import { readSavedDesign, type FileView } from './order-view';
 const LINE_CONCURRENCY = 4;
 
 /**
- * One order: its header (what the store sent; "Not provided by the store" otherwise), one card per
+ * One order: its header (what the store sent; "Not supplied" otherwise), one card per
  * personalized line, and downloads — single files, one ZIP per line, one ZIP for the whole order.
  */
 @Component({
   selector: 'app-order-detail',
-  imports: [RouterLink, IconComponent, EmptyStateComponent, TranslatePipe, OrderLineCardComponent, DownloadStatusComponent],
+  imports: [
+    RouterLink,
+    IconComponent,
+    EmptyStateComponent,
+    TranslatePipe,
+    PluralPipe,
+    OrderLineCardComponent,
+    DownloadStatusComponent,
+  ],
   providers: [OrderDownloads],
   template: `
     <section class="page order-detail" aria-labelledby="order-title">
@@ -33,7 +41,9 @@ const LINE_CONCURRENCY = 4;
       @switch (state()) {
         @case ('loading') {
           <h1 id="order-title" class="sr-only">{{ 'orders.title' | t }}</h1>
-          <p class="muted" role="status">{{ 'orders.loading-order' | t }}</p>
+          <p class="loading-state" role="status">
+            <span class="spinner" aria-hidden="true"></span> {{ 'orders.loading-order' | t }}
+          </p>
         }
         @case ('not-found') {
           <h1 id="order-title" class="sr-only">{{ 'orders.title' | t }}</h1>
@@ -52,78 +62,94 @@ const LINE_CONCURRENCY = 4;
         @default {
           @if (order(); as o) {
             <header class="page-header">
-              <div class="grow">
+              <div>
                 <h1 id="order-title">{{ 'orders.detail.title' | t: { number: o.orderNumber ?? o.orderId } }}</h1>
-                <p class="muted">
+                <p>
                   {{ o.placedAt ? ('orders.placed-at' | t: { date: date(o.placedAt) }) : ('orders.linked-at' | t: { date: date(o.linkedAt) }) }}
+                  <span aria-hidden="true"> · </span>
+                  {{ 'orders.items' | tn: o.lines.length }}
                 </p>
               </div>
-              <button
-                type="button"
-                class="btn btn--primary"
-                [disabled]="downloads.busy() || !allReady()"
-                (click)="downloadOrder()"
-              >
-                <app-icon name="download" [size]="16" /> {{ 'orders.download.order' | t }}
-              </button>
+              <div class="page-actions">
+                <button
+                  type="button"
+                  class="btn btn--primary"
+                  [disabled]="downloads.busy() || !allReady()"
+                  (click)="downloadOrder()"
+                >
+                  <app-icon name="download" [size]="16" /> {{ 'orders.download.order' | t }}
+                </button>
+              </div>
             </header>
 
             <app-download-status />
 
-            <div class="order-detail__summary">
-              <section class="order-detail__box" aria-labelledby="order-info">
+            <div class="panel order-detail__summary">
+              <section class="order-summary__section" aria-labelledby="order-info">
                 <h2 id="order-info" class="order-detail__heading">{{ 'orders.detail.order' | t }}</h2>
                 <dl class="facts">
                   <dt>{{ 'orders.detail.id' | t }}</dt>
-                  <dd>{{ o.orderId }}</dd>
+                  <dd class="mono">{{ o.orderId }}</dd>
                   <dt>{{ 'orders.detail.number' | t }}</dt>
-                  <dd>{{ o.orderNumber ?? ('orders.not-provided' | t) }}</dd>
+                  <dd>
+                    @if (o.orderNumber) { {{ o.orderNumber }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                  </dd>
                   <dt>{{ 'orders.detail.placed' | t }}</dt>
-                  <dd>{{ o.placedAt ? date(o.placedAt) : ('orders.not-provided' | t) }}</dd>
-                  <dt>{{ 'orders.detail.total' | t }}</dt>
-                  <dd>{{ o.totals.total ? money(o.totals.total) : ('orders.not-provided' | t) }}</dd>
+                  <dd>
+                    @if (o.placedAt) { {{ date(o.placedAt) }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                  </dd>
                   @for (row of totalRows(); track row.key) {
                     <dt>{{ row.label | t }}</dt>
-                    <dd>{{ row.value }}</dd>
+                    <dd class="tabular">{{ row.value }}</dd>
                   }
+                  <dt class="order-total">{{ 'orders.detail.total' | t }}</dt>
+                  <dd class="order-total tabular">
+                    @if (o.totals.total) { {{ money(o.totals.total) }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                  </dd>
                 </dl>
               </section>
 
-              <section class="order-detail__box" aria-labelledby="order-customer">
+              <section class="order-summary__section" aria-labelledby="order-customer">
                 <h2 id="order-customer" class="order-detail__heading">{{ 'orders.detail.customer' | t }}</h2>
                 @if (hasCustomer()) {
                   <dl class="facts">
                     <dt>{{ 'orders.customer.name' | t }}</dt>
-                    <dd>{{ o.customer.name ?? ('orders.not-provided' | t) }}</dd>
+                    <dd>
+                      @if (o.customer.name) { {{ o.customer.name }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                    </dd>
                     <dt>{{ 'orders.customer.email' | t }}</dt>
-                    <dd>{{ o.customer.email ?? ('orders.not-provided' | t) }}</dd>
+                    <dd>
+                      @if (o.customer.email) { {{ o.customer.email }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                    </dd>
                     <dt>{{ 'orders.customer.phone' | t }}</dt>
-                    <dd>{{ o.customer.phone ?? ('orders.not-provided' | t) }}</dd>
+                    <dd>
+                      @if (o.customer.phone) { {{ o.customer.phone }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+                    </dd>
                   </dl>
                 } @else {
-                  <p class="muted small">{{ 'orders.not-provided' | t }}</p>
+                  <p class="missing">{{ 'orders.not-provided' | t }}</p>
                 }
               </section>
 
-              <section class="order-detail__box" aria-labelledby="order-shipping">
+              <section class="order-summary__section" aria-labelledby="order-shipping">
                 <h2 id="order-shipping" class="order-detail__heading">{{ 'orders.detail.shipping' | t }}</h2>
                 @if (o.shippingAddress; as a) {
                   <address class="order-detail__address">
                     @for (part of addressLines(a); track $index) { <span>{{ part }}</span> }
                   </address>
                 } @else {
-                  <p class="muted small">{{ 'orders.not-provided' | t }}</p>
+                  <p class="missing">{{ 'orders.not-provided' | t }}</p>
                 }
               </section>
 
-              <section class="order-detail__box" aria-labelledby="order-billing">
+              <section class="order-summary__section" aria-labelledby="order-billing">
                 <h2 id="order-billing" class="order-detail__heading">{{ 'orders.detail.billing' | t }}</h2>
                 @if (o.billingAddress; as a) {
                   <address class="order-detail__address">
                     @for (part of addressLines(a); track $index) { <span>{{ part }}</span> }
                   </address>
                 } @else {
-                  <p class="muted small">{{ 'orders.not-provided' | t }}</p>
+                  <p class="missing">{{ 'orders.not-provided' | t }}</p>
                 }
               </section>
             </div>
@@ -145,17 +171,6 @@ const LINE_CONCURRENCY = 4;
         }
       }
     </section>
-  `,
-  styles: `
-    .order-detail { display: grid; gap: var(--s-4); }
-    .order-detail__back { justify-self: start; }
-    .order-detail__summary { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-    .order-detail__box {
-      padding: var(--s-3); border: 1px solid var(--c-border); border-radius: var(--r-md); background: var(--c-surface);
-    }
-    .order-detail__heading { font-size: var(--fs-lg); margin: 0 0 var(--s-2); }
-    .order-detail__address { display: grid; font-style: normal; font-size: var(--fs-sm); }
-    .order-detail__lines { display: grid; gap: var(--s-4); }
   `,
 })
 export class OrderDetailComponent {

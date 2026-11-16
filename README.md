@@ -84,7 +84,7 @@ seeded.
    **Test files**: one production PNG per printable area and one composite PNG per mockup.
 4. **Save draft** stores the working copy. **Publish** (enabled once the setup steps are complete) makes the current
    design the published configuration and keeps the draft open for further edits; the list shows *Published* and
-   *Published · changes pending*. Leaving with unsaved changes asks first; saving over a copy changed in another tab
+   *Unpublished changes* (with the live version number). Leaving with unsaved changes asks first; saving over a copy changed in another tab
    is refused rather than overwritten.
 
 Keyboard: `Ctrl/Cmd+S` save draft, `Ctrl/Cmd+Z` / `Shift+Z` undo / redo, `V` select, `H` pan, arrow keys nudge the
@@ -393,8 +393,8 @@ product titles, tokens) beyond what is listed.
 
 `view = 'orders'` lists the store's orders that carry personalized lines (from the signed `order.confirmed`
 webhook; needs `apiBaseUrl` — in browser-only mode the page says orders need the connected backend). Search by
-order id/number, filter by product id and date, page with "Load more". An order shows its header (number, date,
-customer, addresses, totals — each "Not provided by the store" until the platform sends it, see contract §7.1)
+order id/number, filter by date, page with "Load more". An order shows its header (number, date,
+customer, addresses, totals — each "Not supplied by the store" until the platform sends it, see contract §7.1)
 and one card per line: product/variant/SKU/quantity, template and version, a preview gallery with a lightbox,
 every customer input labelled from the pinned template version (raw field ids if that version cannot be read),
 and the production files with their pixel sizes. Files download through the authenticated API (the token is
@@ -417,17 +417,18 @@ renderer on the working draft, with test exports (one production PNG per area, o
 
 ### Product mapping
 
-*Product mapping* (header tab, or the row menu / editor header **Map to products**) links a **published** template
-to products, variants or collections.
+*Product mapping* (header tab, or the row menu / editor header **Assign to products**) assigns a **published**
+template to products. The template being assigned is picked in the page header.
 
-* **Scopes:** `product`, `variant`, `collection`; the target is the host's id (`externalId`). SKUs are searchable
-  and shown. **Precedence when several match:** variant > product > collection (collection ties: lowest id).
+* **Scopes:** the data model, API and storefront resolution support `product`, `variant` and `collection`; the
+  target is the host's id (`externalId`). **Precedence when several match:** variant > product > collection
+  (collection ties: lowest id). The admin page currently offers **products only**. SKUs are searchable and shown.
 * **One active template per target.** `ProductMapping { id, storeId, configId, scope, externalId, label,
   createdAt, updatedAt }` is unique on `(storeId, scope, externalId)`. A target owned by another template is shown
-  as **Conflict** ("Mapped to “X”"); mapping it asks to **reassign** (it moves, the other template stops showing for
-  it). Status is always text + icon, never colour alone.
-* **Bulk map / unmap** with checkboxes, per-row buttons, filters (*All / Unmapped / Mapped to this template /
-  Mapped elsewhere*), search, and **Add by id** for targets not in the catalog.
+  as **Assigned to another template** ("Currently uses “X”"); assigning it asks to **change the assignment** (it
+  moves, the other template stops showing for it). Status is always text + icon, never colour alone.
+* **Bulk assign / remove** with checkboxes, per-row buttons, status tabs (*All products / Not assigned / Using
+  this template / Using another template*) and search.
 * **Lifecycle:** mappings point at the template *id*, so publishing a new version needs no remapping (the storefront
   always gets the latest published version). Archiving a template warns how many mappings it has (archived
   templates are not served); deleting a template removes its mappings.
@@ -701,7 +702,8 @@ canvas. **A low-end mobile device profile was not measured**, so the brief's mob
 - Restoring a deleted template's mappings, per-store storefront origins UI, and a UI for the Worker's sync issues are
   not implemented. The public storefront route is cached up to 5 minutes at the edge, so a publish or unmap can take
   that long to reach shoppers.
-- Mapping scopes are product / variant / collection; a SKU is matched through its product or variant id.
+- Mapping scopes are product / variant / collection; a SKU is matched through its product or variant id. The admin
+  page assigns products only (variant and collection mappings work through the API and the storefront).
 - Only Chrome was tested. Safari/Firefox behaviour is by design, not by test.
 - The "can this font draw this character?" check compares browser rendering with generic fallbacks. It is reliable for
   real glyph gaps (CJK, emoji and Devanagari are rejected by the bundled Latin/Cyrillic/Greek fonts), but it is a

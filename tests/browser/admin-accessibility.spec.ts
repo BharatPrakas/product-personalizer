@@ -92,12 +92,14 @@ for (const viewport of [
       await waitInside(page, 'a', '.mapping-table tbody tr');
       expect(await axeViolations(page, 'a')).toEqual([]);
       await click(page, '.mapping-table tbody tr:nth-child(1) input[type="checkbox"]');
-      await clickText(page, 'a', '.bulk-bar button', 'Map to this template');
+      await clickText(page, 'a', '.bulk-bar button', 'Assign template');
+      // Assigned to this template, or (both viewports share one browser store, so the second run
+      // finds the row already taken) to another one: the same two states the old "Mapped" matched.
       await page.waitForFunction(() =>
         document
           .getElementById('a')!
           .shadowRoot!.querySelector('.mapping-table tbody td:nth-child(4)')!
-          .textContent!.includes('Mapped'),
+          .textContent!.includes('Assigned to'),
       );
       expect(await axeViolations(page, 'a')).toEqual([]);
 
@@ -118,10 +120,10 @@ for (const viewport of [
         document
           .getElementById('a')!
           .shadowRoot!.querySelector('.mapping-table tbody td:nth-child(4)')!
-          .textContent!.includes('Conflict'),
+          .textContent!.includes('Assigned to another template'),
       );
       await click(page, '.mapping-table tbody tr:nth-child(1) input[type="checkbox"]');
-      await clickText(page, 'a', '.bulk-bar button', 'Map to this template');
+      await clickText(page, 'a', '.bulk-bar button', 'Assign template');
       await waitInside(page, 'a', 'app-dialog dialog[open]');
       expect(await axeViolations(page, 'a')).toEqual([]);
       await clickText(page, 'a', 'app-dialog dialog[open] button', 'Cancel');

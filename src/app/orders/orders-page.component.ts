@@ -11,7 +11,7 @@ import { dayBounds, mergePage, orderStatus, productNames } from './order-view';
 const THUMBS = 4;
 
 /**
- * Orders that carry personalized lines, newest first, with search, product and date filters and
+ * Orders that carry personalized lines, newest first, with search and date filters and
  * cursor paging ("Load more"). Orders only exist on the connected backend: in the browser-only
  * workspace the page explains that instead of showing an empty table.
  */
@@ -23,7 +23,7 @@ const THUMBS = 4;
       <header class="page-header">
         <div>
           <h1 id="orders-title">{{ 'orders.title' | t }}</h1>
-          <p class="muted">{{ 'orders.lead' | t }}</p>
+          <p>{{ 'orders.lead' | t }}</p>
         </div>
       </header>
 
@@ -34,171 +34,169 @@ const THUMBS = 4;
           [description]="'orders.local.description' | t"
         />
       } @else {
-        <form class="mapping-controls orders-controls" role="search" (submit)="$event.preventDefault()">
-          <label class="search field--grow">
-            <app-icon name="search" />
-            <span class="sr-only">{{ 'orders.search' | t }}</span>
-            <input
-              class="input"
-              type="search"
-              maxlength="200"
-              [placeholder]="'orders.search' | t"
-              [value]="query()"
-              (input)="setQuery($any($event.target).value)"
-            />
-          </label>
-          <div class="field">
-            <label class="label" for="orders-product">{{ 'orders.filter.product' | t }}</label>
-            <input
-              id="orders-product"
-              class="input"
-              type="text"
-              maxlength="200"
-              [placeholder]="'orders.filter.product.placeholder' | t"
-              [value]="productId()"
-              (change)="productId.set($any($event.target).value.trim()); reload()"
-            />
-          </div>
-          <div class="field">
-            <label class="label" for="orders-from">{{ 'orders.filter.from' | t }}</label>
-            <input
-              id="orders-from"
-              class="input"
-              type="date"
-              [value]="from()"
-              [max]="to() || null"
-              (change)="from.set($any($event.target).value); reload()"
-            />
-          </div>
-          <div class="field">
-            <label class="label" for="orders-to">{{ 'orders.filter.to' | t }}</label>
-            <input
-              id="orders-to"
-              class="input"
-              type="date"
-              [value]="to()"
-              [min]="from() || null"
-              (change)="to.set($any($event.target).value); reload()"
-            />
-          </div>
-          @if (filtered()) {
-            <button type="button" class="btn btn--sm" (click)="clearFilters()">
-              {{ 'orders.filter.clear' | t }}
-            </button>
-          }
-        </form>
-
-        @switch (state()) {
-          @case ('loading') {
-            <p class="muted" role="status">{{ 'orders.loading' | t }}</p>
-          }
-          @case ('error') {
-            <div class="notice notice--danger" role="alert">
-              <app-icon name="alert" />
-              <span class="grow">{{ 'orders.error.load' | t }}</span>
-              <button type="button" class="btn btn--sm" (click)="reload()">{{ 'common.retry' | t }}</button>
-            </div>
-          }
-          @default {
-            @if (items().length === 0) {
-              <app-empty-state
-                [icon]="filtered() ? 'search' : 'file'"
-                [title]="(filtered() ? 'orders.empty.results' : 'orders.empty.title') | t"
-                [description]="filtered() ? null : ('orders.empty.description' | t)"
+        <div class="index-card">
+          <form class="index-toolbar" role="search" (submit)="$event.preventDefault()">
+            <label class="search index-search">
+              <app-icon name="search" [size]="18" />
+              <span class="sr-only">{{ 'orders.search' | t }}</span>
+              <input
+                id="orders-search"
+                class="input"
+                type="search"
+                maxlength="200"
+                [placeholder]="'orders.search' | t"
+                [value]="query()"
+                (input)="setQuery($any($event.target).value)"
               />
-            } @else {
-              <div class="table-wrap">
-                <table class="data-table orders-table">
-                  <caption class="sr-only">{{ 'orders.table.caption' | t }}</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">{{ 'orders.col.order' | t }}</th>
-                      <th scope="col">{{ 'orders.col.placed' | t }}</th>
-                      <th scope="col">{{ 'orders.col.items' | t }}</th>
-                      <th scope="col">{{ 'orders.col.products' | t }}</th>
-                      <th scope="col">{{ 'orders.col.status' | t }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @for (order of items(); track order.orderId) {
-                      <tr>
-                        <th scope="row">
-                          <a class="row-title" [routerLink]="['/orders', order.orderId]">
-                            {{ order.orderNumber ?? order.orderId }}
-                          </a>
-                          @if (order.orderNumber) {
-                            <span class="subtle small block">{{ order.orderId }}</span>
-                          }
-                          @if (order.customerName) {
-                            <span class="subtle small block">{{ order.customerName }}</span>
-                          }
-                        </th>
-                        <td>
-                          @if (order.placedAt) {
-                            {{ date(order.placedAt) }}
-                          } @else {
-                            <span class="subtle small block">{{ 'orders.linked-at' | t: { date: date(order.linkedAt) } }}</span>
-                          }
-                        </td>
-                        <td>
-                          <div class="orders-thumbs">
-                            @for (line of order.lines.slice(0, THUMBS); track line.lineId) {
-                              @if (line.previewAssetId) {
-                                <app-auth-image
-                                  [customizationId]="line.customizationId"
-                                  [assetId]="line.previewAssetId"
-                                  [alt]="'orders.thumb.alt' | t: { name: line.title ?? line.productId }"
-                                  [size]="40"
-                                />
-                              }
-                            }
-                          </div>
-                          <span class="small">{{ 'orders.items' | tn: order.lineCount }}</span>
-                        </td>
-                        <td>
-                          <ul class="plain-list small">
-                            @for (name of names(order); track name) {
-                              <li>{{ name }}</li>
-                            }
-                          </ul>
-                        </td>
-                        <td>
-                          @if (status(order) === 'expired') {
-                            <span class="badge badge--warning">{{ 'orders.status.expired' | t }}</span>
-                          } @else {
-                            <span class="badge badge--success">{{ 'orders.status.ordered' | t }}</span>
-                          }
-                        </td>
-                      </tr>
-                    }
-                  </tbody>
-                </table>
-              </div>
-              @if (nextCursor()) {
-                <button type="button" class="btn" [disabled]="loadingMore()" (click)="loadMore()">
-                  {{ (loadingMore() ? 'orders.loading-more' : 'orders.load-more') | t }}
-                </button>
-              }
-              @if (moreError()) {
-                <div class="notice notice--danger" role="alert">
-                  <app-icon name="alert" />
-                  <span class="grow">{{ 'orders.error.load' | t }}</span>
-                  <button type="button" class="btn btn--sm" (click)="loadMore()">{{ 'common.retry' | t }}</button>
-                </div>
-              }
+            </label>
+            <div class="date-range">
+              <label class="date-range__label" for="orders-from">{{ 'orders.filter.from' | t }}</label>
+              <input
+                id="orders-from"
+                class="input"
+                type="date"
+                [value]="from()"
+                [max]="to() || null"
+                (change)="from.set($any($event.target).value); reload()"
+              />
+              <label class="date-range__label" for="orders-to">{{ 'orders.filter.to' | t }}</label>
+              <input
+                id="orders-to"
+                class="input"
+                type="date"
+                [value]="to()"
+                [min]="from() || null"
+                (change)="to.set($any($event.target).value); reload()"
+              />
+            </div>
+            @if (filtered()) {
+              <button type="button" class="btn btn--ghost btn--sm" (click)="clearFilters()">
+                <app-icon name="close" [size]="16" /> {{ 'orders.filter.clear' | t }}
+              </button>
             }
-            <p class="sr-only" role="status">{{ 'orders.results' | tn: items().length }}</p>
+          </form>
+
+          @switch (state()) {
+            @case ('loading') {
+              <p class="loading-state" role="status">
+                <span class="spinner" aria-hidden="true"></span> {{ 'orders.loading' | t }}
+              </p>
+            }
+            @case ('error') {
+              <div class="notice notice--danger" role="alert">
+                <app-icon name="alert" />
+                <span class="grow">{{ 'orders.error.load' | t }}</span>
+                <button type="button" class="btn btn--sm" (click)="reload()">{{ 'common.retry' | t }}</button>
+              </div>
+            }
+            @default {
+              @if (items().length === 0) {
+                <app-empty-state
+                  [icon]="filtered() ? 'search' : 'file'"
+                  [title]="(filtered() ? 'orders.empty.results' : 'orders.empty.title') | t"
+                  [description]="(filtered() ? 'orders.empty.results-hint' : 'orders.empty.description') | t"
+                >
+                  @if (filtered()) {
+                    <button type="button" class="btn" (click)="clearFilters()">{{ 'orders.filter.clear' | t }}</button>
+                  }
+                </app-empty-state>
+              } @else {
+                <div class="table-wrap">
+                  <table class="data-table orders-table">
+                    <caption class="sr-only">{{ 'orders.table.caption' | t }}</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">{{ 'orders.col.order' | t }}</th>
+                        <th scope="col">{{ 'orders.col.placed' | t }}</th>
+                        <th scope="col">{{ 'orders.col.items' | t }}</th>
+                        <th scope="col">{{ 'orders.col.products' | t }}</th>
+                        <th scope="col">{{ 'orders.col.status' | t }}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      @for (order of items(); track order.orderId) {
+                        <tr>
+                          <th scope="row">
+                            <span class="cell-text">
+                              <a class="row-title" [routerLink]="['/orders', order.orderId]">
+                                {{ order.orderNumber ?? order.orderId }}
+                              </a>
+                              @if (order.customerName) {
+                                <span class="cell-meta">{{ order.customerName }}</span>
+                              }
+                              @if (order.orderNumber) {
+                                <span class="cell-meta mono">{{ order.orderId }}</span>
+                              }
+                            </span>
+                          </th>
+                          <td [attr.data-label]="'orders.col.placed' | t">
+                            @if (order.placedAt) {
+                              <span class="tabular">{{ date(order.placedAt) }}</span>
+                            } @else {
+                              <span class="cell-meta">{{ 'orders.linked-at' | t: { date: date(order.linkedAt) } }}</span>
+                            }
+                          </td>
+                          <td [attr.data-label]="'orders.col.items' | t">
+                            <span class="orders-items">
+                              <span class="orders-thumbs">
+                                @for (line of order.lines.slice(0, THUMBS); track line.lineId) {
+                                  @if (line.previewAssetId) {
+                                    <app-auth-image
+                                      [customizationId]="line.customizationId"
+                                      [assetId]="line.previewAssetId"
+                                      [alt]="'orders.thumb.alt' | t: { name: line.title ?? line.productId }"
+                                      [size]="40"
+                                    />
+                                  }
+                                }
+                              </span>
+                              <span class="cell-meta">{{ 'orders.items' | tn: order.lineCount }}</span>
+                            </span>
+                          </td>
+                          <td class="cell-wide" [attr.data-label]="'orders.col.products' | t">
+                            <ul class="plain-list orders-products">
+                              @for (name of names(order); track name) {
+                                <li>{{ name }}</li>
+                              }
+                            </ul>
+                          </td>
+                          <td [attr.data-label]="'orders.col.status' | t">
+                            @if (status(order) === 'expired') {
+                              <span class="badge badge--warning badge--dot">{{ 'orders.status.expired' | t }}</span>
+                            } @else {
+                              <span class="badge badge--success badge--dot">{{ 'orders.status.ordered' | t }}</span>
+                            }
+                          </td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                @if (nextCursor() || moreError()) {
+                  <div class="index-footer">
+                    @if (moreError()) {
+                      <div class="notice notice--danger" role="alert">
+                        <app-icon name="alert" />
+                        <span class="grow">{{ 'orders.error.load' | t }}</span>
+                        <button type="button" class="btn btn--sm" (click)="loadMore()">{{ 'common.retry' | t }}</button>
+                      </div>
+                    } @else {
+                      <button type="button" class="btn" [disabled]="loadingMore()" [attr.aria-busy]="loadingMore()" (click)="loadMore()">
+                        @if (loadingMore()) {
+                          <span class="spinner" aria-hidden="true"></span>
+                        }
+                        {{ (loadingMore() ? 'orders.loading-more' : 'orders.load-more') | t }}
+                      </button>
+                    }
+                  </div>
+                }
+              }
+              <p class="sr-only" role="status">{{ 'orders.results' | tn: items().length }}</p>
+            }
           }
-        }
+        </div>
       }
     </section>
-  `,
-  styles: `
-    .orders-controls { align-items: flex-end; }
-    .orders-thumbs { display: flex; gap: var(--s-1); flex-wrap: wrap; margin-block-end: var(--s-1); }
-    .orders-thumbs:empty { display: none; }
-    .block { display: block; }
-    .orders-table th[scope='row'] { font-weight: var(--fw-regular); text-align: start; }
   `,
 })
 export class OrdersPageComponent {
@@ -213,10 +211,9 @@ export class OrdersPageComponent {
   protected readonly moreError = signal(false);
 
   protected readonly query = signal('');
-  protected readonly productId = signal('');
   protected readonly from = signal('');
   protected readonly to = signal('');
-  protected readonly filtered = computed(() => !!(this.query().trim() || this.productId() || this.from() || this.to()));
+  protected readonly filtered = computed(() => !!(this.query().trim() || this.from() || this.to()));
 
   private generation = 0;
   private searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -237,14 +234,13 @@ export class OrdersPageComponent {
 
   protected clearFilters(): void {
     this.query.set('');
-    this.productId.set('');
     this.from.set('');
     this.to.set('');
     void this.reload();
   }
 
   private filter() {
-    return { q: this.query().trim() || undefined, productId: this.productId() || undefined, ...dayBounds(this.from(), this.to()) };
+    return { q: this.query().trim() || undefined, ...dayBounds(this.from(), this.to()) };
   }
 
   protected async reload(): Promise<void> {

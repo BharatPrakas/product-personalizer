@@ -3,6 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
 import { FontSpec, TextAlign, TextFieldSpec } from '../models/config.models';
 import { FieldError, TextValue } from '../models/draft.models';
+import { swatchViews } from '../util/color-names';
 import { graphemeCount, normalizeText } from '../util/text-utils';
 
 /** Layer-level style the field falls back to when the customer has not chosen one. */
@@ -19,7 +20,7 @@ const ALIGNS: readonly { id: TextAlign; label: string }[] = [
   { id: 'right', label: 'Align right' },
 ];
 
-/** One configured text field: text box with live count, font picker, colour swatches and style toggles. */
+/** One configured text field: text box with live count, font picker, named colour swatches and style toggles. */
 @Component({
   selector: 'app-text-field',
   imports: [ReactiveFormsModule],
@@ -52,89 +53,124 @@ const ALIGNS: readonly { id: TextAlign; label: string }[] = [
         {{ count() }} / {{ field().maxLength }} characters
       </p>
 
-      @if (fonts().length > 1) {
-        <label class="label sub" [for]="id('font')">Font</label>
-        <select class="control" formControlName="fontId" [id]="id('font')">
-          @for (font of fonts(); track font.id) {
-            <option [value]="font.id">{{ font.label ?? font.family }}</option>
+      @if (fonts().length > 1 || swatches().length > 1) {
+        <div class="text-options">
+          @if (fonts().length > 1) {
+            <div class="option-field">
+              <label class="label sub" [for]="id('font')">Font</label>
+              <select class="control" formControlName="fontId" [id]="id('font')">
+                @for (font of fonts(); track font.id) {
+                  <option [value]="font.id">{{ font.label ?? font.family }}</option>
+                }
+              </select>
+            </div>
           }
-        </select>
-      }
 
-      @if (field().colors.length > 1) {
-        <fieldset class="swatches">
-          <legend class="label sub">Colour</legend>
-          <div class="swatch-row">
-            @for (color of field().colors; track color) {
-              <label class="swatch">
-                <input
-                  type="radio"
-                  class="sr-only"
-                  [formControl]="form.controls.color"
-                  [value]="color"
-                  [name]="id('color')"
-                />
-                <span class="swatch-dot" [style.background-color]="color" aria-hidden="true"></span>
-                <span class="sr-only">Colour {{ color }}</span>
-              </label>
-            }
-          </div>
-        </fieldset>
+          @if (swatches().length > 1) {
+            <fieldset class="swatches option-field">
+              <legend class="label sub">
+                Colour
+                @if (currentColor(); as name) {
+                  <span class="swatch-current" aria-hidden="true">{{ name }}</span>
+                }
+              </legend>
+              <div class="swatch-row">
+                @for (swatch of swatches(); track swatch.value) {
+                  <label class="swatch" [title]="swatch.name">
+                    <input
+                      type="radio"
+                      class="sr-only"
+                      [formControl]="form.controls.color"
+                      [value]="swatch.value"
+                      [name]="id('color')"
+                    />
+                    <span class="swatch-dot" [style.background-color]="swatch.value" aria-hidden="true">
+                      <svg class="swatch-check" viewBox="0 0 24 24" [style.color]="swatch.ink">
+                        <path d="M5 12.5l4.5 4.5L19 7.5" />
+                      </svg>
+                    </span>
+                    <span class="sr-only">Colour {{ swatch.name }}</span>
+                  </label>
+                }
+              </div>
+            </fieldset>
+          }
+        </div>
       }
 
       @if (controls().size > 0) {
         <div class="style-row" role="group" [attr.aria-label]="field().label + ' style'">
-          @if (controls().has('bold')) {
-            <button
-              type="button"
-              class="btn toggle"
-              aria-label="Bold"
-              [attr.aria-pressed]="effective().bold"
-              [disabled]="disabled()"
-              (click)="changed.emit({ bold: !effective().bold })"
-            >
-              <strong aria-hidden="true">B</strong>
-            </button>
-          }
-          @if (controls().has('italic')) {
-            <button
-              type="button"
-              class="btn toggle"
-              aria-label="Italic"
-              [attr.aria-pressed]="effective().italic"
-              [disabled]="disabled()"
-              (click)="changed.emit({ italic: !effective().italic })"
-            >
-              <em aria-hidden="true">I</em>
-            </button>
-          }
-          @if (controls().has('underline')) {
-            <button
-              type="button"
-              class="btn toggle"
-              aria-label="Underline"
-              [attr.aria-pressed]="effective().underline"
-              [disabled]="disabled()"
-              (click)="changed.emit({ underline: !effective().underline })"
-            >
-              <span class="underlined" aria-hidden="true">U</span>
-            </button>
+          @if (controls().has('bold') || controls().has('italic') || controls().has('underline')) {
+            <span class="toggle-group">
+              @if (controls().has('bold')) {
+                <button
+                  type="button"
+                  class="btn toggle"
+                  aria-label="Bold"
+                  [attr.aria-pressed]="effective().bold"
+                  [disabled]="disabled()"
+                  (click)="changed.emit({ bold: !effective().bold })"
+                >
+                  <span class="toggle-glyph" aria-hidden="true">B</span>
+                </button>
+              }
+              @if (controls().has('italic')) {
+                <button
+                  type="button"
+                  class="btn toggle"
+                  aria-label="Italic"
+                  [attr.aria-pressed]="effective().italic"
+                  [disabled]="disabled()"
+                  (click)="changed.emit({ italic: !effective().italic })"
+                >
+                  <span class="toggle-glyph toggle-glyph--italic" aria-hidden="true">I</span>
+                </button>
+              }
+              @if (controls().has('underline')) {
+                <button
+                  type="button"
+                  class="btn toggle"
+                  aria-label="Underline"
+                  [attr.aria-pressed]="effective().underline"
+                  [disabled]="disabled()"
+                  (click)="changed.emit({ underline: !effective().underline })"
+                >
+                  <span class="toggle-glyph underlined" aria-hidden="true">U</span>
+                </button>
+              }
+            </span>
           }
           @if (controls().has('align')) {
-            @for (align of aligns; track align.id) {
-              <button
-                type="button"
-                class="btn toggle"
-                [attr.aria-label]="align.label"
-                [attr.aria-pressed]="effective().align === align.id"
-                [disabled]="disabled()"
-                (click)="changed.emit({ align: align.id })"
-              >
-                <span aria-hidden="true">{{
-                  align.id === 'left' ? '⇤' : align.id === 'right' ? '⇥' : '↔'
-                }}</span>
-              </button>
-            }
+            <span class="toggle-group">
+              @for (align of aligns; track align.id) {
+                <button
+                  type="button"
+                  class="btn toggle"
+                  [attr.aria-label]="align.label"
+                  [attr.aria-pressed]="effective().align === align.id"
+                  [disabled]="disabled()"
+                  (click)="changed.emit({ align: align.id })"
+                >
+                  @switch (align.id) {
+                    @case ('left') {
+                      <svg class="toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 6h16M4 10h10M4 14h16M4 18h10" />
+                      </svg>
+                    }
+                    @case ('right') {
+                      <svg class="toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 6h16M10 10h10M4 14h16M10 18h10" />
+                      </svg>
+                    }
+                    @default {
+                      <svg class="toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 6h16M7 10h10M4 14h16M7 18h10" />
+                      </svg>
+                    }
+                  }
+                </button>
+              }
+            </span>
           }
         </div>
       }
@@ -178,6 +214,11 @@ export class TextFieldComponent {
     const ids = this.field().fontIds;
     return this.allFonts().filter((font) => ids.includes(font.id));
   });
+  /** The field's colours with plain-language names (for the label) and a contrasting check colour. */
+  protected readonly swatches = computed(() => swatchViews(this.field().colors));
+  protected readonly currentColor = computed(
+    () => this.swatches().find((s) => s.value === this.value().color)?.name ?? null,
+  );
   protected readonly controls = computed(() => new Set(this.field().styleControls ?? []));
   protected readonly effective = computed(() => {
     const value = this.value();

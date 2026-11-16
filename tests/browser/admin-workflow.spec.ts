@@ -41,9 +41,9 @@ describe('templates, publishing and mapping', () => {
       'Baseball cap',
     ]);
     expect(await names(page, 'a', '.mapping-table tbody td:nth-child(4)')).toEqual([
-      'Unmapped',
-      'Unmapped',
-      'Unmapped',
+      'Not assigned',
+      'Not assigned',
+      'Not assigned',
     ]);
 
     await page.evaluate(() => {
@@ -60,7 +60,7 @@ describe('templates, publishing and mapping', () => {
       ).click();
     });
     expect(await insideText(page, 'a', '.bulk-bar')).toContain('2 selected');
-    await clickText(page, 'a', '.bulk-bar button', 'Map to this template');
+    await clickText(page, 'a', '.bulk-bar button', 'Assign template');
     await page.waitForFunction(
       (i) => (window as any).adminHost.events(i, 'mapping-changed').length > 0,
       { timeout: 10000 },
@@ -81,11 +81,15 @@ describe('templates, publishing and mapping', () => {
             .shadowRoot!.querySelectorAll('.mapping-table tbody td:nth-child(4)'),
         ]
           .slice(0, 2)
-          .every((c) => c.textContent!.includes('Mapped')),
+          .every((c) => c.textContent!.includes('Assigned to this template')),
       { timeout: 10000 },
       'a',
     );
-    expect(await names(page, 'a', '.current-item')).toHaveLength(2);
+    expect(
+      (await names(page, 'a', '.mapping-table tbody td:nth-child(4)')).filter(
+        (status) => status === 'Assigned to this template',
+      ),
+    ).toHaveLength(2);
 
     // ---- a second template and a conflict
     await createPublished(env, page, 'a', 'Second design');
@@ -106,12 +110,12 @@ describe('templates, publishing and mapping', () => {
           ...document
             .getElementById(i)!
             .shadowRoot!.querySelectorAll('.mapping-table tbody td:nth-child(4)'),
-        ].some((c) => c.textContent!.includes('Conflict')),
+        ].some((c) => c.textContent!.includes('Assigned to another template')),
       { timeout: 10000 },
       'a',
     );
     expect(await insideText(page, 'a', '.mapping-table tbody tr:nth-child(1)')).toContain(
-      'Mapped to “Tee design”',
+      'Currently uses “Tee design”',
     );
     // Map the conflicting mug plus the free cap: the cap is mapped, the mug asks for confirmation.
     await page.evaluate(() => {
@@ -127,13 +131,13 @@ describe('templates, publishing and mapping', () => {
         ) as HTMLElement
       ).click();
     });
-    await clickText(page, 'a', '.bulk-bar button', 'Map to this template');
+    await clickText(page, 'a', '.bulk-bar button', 'Assign template');
     await waitInside(page, 'a', 'app-dialog dialog[open]');
     expect(await insideText(page, 'a', 'app-dialog dialog[open]')).toContain(
       'Ceramic mug → Tee design',
     );
     expect(await adminHost.events(page, 'a', 'mapping-changed')).toHaveLength(2); // the cap only so far
-    await clickText(page, 'a', 'app-dialog dialog[open] button', 'Reassign');
+    await clickText(page, 'a', 'app-dialog dialog[open] button', 'Change assignment');
     await page.waitForFunction(
       (i) => (window as any).adminHost.events(i, 'mapping-changed').length === 3,
       { timeout: 10000 },
@@ -150,7 +154,7 @@ describe('templates, publishing and mapping', () => {
       )!;
       (
         [...row.querySelectorAll('button')].find((b) =>
-          b.textContent!.includes('Unmap'),
+          b.textContent!.includes('Remove assignment'),
         ) as HTMLElement
       ).click();
     });
@@ -178,7 +182,7 @@ describe('templates, publishing and mapping', () => {
     await clickText(page, 'a', '.menu .menu-item', 'Archive');
     await waitInside(page, 'a', 'app-confirm-host dialog[open]');
     expect(await insideText(page, 'a', 'app-confirm-host dialog[open]')).toContain(
-      'Mappings pointing at this template: 1',
+      'Assignments using this template: 1',
     );
     await page.evaluate((i) => {
       const dialog = document
@@ -208,7 +212,11 @@ describe('templates, publishing and mapping', () => {
     await adminHost.mount(page, 'a', { productCatalog: CATALOG, view: 'mapping' });
     await adminHost.ready(page, 'a');
     await waitInside(page, 'a', '.mapping-table tbody tr');
-    expect(await names(page, 'a', '.current-item').then((x) => x.length)).toBeGreaterThan(0);
+    expect(
+      (await names(page, 'a', '.mapping-table tbody td:nth-child(4)')).filter(
+        (status) => status === 'Assigned to this template',
+      ).length,
+    ).toBeGreaterThan(0);
     await page.close();
   });
 });

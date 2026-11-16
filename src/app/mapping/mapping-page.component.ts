@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { AdminHost } from '../admin/admin-host.service';
-import { I18n, TranslatePipe } from '../admin/i18n/i18n.service';
+import { I18n, PluralPipe, TranslatePipe } from '../admin/i18n/i18n.service';
 import type { MessageKey } from '../admin/i18n/messages.en';
 import type { ProductRef } from '../customizer/models/admin-element-contract';
 import { ConfirmService } from '../ui/confirm.service';
@@ -22,7 +22,6 @@ import { ConfigurationRepository } from '../workspace/configuration-repository';
 import type { ConfigurationRecord } from '../workspace/configuration.models';
 import {
   BulkMappingResult,
-  MAPPING_SCOPES,
   MappingConflictError,
   MappingInvalidError,
   MappingScope,
@@ -58,19 +57,44 @@ const PAGE = 100;
  */
 @Component({
   selector: 'app-mapping-page',
-  imports: [RouterLink, IconComponent, EmptyStateComponent, DialogComponent, TranslatePipe],
+  imports: [
+    RouterLink,
+    IconComponent,
+    EmptyStateComponent,
+    DialogComponent,
+    TranslatePipe,
+    PluralPipe,
+  ],
   template: `
     <section class="page" aria-labelledby="mapping-title">
       <header class="page-header">
         <div>
           <h1 id="mapping-title">{{ 'mapping.title' | t }}</h1>
-          <p class="muted">{{ 'mapping.lead' | t }}</p>
+          <p>{{ 'mapping.lead' | t }}</p>
         </div>
+        @if (state() === 'ready' && templates().length > 0) {
+          <div class="context-picker">
+            <label class="label" for="mapping-template">{{ 'mapping.template' | t }}</label>
+            <select
+              id="mapping-template"
+              class="input"
+              (change)="selectTemplate($any($event.target).value)"
+            >
+              @for (t of templates(); track t.id) {
+                <option [value]="t.id" [selected]="t.id === selectedId()">
+                  {{ t.draft.product.name }}
+                </option>
+              }
+            </select>
+          </div>
+        }
       </header>
 
       @switch (state()) {
         @case ('loading') {
-          <p class="muted" role="status">{{ 'common.loading' | t }}</p>
+          <p class="loading-state" role="status">
+            <span class="spinner" aria-hidden="true"></span> {{ 'common.loading' | t }}
+          </p>
         }
         @case ('error') {
           <div class="notice notice--danger" role="alert">
@@ -91,284 +115,235 @@ const PAGE = 100;
               <a class="btn btn--primary" routerLink="/configurations">{{ 'nav.templates' | t }}</a>
             </app-empty-state>
           } @else {
-            <div class="mapping-controls">
-              <div class="field">
-                <label class="label" for="mapping-template">{{ 'mapping.template' | t }}</label>
-                <select
-                  id="mapping-template"
-                  class="input"
-                  (change)="selectTemplate($any($event.target).value)"
-                >
-                  @for (t of templates(); track t.id) {
-                    <option [value]="t.id" [selected]="t.id === selectedId()">
-                      {{ t.draft.product.name }}
-                    </option>
-                  }
-                </select>
+            <div class="index-card">
+              <div class="index-tabs" role="group" aria-labelledby="mapping-filter-label">
+                <span class="sr-only" id="mapping-filter-label">{{ 'mapping.filter.label' | t }}</span>
+                @for (f of filters; track f.id) {
+                  <button
+                    type="button"
+                    class="index-tab"
+                    [attr.aria-pressed]="filter() === f.id"
+                    (click)="filter.set(f.id)"
+                  >
+                    {{ f.label | t }}
+                    <span class="index-tab__count">{{ counts()[f.id] }}</span>
+                  </button>
+                }
               </div>
 
-              <div class="field">
-                <span class="label" id="mapping-scope-label">{{ 'mapping.scope' | t }}</span>
-                <div class="segmented" role="group" aria-labelledby="mapping-scope-label">
-                  @for (s of scopes; track s) {
-                    <button
-                      type="button"
-                      class="segmented-item"
-                      [attr.aria-pressed]="scope() === s"
-                      (click)="setScope(s)"
-                    >
-                      {{ scopeLabel(s) | t }}
-                    </button>
-                  }
-                </div>
-              </div>
-
-              <label class="search field--grow">
-                <app-icon name="search" />
-                <span class="sr-only">{{ 'mapping.search' | t }}</span>
-                <input
-                  class="input"
-                  type="search"
-                  [placeholder]="'mapping.search' | t"
-                  [value]="query()"
-                  (input)="query.set($any($event.target).value)"
-                />
-              </label>
-
-              <div class="field">
-                <span class="label" id="mapping-filter-label">{{ 'mapping.filter' | t }}</span>
-                <div class="segmented" role="group" aria-labelledby="mapping-filter-label">
-                  @for (f of filters; track f.id) {
-                    <button
-                      type="button"
-                      class="segmented-item"
-                      [attr.aria-pressed]="filter() === f.id"
-                      (click)="filter.set(f.id)"
-                    >
-                      {{ f.label | t }}
-                      <span class="segmented-count">{{ counts()[f.id] }}</span>
-                    </button>
-                  }
-                </div>
-              </div>
-            </div>
-
-            <p class="subtle small">{{ 'mapping.precedence' | t }}</p>
-
-            @if (catalogState() === 'loading') {
-              <p class="muted" role="status">{{ 'mapping.loading' | t }}</p>
-            } @else if (catalogState() === 'error') {
-              <div class="notice notice--danger" role="alert">
-                <app-icon name="alert" />
-                <span class="grow">{{ 'mapping.error.load' | t }}</span>
-                <button type="button" class="btn btn--sm" (click)="loadProducts()">
-                  {{ 'common.retry' | t }}
-                </button>
-              </div>
-            } @else if (catalog.source() === 'none') {
-              <p class="notice notice--warning" role="status">
-                <app-icon name="alert" /> <span>{{ 'mapping.empty.catalog' | t }}</span>
-              </p>
-            } @else if (rows().length === 0) {
-              <app-empty-state icon="search" [title]="'mapping.empty.results' | t" description="" />
-            } @else {
-              <div
-                class="bulk-bar"
-                role="group"
-                [attr.aria-label]="'mapping.selected' | t: { count: selection().size }"
-              >
-                <label class="check">
-                  <input
-                    type="checkbox"
-                    [checked]="allVisibleSelected()"
-                    [indeterminate]="someVisibleSelected()"
-                    (change)="toggleAll($any($event.target).checked)"
-                  />
-                  <span>{{ 'common.select-all' | t }}</span>
-                </label>
-                <span class="muted" aria-live="polite">{{
-                  'mapping.selected' | t: { count: selection().size }
-                }}</span>
-                <span class="grow"></span>
-                <button
-                  type="button"
-                  class="btn btn--primary btn--sm"
-                  [disabled]="busy() || readonly() || mappableSelection().length === 0"
-                  (click)="mapSelected()"
-                >
-                  <app-icon name="check" [size]="16" /> {{ 'mapping.action.map' | t }}
-                </button>
-                <button
-                  type="button"
-                  class="btn btn--sm"
-                  [disabled]="busy() || readonly() || unmappableSelection().length === 0"
-                  (click)="unmapSelected()"
-                >
-                  <app-icon name="close" [size]="16" /> {{ 'mapping.action.unmap' | t }}
-                </button>
-              </div>
-
-              <div class="table-wrap">
-                <table class="data-table mapping-table">
-                  <caption class="sr-only">
-                    {{
-                      'mapping.table.caption' | t
-                    }}
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">
-                        <span class="sr-only">{{ 'mapping.col.select' | t }}</span>
-                      </th>
-                      <th scope="col">{{ 'mapping.col.name' | t }}</th>
-                      <th scope="col">{{ 'mapping.col.sku' | t }}</th>
-                      <th scope="col">{{ 'mapping.col.status' | t }}</th>
-                      <th scope="col">
-                        <span class="sr-only">{{ 'mapping.action.map' | t }}</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    @for (row of visibleRows(); track row.key) {
-                      <tr [class.is-selected]="selection().has(row.externalId)">
-                        <td>
-                          <input
-                            type="checkbox"
-                            [checked]="selection().has(row.externalId)"
-                            [attr.aria-label]="row.name"
-                            (change)="toggle(row.externalId, $any($event.target).checked)"
-                          />
-                        </td>
-                        <td>
-                          <div class="cell-main">
-                            @if (row.imageUrl) {
-                              <img
-                                class="mapping-thumb"
-                                [src]="row.imageUrl"
-                                alt=""
-                                width="40"
-                                height="40"
-                                loading="lazy"
-                                referrerpolicy="no-referrer"
-                              />
-                            }
-                            <span class="row-title">{{ row.name }}</span>
-                          </div>
-                        </td>
-                        <td class="subtle">{{ row.sku ?? '' }}</td>
-                        <td>
-                          @switch (row.status.kind) {
-                            @case ('mapped') {
-                              <span class="badge badge--success">
-                                <app-icon name="circle-check" [size]="14" />
-                                {{ 'mapping.status.mapped' | t }}
-                              </span>
-                            }
-                            @case ('conflict') {
-                              <span class="badge badge--warning">
-                                <app-icon name="alert" [size]="14" />
-                                {{ 'mapping.status.conflict' | t }}
-                              </span>
-                              <span class="subtle small block">{{
-                                'mapping.status.conflict-detail'
-                                  | t: { template: ownerName(row.status) }
-                              }}</span>
-                            }
-                            @default {
-                              <span class="badge">
-                                <app-icon name="circle-empty" [size]="14" />
-                                {{ 'mapping.status.unmapped' | t }}
-                              </span>
-                            }
-                          }
-                        </td>
-                        <td class="actions">
-                          @if (row.status.kind === 'mapped') {
-                            <button
-                              type="button"
-                              class="btn btn--sm"
-                              [disabled]="busy() || readonly()"
-                              (click)="unmapOne(row)"
-                            >
-                              {{ 'common.unmap' | t }}
-                              <span class="sr-only">{{ row.name }}</span>
-                            </button>
-                          } @else {
-                            <button
-                              type="button"
-                              class="btn btn--sm"
-                              [disabled]="busy() || readonly()"
-                              (click)="mapOne(row)"
-                            >
-                              {{
-                                row.status.kind === 'conflict'
-                                  ? ('mapping.conflict.confirm' | t)
-                                  : ('mapping.action.map' | t)
-                              }}
-                              <span class="sr-only">{{ row.name }}</span>
-                            </button>
-                          }
-                        </td>
-                      </tr>
+              <div class="index-toolbar">
+                <div class="index-select">
+                  <label class="sr-only" for="mapping-filter">{{ 'mapping.filter.label' | t }}</label>
+                  <select
+                    id="mapping-filter"
+                    class="input"
+                    (change)="filter.set($any($event.target).value)"
+                  >
+                    @for (f of filters; track f.id) {
+                      <option [value]="f.id" [selected]="filter() === f.id">
+                        {{ f.label | t }} ({{ counts()[f.id] }})
+                      </option>
                     }
-                  </tbody>
-                </table>
+                  </select>
+                </div>
+                <label class="search index-search">
+                  <app-icon name="search" [size]="18" />
+                  <span class="sr-only">{{ 'mapping.search' | t }}</span>
+                  <input
+                    class="input"
+                    type="search"
+                    [placeholder]="'mapping.search' | t"
+                    [value]="query()"
+                    (input)="query.set($any($event.target).value)"
+                  />
+                </label>
               </div>
-              @if (rows().length > visibleRows().length) {
-                <button type="button" class="btn" (click)="limit.update((n) => n + PAGE)">
-                  {{ 'mapping.show-more' | t: { count: rows().length - visibleRows().length } }}
-                </button>
-              }
-              <p class="sr-only" role="status">
-                {{ 'mapping.results' | t: { count: rows().length } }}
-              </p>
-            }
 
-            <section class="panel" aria-labelledby="manual-title">
-              <h2 id="manual-title" class="panel-title">{{ 'mapping.manual.title' | t }}</h2>
-              <p class="subtle small">{{ 'mapping.manual.hint' | t }}</p>
-              <form class="row manual-form" (submit)="addManual($event, manualId, manualLabel)">
-                <label class="field">
-                  <span class="label">{{ 'mapping.manual.id' | t }}</span>
-                  <input #manualId class="input" type="text" maxlength="200" required />
-                </label>
-                <label class="field">
-                  <span class="label">{{ 'mapping.manual.label' | t }}</span>
-                  <input #manualLabel class="input" type="text" maxlength="200" />
-                </label>
-                <button type="submit" class="btn" [disabled]="busy() || readonly()">
-                  <app-icon name="plus" [size]="16" /> {{ 'mapping.manual.add' | t }}
-                </button>
-              </form>
-            </section>
-
-            <section class="panel" aria-labelledby="current-title">
-              <h2 id="current-title" class="panel-title">
-                {{ 'mapping.current.title' | t: { template: selectedName() } }}
-              </h2>
-              @if (current().length === 0) {
-                <p class="muted">{{ 'mapping.current.empty' | t }}</p>
+              @if (catalogState() === 'loading') {
+                <p class="loading-state" role="status">
+                  <span class="spinner" aria-hidden="true"></span> {{ 'mapping.loading' | t }}
+                </p>
+              } @else if (catalogState() === 'error') {
+                <div class="notice notice--danger" role="alert">
+                  <app-icon name="alert" />
+                  <span class="grow">{{ 'mapping.error.load' | t }}</span>
+                  <button type="button" class="btn btn--sm" (click)="loadProducts()">
+                    {{ 'common.retry' | t }}
+                  </button>
+                </div>
+              } @else if (catalog.source() === 'none') {
+                <p class="notice notice--warning" role="status">
+                  <app-icon name="alert" /> <span>{{ 'mapping.empty.catalog' | t }}</span>
+                </p>
+              } @else if (rows().length === 0) {
+                <app-empty-state icon="search" [title]="'mapping.empty.results' | t" description="" />
               } @else {
-                <ul class="plain-list current-list">
-                  @for (m of current(); track m.id) {
-                    <li class="current-item">
-                      <span class="badge">{{ scopeLabel(m.scope) | t }}</span>
-                      <span class="grow">{{ m.label || m.externalId }}</span>
-                      <span class="subtle small">{{ m.externalId }}</span>
-                      <button
-                        type="button"
-                        class="btn btn--sm"
-                        [disabled]="busy() || readonly()"
-                        (click)="unmapMapping(m)"
-                      >
-                        {{ 'common.unmap' | t }}
-                        <span class="sr-only">{{ m.label || m.externalId }}</span>
-                      </button>
-                    </li>
-                  }
-                </ul>
+                <div
+                  class="bulk-bar"
+                  [class.has-selection]="selection().size > 0"
+                  role="group"
+                  [attr.aria-label]="'mapping.selected' | t: { count: selection().size }"
+                >
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      [checked]="allVisibleSelected()"
+                      [indeterminate]="someVisibleSelected()"
+                      (change)="toggleAll($any($event.target).checked)"
+                    />
+                    <span>{{ 'common.select-all' | t }}</span>
+                  </label>
+                  <span class="bulk-bar__count" aria-live="polite">{{
+                    'mapping.selected' | t: { count: selection().size }
+                  }}</span>
+                  <div class="bulk-bar__actions">
+                    <button
+                      type="button"
+                      class="btn btn--primary btn--sm"
+                      [disabled]="busy() || readonly() || mappableSelection().length === 0"
+                      (click)="mapSelected()"
+                    >
+                      <app-icon name="check" [size]="16" /> {{ 'mapping.action.map' | t }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn--sm"
+                      [disabled]="busy() || readonly() || unmappableSelection().length === 0"
+                      (click)="unmapSelected()"
+                    >
+                      <app-icon name="close" [size]="16" /> {{ 'mapping.action.unmap' | t }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="table-wrap">
+                  <table class="data-table mapping-table">
+                    <caption class="sr-only">
+                      {{
+                        'mapping.table.caption' | t
+                      }}
+                    </caption>
+                    <thead>
+                      <tr>
+                        <th scope="col" class="col-select">
+                          <span class="sr-only">{{ 'mapping.col.select' | t }}</span>
+                        </th>
+                        <th scope="col">{{ 'mapping.col.name' | t }}</th>
+                        <th scope="col">{{ 'mapping.col.sku' | t }}</th>
+                        <th scope="col">{{ 'mapping.col.status' | t }}</th>
+                        <th scope="col" class="actions">
+                          <span class="sr-only">{{ 'mapping.action.map' | t }}</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      @for (row of visibleRows(); track row.key) {
+                        <tr [class.is-selected]="selection().has(row.externalId)">
+                          <td class="col-select">
+                            <input
+                              type="checkbox"
+                              [checked]="selection().has(row.externalId)"
+                              [attr.aria-label]="row.name"
+                              (change)="toggle(row.externalId, $any($event.target).checked)"
+                            />
+                          </td>
+                          <td>
+                            <div class="cell-main">
+                              @if (row.imageUrl) {
+                                <img
+                                  class="mapping-thumb"
+                                  [src]="row.imageUrl"
+                                  alt=""
+                                  width="40"
+                                  height="40"
+                                  loading="lazy"
+                                  referrerpolicy="no-referrer"
+                                />
+                              } @else {
+                                <span class="mapping-thumb mapping-thumb--empty" aria-hidden="true">
+                                  <app-icon name="image" [size]="18" />
+                                </span>
+                              }
+                              <span class="row-title">{{ row.name }}</span>
+                            </div>
+                          </td>
+                          <td class="sku" [attr.data-label]="'mapping.col.sku' | t">
+                            @if (row.sku) {
+                              {{ row.sku }}
+                            }
+                          </td>
+                          <td [attr.data-label]="'mapping.col.status' | t">
+                            @switch (row.status.kind) {
+                              @case ('mapped') {
+                                <span class="badge badge--success">
+                                  <app-icon name="circle-check" [size]="14" />
+                                  {{ 'mapping.status.mapped' | t }}
+                                </span>
+                              }
+                              @case ('conflict') {
+                                <span class="assignment">
+                                  <span class="badge badge--warning">
+                                    <app-icon name="alert" [size]="14" />
+                                    {{ 'mapping.status.conflict' | t }}
+                                  </span>
+                                  <span class="assignment__detail">{{
+                                    'mapping.status.conflict-detail'
+                                      | t: { template: ownerName(row.status) }
+                                  }}</span>
+                                </span>
+                              }
+                              @default {
+                                <span class="badge">
+                                  <app-icon name="circle-empty" [size]="14" />
+                                  {{ 'mapping.status.unmapped' | t }}
+                                </span>
+                              }
+                            }
+                          </td>
+                          <td class="actions">
+                            @if (row.status.kind === 'mapped') {
+                              <button
+                                type="button"
+                                class="btn btn--sm"
+                                [disabled]="busy() || readonly()"
+                                (click)="unmapOne(row)"
+                              >
+                                {{ 'common.unmap' | t }}
+                                <span class="sr-only">{{ row.name }}</span>
+                              </button>
+                            } @else {
+                              <button
+                                type="button"
+                                class="btn btn--sm"
+                                [disabled]="busy() || readonly()"
+                                (click)="mapOne(row)"
+                              >
+                                {{
+                                  row.status.kind === 'conflict'
+                                    ? ('mapping.conflict.confirm' | t)
+                                    : ('mapping.action.map' | t)
+                                }}
+                                <span class="sr-only">{{ row.name }}</span>
+                              </button>
+                            }
+                          </td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                @if (rows().length > visibleRows().length) {
+                  <div class="index-footer">
+                    <button type="button" class="btn" (click)="limit.update((n) => n + PAGE)">
+                      {{ 'mapping.show-more' | t: { count: rows().length - visibleRows().length } }}
+                    </button>
+                  </div>
+                }
+                <p class="sr-only" role="status">
+                  {{ 'mapping.results' | t: { count: rows().length } }}
+                </p>
               }
-            </section>
+            </div>
           }
         }
       }
@@ -376,7 +351,7 @@ const PAGE = 100;
 
     <app-dialog
       [open]="pending() !== null"
-      [title]="'mapping.conflict.title' | t: { count: pending()?.conflicts?.length ?? 0 }"
+      [title]="'mapping.conflict.title' | tn: (pending()?.conflicts?.length ?? 0)"
       [width]="520"
       (closed)="pending.set(null)"
     >
@@ -410,7 +385,6 @@ export class MappingPageComponent {
   private readonly confirm = inject(ConfirmService);
 
   protected readonly PAGE = PAGE;
-  protected readonly scopes = MAPPING_SCOPES;
   protected readonly filters: { id: Filter; label: MessageKey }[] = [
     { id: 'all', label: 'mapping.filter.all' },
     { id: 'unmapped', label: 'mapping.filter.unmapped' },
@@ -427,7 +401,11 @@ export class MappingPageComponent {
   private readonly products = signal<readonly ProductRef[]>([]);
 
   protected readonly selectedId = signal<string | null>(null);
-  protected readonly scope = signal<MappingScope>('product');
+  /**
+   * The page assigns templates to products only for now. Variant and collection mappings stay
+   * supported by the repositories and the storefront resolution; only the switch is not offered.
+   */
+  protected readonly scope = signal<MappingScope>('product').asReadonly();
   protected readonly query = signal('');
   protected readonly filter = signal<Filter>('all');
   protected readonly selection = signal<ReadonlySet<string>>(new Set());
@@ -444,11 +422,6 @@ export class MappingPageComponent {
   );
   protected readonly selectedName = computed(() => this.names().get(this.selectedId() ?? '') ?? '');
   private readonly index = computed(() => indexMappings(this.allMappings()));
-  protected readonly current = computed(() =>
-    this.allMappings()
-      .filter((m) => m.configId === this.selectedId())
-      .sort((a, b) => b.updatedAt - a.updatedAt),
-  );
 
   private readonly baseRows = computed<Omit<Row, 'status'>[]>(() => {
     const products = this.products();
@@ -560,10 +533,6 @@ export class MappingPageComponent {
     });
   }
 
-  protected scopeLabel(scope: MappingScope): MessageKey {
-    return `mapping.scope.${scope}`;
-  }
-
   // ---- loading ------------------------------------------------------------------------------
 
   protected async refresh(): Promise<void> {
@@ -613,12 +582,6 @@ export class MappingPageComponent {
     this.selection.set(new Set());
   }
 
-  protected setScope(scope: MappingScope): void {
-    this.scope.set(scope);
-    this.selection.set(new Set());
-    this.limit.set(PAGE);
-  }
-
   protected toggle(externalId: string, on: boolean): void {
     this.selection.update((s) => {
       const next = new Set(s);
@@ -657,19 +620,6 @@ export class MappingPageComponent {
 
   protected mapSelected(): Promise<void> {
     return this.map(this.mappableSelection().map((r) => this.target(r)));
-  }
-
-  protected async addManual(
-    event: Event,
-    id: HTMLInputElement,
-    label: HTMLInputElement,
-  ): Promise<void> {
-    event.preventDefault();
-    const externalId = id.value.trim();
-    if (!externalId) return;
-    await this.map([{ scope: this.scope(), externalId, label: label.value.trim() || null }]);
-    id.value = '';
-    label.value = '';
   }
 
   private async map(targets: MappingTarget[]): Promise<void> {
@@ -719,10 +669,6 @@ export class MappingPageComponent {
 
   protected unmapOne(row: Row): Promise<void> {
     return this.removeIds(row.status.kind === 'mapped' ? [row.status.mapping.id] : []);
-  }
-
-  protected unmapMapping(mapping: ProductMapping): Promise<void> {
-    return this.removeIds([mapping.id]);
   }
 
   private async removeIds(ids: string[]): Promise<void> {

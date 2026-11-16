@@ -34,6 +34,9 @@ import { ArtworkValue, FieldError } from '../models/draft.models';
               value=""
               [name]="id('choice')"
             />
+            <span class="card-check" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+            </span>
             <span class="card-thumb card-none" aria-hidden="true">–</span>
             <span class="card-name">None</span>
           </label>
@@ -47,6 +50,9 @@ import { ArtworkValue, FieldError } from '../models/draft.models';
               [value]="item.id"
               [name]="id('choice')"
             />
+            <span class="card-check" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+            </span>
             <span class="card-thumb">
               <img [ngSrc]="item.thumbnailSrc ?? item.src" width="72" height="72" alt="" />
             </span>

@@ -1,15 +1,17 @@
 // Design tokens. Every colour, size, radius, shadow and layer used by the application comes from
 // here; component styles reference the custom properties rather than literal values.
+// The names are part of the admin element's theming surface (README "Theming"): add, don't rename.
 
 :root,
 :host {
   // Colour: neutrals
-  --c-bg: #f5f6f8;
+  --c-bg: #f6f7f9;
   --c-surface: #ffffff;
   --c-surface-muted: #f9fafb;
+  --c-surface-sunken: #f2f4f7; // table heads, segmented tracks
   --c-border: #e4e7ec;
-  --c-border-strong: #c3c9d3;
-  --c-input-border: #7c8695; // 4:1 on white, so form controls stay perceivable
+  --c-border-strong: #d0d5dd;
+  --c-input-border: #868f9e; // 3.3:1 on white: form control edges stay perceivable (WCAG 1.4.11)
   --c-text: #101828;
   --c-text-muted: #475467;
   --c-text-subtle: #5d6b7e;
@@ -17,33 +19,41 @@
   // Colour: brand and status
   --c-primary: #4f46e5;
   --c-primary-hover: #4338ca;
+  --c-primary-active: #3730a3;
   --c-primary-soft: #eef2ff;
   --c-primary-soft-border: #c7d2fe;
   --c-primary-ink: #ffffff;
   --c-primary-text: #3730a3;
   --c-danger: #b42318;
+  --c-danger-hover: #912018;
   --c-danger-soft: #fef3f2;
+  --c-danger-border: #fecdca;
   --c-success: #067647;
   --c-success-soft: #ecfdf3;
+  --c-success-border: #abefc6;
   --c-warning: #93370d;
   --c-warning-soft: #fffaeb;
+  --c-warning-border: #fedf89;
 
-  // Canvas workspace
-  --c-workspace: #eceef2;
+  // Canvas workspace (the editor's pasteboard and its dot grid)
+  --c-workspace: #f0f2f5;
+  --c-workspace-dot: #c3c9d4;
 
   // Typography
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --fs-xs: 0.75rem;
-  --fs-sm: 0.8125rem;
-  --fs-md: 0.875rem;
-  --fs-lg: 1rem;
-  --fs-xl: 1.25rem;
-  --fs-2xl: 1.625rem;
+  --fs-xs: 0.75rem; // 12px: meta, table heads
+  --fs-sm: 0.8125rem; // 13px: labels, secondary text
+  --fs-md: 0.875rem; // 14px: body, buttons
+  --fs-lg: 1rem; // 16px: card headings
+  --fs-xl: 1.125rem; // 18px: section headings, dialog titles
+  --fs-2xl: 1.5rem; // 24px: page headings
   --fw-regular: 400;
   --fw-medium: 500;
   --fw-semibold: 600;
+  --fw-bold: 700;
   --lh-tight: 1.25;
+  --lh-snug: 1.375;
   --lh-normal: 1.5;
 
   // Spacing (4px scale)
@@ -55,6 +65,7 @@
   --s-6: 24px;
   --s-8: 32px;
   --s-10: 40px;
+  --s-12: 48px;
 
   // Shape
   --r-sm: 6px;
@@ -62,19 +73,21 @@
   --r-lg: 12px;
   --r-pill: 999px;
 
-  // Elevation
-  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-2: 0 4px 12px rgba(16, 24, 40, 0.1);
-  --shadow-3: 0 16px 40px rgba(16, 24, 40, 0.18);
+  // Elevation (kept low: borders do most of the separating)
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-2: 0 4px 8px -2px rgba(16, 24, 40, 0.1), 0 2px 4px -2px rgba(16, 24, 40, 0.06);
+  --shadow-3: 0 20px 24px -4px rgba(16, 24, 40, 0.14), 0 8px 8px -4px rgba(16, 24, 40, 0.06);
 
-  // Controls
-  --h-sm: 28px;
-  --h-md: 34px;
-  --h-lg: 40px;
-  --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.35);
+  // Controls. Pages use 40px controls; the editor scopes these down to its compact density.
+  --h-xs: 28px;
+  --h-sm: 32px;
+  --h-md: 40px;
+  --h-lg: 44px;
+  --focus-ring: 0 0 0 3px rgba(79, 70, 229, 0.28);
 
   // Layout
-  --header-h: 56px;
+  --header-h: 60px;
+  --page-max-w: 1200px;
   --panel-left-w: 296px;
   --panel-right-w: 340px;
 

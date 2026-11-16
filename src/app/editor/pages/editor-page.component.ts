@@ -125,7 +125,7 @@ type Mode = 'edit' | 'preview';
                 <app-icon name="panel-right" />
               </button>
             }
-            <div class="row row--tight" role="group" [attr.aria-label]="'editor.history' | t">
+            <div class="toolbar-group" role="group" [attr.aria-label]="'editor.history' | t">
               <button
                 type="button"
                 class="btn btn--icon btn--ghost"
@@ -147,6 +147,7 @@ type Mode = 'edit' | 'preview';
                 <app-icon name="redo" />
               </button>
             </div>
+            <span class="header-divider" aria-hidden="true"></span>
             <button
               type="button"
               class="btn"
@@ -154,7 +155,8 @@ type Mode = 'edit' | 'preview';
               [attr.title]="store.previewable() ? null : ('editor.preview-disabled' | t)"
               (click)="openPreview()"
             >
-              <app-icon name="preview" [size]="16" /> {{ 'editor.preview' | t }}
+              <app-icon name="preview" [size]="16" />
+              <span class="btn-label">{{ 'editor.preview' | t }}</span>
             </button>
             <button
               type="button"
@@ -163,9 +165,9 @@ type Mode = 'edit' | 'preview';
               (click)="save()"
             >
               <app-icon name="save" [size]="16" />
-              {{
+              <span class="btn-label">{{
                 (store.saveState() === 'saving' ? 'editor.save.saving' : 'editor.save-draft') | t
-              }}
+              }}</span>
             </button>
             <button
               type="button"
@@ -180,7 +182,8 @@ type Mode = 'edit' | 'preview';
             </button>
             @if (host.embedded() && store.record()?.published) {
               <a class="btn" [routerLink]="['/mapping', id()]">
-                <app-icon name="list" [size]="16" /> {{ 'mapping.action.open' | t }}
+                <app-icon name="list" [size]="16" />
+                <span class="btn-label">{{ 'mapping.action.open' | t }}</span>
               </a>
             }
             <app-menu [label]="'editor.more' | t" icon="more" align="end">
@@ -304,10 +307,10 @@ export class EditorPageComponent {
 
   protected readonly statusBadge = computed(() => {
     const record = this.store.record();
-    if (!record?.published) return { text: this.i18n.t('status.draft'), cls: '' };
+    if (!record?.published) return { text: this.i18n.t('status.draft'), cls: 'badge--info badge--dot' };
     return this.store.unpublishedChanges()
-      ? { text: this.i18n.t('editor.status.pending'), cls: 'badge--warning' }
-      : { text: this.i18n.t('status.published'), cls: 'badge--success' };
+      ? { text: this.i18n.t('editor.status.pending'), cls: 'badge--warning badge--dot' }
+      : { text: this.i18n.t('status.published'), cls: 'badge--success badge--dot' };
   });
 
   protected readonly saveText = computed(() => {

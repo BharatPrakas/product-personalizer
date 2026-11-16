@@ -21,9 +21,14 @@ export type LineSourceState =
   template: `
     <article class="line-card" [attr.aria-labelledby]="headingId()">
       <header class="line-card__head">
-        <div class="grow">
+        <div class="line-card__heading">
           <h2 class="line-card__title" [id]="headingId()">{{ line().title ?? line().productId }}</h2>
-          <p class="subtle small">{{ 'orders.line.id' | t: { id: line().lineId } }}</p>
+          <p class="line-card__sub">
+            {{ 'orders.line.id' | t: { id: line().lineId } }}
+            @if (line().quantity !== null && line().quantity !== undefined) {
+              <span aria-hidden="true"> · </span>{{ 'orders.line.quantity-short' | t: { count: line().quantity! } }}
+            }
+          </p>
         </div>
         <button type="button" class="btn btn--sm" [disabled]="busy() || state().status !== 'ready'" (click)="downloadLine.emit()">
           <app-icon name="download" [size]="16" />
@@ -32,34 +37,82 @@ export type LineSourceState =
         </button>
       </header>
 
-      <dl class="facts line-card__facts">
-        <dt>{{ 'orders.line.product' | t }}</dt>
-        <dd>{{ line().productId }}</dd>
-        <dt>{{ 'orders.line.variant' | t }}</dt>
-        <dd>{{ line().variantId ?? ('orders.not-provided' | t) }}</dd>
-        <dt>{{ 'orders.line.sku' | t }}</dt>
-        <dd>{{ line().sku ?? ('orders.not-provided' | t) }}</dd>
-        <dt>{{ 'orders.line.quantity' | t }}</dt>
-        <dd>{{ line().quantity ?? ('orders.not-provided' | t) }}</dd>
-        <dt>{{ 'orders.line.unit-price' | t }}</dt>
-        <dd>{{ line().unitPrice ? money(line().unitPrice!) : ('orders.not-provided' | t) }}</dd>
-        <dt>{{ 'orders.line.template' | t }}</dt>
-        <dd>
-          {{ 'orders.line.template-version' | t: { id: line().customization.configId, version: line().customization.configVersion } }}
-        </dd>
-        <dt>{{ 'orders.line.design' | t }}</dt>
-        <dd>
-          @if (line().customization.status === 'expired') {
-            <span class="badge badge--warning">{{ 'orders.status.expired' | t }}</span>
-          } @else {
-            <span class="badge badge--success">{{ 'orders.status.ordered' | t }}</span>
+      <div class="line-card__overview">
+        <div class="line-card__media">
+          <h3 class="line-card__section">{{ 'orders.line.previews' | t }}</h3>
+          @switch (state().status) {
+            @case ('ready') {
+              @if (previews().length === 0) {
+                <p class="missing">{{ 'orders.line.none' | t }}</p>
+              } @else {
+                <ul class="plain-list line-card__gallery">
+                  @for (file of previews(); track $index) {
+                    <li>
+                      <button
+                        type="button"
+                        class="line-card__thumb"
+                        [disabled]="!file.asset"
+                        [attr.aria-label]="'orders.preview.open' | t: { name: file.label }"
+                        (click)="openPreview($index)"
+                      >
+                        <app-auth-image [customizationId]="line().customization.id" [assetId]="file.asset?.assetId ?? null" alt="" [size]="128" />
+                      </button>
+                      <span class="line-card__thumb-label">{{ file.label }}</span>
+                    </li>
+                  }
+                </ul>
+              }
+            }
+            @default {
+              <div class="line-card__placeholder" aria-hidden="true"></div>
+            }
           }
-        </dd>
-      </dl>
+        </div>
+
+        <dl class="facts line-card__facts">
+          <dt>{{ 'orders.line.template' | t }}</dt>
+          <dd>
+            @if (config(); as c) {
+              {{ 'orders.line.template-named' | t: { name: c.product.name, version: line().customization.configVersion } }}
+              <span class="cell-meta mono block">{{ line().customization.configId }}</span>
+            } @else {
+              {{ 'orders.line.template-version' | t: { id: line().customization.configId, version: line().customization.configVersion } }}
+            }
+          </dd>
+          <dt>{{ 'orders.line.design' | t }}</dt>
+          <dd>
+            @if (line().customization.status === 'expired') {
+              <span class="badge badge--warning badge--dot">{{ 'orders.status.expired' | t }}</span>
+            } @else {
+              <span class="badge badge--success badge--dot">{{ 'orders.status.ordered' | t }}</span>
+            }
+          </dd>
+          <dt>{{ 'orders.line.product' | t }}</dt>
+          <dd class="mono">{{ line().productId }}</dd>
+          <dt>{{ 'orders.line.variant' | t }}</dt>
+          <dd>
+            @if (line().variantId) { <span class="mono">{{ line().variantId }}</span> } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+          </dd>
+          <dt>{{ 'orders.line.sku' | t }}</dt>
+          <dd>
+            @if (line().sku) { <span class="mono">{{ line().sku }}</span> } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+          </dd>
+          <dt>{{ 'orders.line.quantity' | t }}</dt>
+          <dd class="tabular">
+            @if (line().quantity !== null && line().quantity !== undefined) { {{ line().quantity }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+          </dd>
+          <dt>{{ 'orders.line.unit-price' | t }}</dt>
+          <dd class="tabular">
+            @if (line().unitPrice) { {{ money(line().unitPrice!) }} } @else { <span class="missing">{{ 'orders.not-supplied' | t }}</span> }
+          </dd>
+        </dl>
+      </div>
 
       @switch (state().status) {
         @case ('loading') {
-          <p class="muted" role="status">{{ 'orders.line.loading' | t }}</p>
+          <p class="line-card__loading" role="status">
+            <span class="spinner" aria-hidden="true"></span> {{ 'orders.line.loading' | t }}
+          </p>
         }
         @case ('error') {
           <div class="notice notice--danger" role="alert">
@@ -75,102 +128,95 @@ export type LineSourceState =
             </p>
           }
 
-          <h3 class="line-card__section">{{ 'orders.line.previews' | t }}</h3>
-          @if (previews().length === 0) {
-            <p class="muted small">{{ 'orders.line.none' | t }}</p>
-          } @else {
-            <ul class="plain-list line-card__gallery">
-              @for (file of previews(); track $index) {
-                <li>
-                  <button
-                    type="button"
-                    class="line-card__thumb"
-                    [disabled]="!file.asset"
-                    [attr.aria-label]="'orders.preview.open' | t: { name: file.label }"
-                    (click)="openPreview($index)"
-                  >
-                    <app-auth-image [customizationId]="line().customization.id" [assetId]="file.asset?.assetId ?? null" alt="" [size]="120" />
-                  </button>
-                  <span class="small">{{ file.label }}</span>
-                </li>
-              }
-            </ul>
-          }
-
-          <h3 class="line-card__section">{{ 'orders.line.inputs' | t }}</h3>
-          @if (inputs().length === 0) {
-            <p class="muted small">{{ 'orders.line.none' | t }}</p>
-          } @else {
-            <dl class="facts line-card__inputs">
-              @for (item of inputs(); track item.kind + item.fieldId) {
-                <dt>{{ item.label }}</dt>
-                <dd>
-                  @switch (item.kind) {
-                    @case ('text') {
-                      <span class="line-card__text">{{ item.text || ('orders.input.empty' | t) }}</span>
-                      <span class="subtle small block">
-                        @if (item.font) { {{ 'orders.input.font' | t: { font: item.font } }} }
-                        @if (item.color) {
-                          <span class="line-card__swatch" [style.background]="item.color" aria-hidden="true"></span>
-                          {{ 'orders.input.color' | t: { color: item.color } }}
+          <section class="line-card__block" [attr.aria-labelledby]="headingId() + '-inputs'">
+            <h3 class="line-card__section" [id]="headingId() + '-inputs'">{{ 'orders.line.inputs' | t }}</h3>
+            @if (inputs().length === 0) {
+              <p class="missing">{{ 'orders.line.none' | t }}</p>
+            } @else {
+              <dl class="facts line-card__inputs">
+                @for (item of inputs(); track item.kind + item.fieldId) {
+                  <dt>{{ item.label }}</dt>
+                  <dd>
+                    @switch (item.kind) {
+                      @case ('text') {
+                        @if (item.text) {
+                          <span class="line-card__text">{{ item.text }}</span>
+                        } @else {
+                          <span class="missing">{{ 'orders.input.empty' | t }}</span>
                         }
-                        @for (s of item.styles; track s) { · {{ styleLabel(s) | t }} }
-                      </span>
-                    }
-                    @case ('image') {
-                      @if (item.assetId) {
-                        <app-auth-image [customizationId]="line().customization.id" [assetId]="item.assetId" [alt]="item.label" [size]="96" />
-                      } @else {
-                        <span class="muted">{{ 'orders.input.no-photo' | t }}</span>
+                        <span class="cell-meta block">
+                          @if (item.font) { {{ 'orders.input.font' | t: { font: item.font } }} }
+                          @if (item.color) {
+                            <span class="line-card__swatch" [style.background]="item.color" aria-hidden="true"></span>
+                            {{ 'orders.input.color' | t: { color: item.color } }}
+                          }
+                          @for (s of item.styles; track s) { · {{ styleLabel(s) | t }} }
+                        </span>
                       }
-                      <span class="subtle small block">{{ cropText(item) }}</span>
+                      @case ('image') {
+                        @if (item.assetId) {
+                          <app-auth-image [customizationId]="line().customization.id" [assetId]="item.assetId" [alt]="item.label" [size]="96" />
+                        } @else {
+                          <span class="missing">{{ 'orders.input.no-photo' | t }}</span>
+                        }
+                        <span class="cell-meta block">{{ cropText(item) }}</span>
+                      }
+                      @default {
+                        @if (item.value) { {{ item.value }} } @else { <span class="missing">{{ 'orders.input.empty' | t }}</span> }
+                      }
                     }
-                    @default {
-                      {{ item.value ?? ('orders.input.empty' | t) }}
-                    }
-                  }
-                </dd>
-              }
-            </dl>
-          }
+                  </dd>
+                }
+              </dl>
+            }
+          </section>
 
           @if (price(); as p) {
-            <h3 class="line-card__section">{{ 'orders.line.price' | t }}</h3>
-            <dl class="facts">
-              <dt>{{ 'orders.price.base' | t }}</dt>
-              <dd>{{ p.base }}</dd>
-              <dt>{{ 'orders.price.fee' | t }}</dt>
-              <dd>{{ p.fee }}</dd>
-              <dt>{{ 'orders.price.total' | t }}</dt>
-              <dd>{{ p.total }}</dd>
-            </dl>
-            <p class="subtle small">{{ 'orders.price.note' | t }}</p>
+            <section class="line-card__block" [attr.aria-labelledby]="headingId() + '-price'">
+              <h3 class="line-card__section" [id]="headingId() + '-price'">{{ 'orders.line.price' | t }}</h3>
+              <dl class="facts">
+                <dt>{{ 'orders.price.base' | t }}</dt>
+                <dd class="tabular">{{ p.base }}</dd>
+                <dt>{{ 'orders.price.fee' | t }}</dt>
+                <dd class="tabular">{{ p.fee }}</dd>
+                <dt>{{ 'orders.price.total' | t }}</dt>
+                <dd class="tabular">{{ p.total }}</dd>
+              </dl>
+              <p class="cell-meta">{{ 'orders.price.note' | t }}</p>
+            </section>
           }
 
-          <h3 class="line-card__section">{{ 'orders.line.files' | t }}</h3>
-          <ul class="plain-list line-card__files">
-            @for (file of files(); track $index) {
-              <li class="line-card__file">
-                <span class="badge">{{ groupLabel(file) | t }}</span>
-                <span class="grow">
-                  {{ file.label }}
-                  @if (file.width && file.height) {
-                    <span class="subtle small">{{ 'preview.png-size' | t: { width: file.width, height: file.height } }}</span>
+          <section class="line-card__block" [attr.aria-labelledby]="headingId() + '-files'">
+            <h3 class="line-card__section" [id]="headingId() + '-files'">{{ 'orders.line.files' | t }}</h3>
+            <ul class="plain-list line-card__files">
+              @for (file of files(); track $index) {
+                <li class="line-card__file">
+                  <span class="line-card__file-icon" aria-hidden="true">
+                    <app-icon [name]="file.group === 'production' ? 'artwork' : file.group === 'previews' ? 'preview' : 'image'" [size]="18" />
+                  </span>
+                  <span class="line-card__file-text">
+                    <span class="line-card__file-name">{{ file.label }}</span>
+                    <span class="line-card__file-meta">
+                      <span class="badge" [class.badge--info]="file.group === 'production'">{{ groupLabel(file) | t }}</span>
+                      @if (file.width && file.height) {
+                        <span>{{ 'preview.png-size' | t: { width: file.width, height: file.height } }}</span>
+                      }
+                    </span>
+                  </span>
+                  @if (file.asset) {
+                    <button type="button" class="btn btn--sm" [disabled]="busy()" (click)="downloadFile.emit(file)">
+                      <app-icon name="download" [size]="16" /> {{ 'orders.download.file' | t }}
+                      <span class="sr-only">{{ file.label }}</span>
+                    </button>
+                  } @else {
+                    <span class="badge badge--warning">{{ 'orders.file.unavailable' | t }}</span>
                   }
-                </span>
-                @if (file.asset) {
-                  <button type="button" class="btn btn--sm" [disabled]="busy()" (click)="downloadFile.emit(file)">
-                    <app-icon name="download" [size]="16" /> {{ 'orders.download.file' | t }}
-                    <span class="sr-only">{{ file.label }}</span>
-                  </button>
-                } @else {
-                  <span class="badge badge--warning">{{ 'orders.file.unavailable' | t }}</span>
-                }
-              </li>
-            } @empty {
-              <li class="muted small">{{ 'orders.line.none' | t }}</li>
-            }
-          </ul>
+                </li>
+              } @empty {
+                <li class="missing">{{ 'orders.line.none' | t }}</li>
+              }
+            </ul>
+          </section>
         }
       }
     </article>
@@ -190,7 +236,7 @@ export type LineSourceState =
             [size]="560"
           />
         </div>
-        <p class="subtle small" aria-live="polite">
+        <p class="cell-meta" aria-live="polite">
           {{ 'orders.preview.position' | t: { index: lightbox()! + 1, total: previews().length } }}
         </p>
       }
@@ -204,32 +250,6 @@ export type LineSourceState =
         <button type="button" class="btn btn--primary" (click)="lightbox.set(null)">{{ 'common.close' | t }}</button>
       </ng-container>
     </app-dialog>
-  `,
-  styles: `
-    .line-card {
-      display: grid; gap: var(--s-3); padding: var(--s-4); background: var(--c-surface);
-      border: 1px solid var(--c-border); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
-    }
-    .line-card__title { font-size: var(--fs-xl); margin: 0; }
-    .line-card__head { display: flex; gap: var(--s-3); align-items: flex-start; flex-wrap: wrap; }
-    .line-card__head p { margin: 0; }
-    .line-card__section { font-size: var(--fs-lg); margin: var(--s-2) 0 0; }
-    .line-card__gallery { display: flex; flex-wrap: wrap; gap: var(--s-3); }
-    .line-card__gallery li { display: grid; gap: var(--s-1); justify-items: center; max-width: 128px; text-align: center; }
-    .line-card__thumb {
-      padding: 0; border: 0; background: none; border-radius: var(--r-sm); cursor: zoom-in;
-    }
-    .line-card__thumb:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
-    .line-card__thumb:disabled { cursor: default; }
-    .line-card__text { white-space: pre-wrap; overflow-wrap: anywhere; }
-    .line-card__swatch {
-      display: inline-block; width: 0.8em; height: 0.8em; border-radius: 2px;
-      border: 1px solid var(--c-border-strong); vertical-align: middle;
-    }
-    .line-card__file { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; padding-block: var(--s-1); }
-    .line-card__lightbox { display: flex; justify-content: center; }
-    .line-card__lightbox app-auth-image { max-width: 100%; height: auto !important; aspect-ratio: 1; }
-    .block { display: block; }
   `,
 })
 export class OrderLineCardComponent {

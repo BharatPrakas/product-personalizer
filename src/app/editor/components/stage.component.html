@@ -1,4 +1,4 @@
-<div class="stage" #host>
+<div class="stage" #host [style.--grid-x]="gridOffset().x" [style.--grid-y]="gridOffset().y">
   <canvas #canvas class="stage-canvas" aria-hidden="true"></canvas>
   <svg
     #overlay

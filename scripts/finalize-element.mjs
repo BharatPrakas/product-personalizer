@@ -14,8 +14,10 @@
  *
  * Budgets (the Angular builder only sees the tiny shared façade as "initial", so they are
  * enforced here on the real per-entry graph):
- *   storefront  warning 420 kB, error 700 kB   (raw bytes; the warning was 400 kB until the extension contract
- *                                              (zb:event, prepareForCart, saving to the API) added ~9 kB)
+ *   storefront  warning 440 kB, error 700 kB   (raw bytes; the warning was 400 kB until the extension contract
+ *                                              (zb:event, prepareForCart, saving to the API) added ~9 kB, and
+ *                                              420 kB until the storefront redesign added ~15 kB of styles,
+ *                                              icons and swatch naming)
  *   admin       warning 1.4 MB, error 2.0 MB   (editor, dialogs and import/export are lazy chunks)
  */
 import { execFileSync } from 'node:child_process';
@@ -43,7 +45,7 @@ const ALL_ENTRIES = [
     file: 'storefront.js',
     tag: 'zb-product-customizer',
     loader: 'loadStorefront',
-    budget: { warn: 420 * 1024, error: 700 * 1024 },
+    budget: { warn: 440 * 1024, error: 700 * 1024 },
   },
   {
     file: 'store-admin.js',

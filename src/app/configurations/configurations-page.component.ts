@@ -51,9 +51,9 @@ interface Row {
       <header class="page-header">
         <div>
           <h1 id="page-title">{{ 'list.title' | t }}</h1>
-          <p class="muted">{{ 'list.lead' | t }}</p>
+          <p>{{ 'list.lead' | t }}</p>
         </div>
-        <div class="row">
+        <div class="page-actions">
           <label class="btn" [attr.aria-disabled]="readonly()">
             <app-icon name="upload" />
             <span>{{ 'list.import' | t }}</span>
@@ -106,7 +106,9 @@ interface Row {
 
       @switch (state()) {
         @case ('loading') {
-          <p class="muted" role="status">{{ 'list.loading' | t }}</p>
+          <p class="loading-state" role="status">
+            <span class="spinner" aria-hidden="true"></span> {{ 'list.loading' | t }}
+          </p>
         }
         @case ('error') {
           <div class="notice notice--danger" role="alert">
@@ -132,9 +134,33 @@ interface Row {
               }
             </app-empty-state>
           } @else {
-            <div class="list-toolbar">
-              <label class="search">
-                <app-icon name="search" />
+            <div class="index-card">
+            <div class="index-tabs" role="group" aria-labelledby="list-filter-label">
+              <span class="sr-only" id="list-filter-label">{{ 'list.filter-label' | t }}</span>
+              @for (f of filters; track f.id) {
+                <button
+                  type="button"
+                  class="index-tab"
+                  [attr.aria-pressed]="filter() === f.id"
+                  (click)="filter.set(f.id)"
+                >
+                  {{ f.label | t }} <span class="index-tab__count">{{ counts()[f.id] }}</span>
+                </button>
+              }
+            </div>
+            <div class="index-toolbar">
+              <div class="index-select">
+                <label class="sr-only" for="list-filter">{{ 'list.filter-label' | t }}</label>
+                <select id="list-filter" class="input" (change)="filter.set($any($event.target).value)">
+                  @for (f of filters; track f.id) {
+                    <option [value]="f.id" [selected]="filter() === f.id">
+                      {{ f.label | t }} ({{ counts()[f.id] }})
+                    </option>
+                  }
+                </select>
+              </div>
+              <label class="search index-search">
+                <app-icon name="search" [size]="18" />
                 <span class="sr-only">{{ 'list.search' | t }}</span>
                 <input
                   class="input"
@@ -144,18 +170,6 @@ interface Row {
                   (input)="query.set($any($event.target).value)"
                 />
               </label>
-              <div class="segmented" role="group" [attr.aria-label]="'list.filter-label' | t">
-                @for (f of filters; track f.id) {
-                  <button
-                    type="button"
-                    class="segmented-item"
-                    [attr.aria-pressed]="filter() === f.id"
-                    (click)="filter.set(f.id)"
-                  >
-                    {{ f.label | t }} <span class="segmented-count">{{ counts()[f.id] }}</span>
-                  </button>
-                }
-              </div>
             </div>
 
             @if (rows().length === 0) {
@@ -170,7 +184,7 @@ interface Row {
               </app-empty-state>
             } @else {
               <div class="table-wrap">
-                <table class="data-table">
+                <table class="data-table templates-table">
                   <thead>
                     <tr>
                       <th scope="col">{{ 'list.col.configuration' | t }}</th>
@@ -181,7 +195,7 @@ interface Row {
                         <th scope="col">{{ 'mapping.col.products' | t }}</th>
                       }
                       <th scope="col">{{ 'list.col.updated' | t }}</th>
-                      <th scope="col">
+                      <th scope="col" class="actions">
                         <span class="sr-only">{{ 'list.col.actions' | t }}</span>
                       </th>
                     </tr>
@@ -207,27 +221,40 @@ interface Row {
                               <a class="row-title" [routerLink]="['/configurations', s.id]">{{
                                 s.name
                               }}</a>
-                              <span class="subtle small">
+                              <span class="cell-meta">
                                 {{ 'list.mockups' | tn: s.mockupCount }}
                               </span>
                             </div>
                           </div>
                         </td>
-                        <td>
-                          @if (s.archived) {
-                            <span class="badge">{{ 'status.archived' | t }}</span>
-                          } @else if (s.status === 'published') {
-                            <span class="badge badge--success">{{
-                              'list.published-version' | t: { version: s.publishedVersion ?? '' }
-                            }}</span>
-                            @if (s.hasUnpublishedChanges) {
-                              <span class="badge badge--warning">{{
+                        <td [attr.data-label]="'list.col.status' | t">
+                          <span class="status-cell">
+                            @if (s.archived) {
+                              <span class="badge badge--dot">{{ 'status.archived' | t }}</span>
+                              @if (s.publishedVersion) {
+                                <span class="cell-meta">{{
+                                  'list.version' | t: { version: s.publishedVersion }
+                                }}</span>
+                              }
+                            } @else if (s.status === 'published' && s.hasUnpublishedChanges) {
+                              <span class="badge badge--warning badge--dot">{{
                                 'list.unpublished-changes' | t
                               }}</span>
+                              <span class="cell-meta">{{
+                                'list.version-live' | t: { version: s.publishedVersion ?? '' }
+                              }}</span>
+                            } @else if (s.status === 'published') {
+                              <span class="badge badge--success badge--dot">{{
+                                'status.published' | t
+                              }}</span>
+                              <span class="cell-meta">{{
+                                'list.version' | t: { version: s.publishedVersion ?? '' }
+                              }}</span>
+                            } @else {
+                              <span class="badge badge--info badge--dot">{{ 'status.draft' | t }}</span>
+                              <span class="cell-meta">{{ 'list.never-published' | t }}</span>
                             }
-                          } @else {
-                            <span class="badge">{{ 'status.draft' | t }}</span>
-                          }
+                          </span>
                         </td>
                         <td class="num" [attr.data-label]="'list.col.areas' | t">
                           {{ s.areaCount }}
@@ -239,11 +266,11 @@ interface Row {
                           <td [attr.data-label]="'list.label.products' | t">
                             @let n = mappingCounts()[s.id] ?? 0;
                             @if (n > 0) {
-                              <a [routerLink]="['/mapping', s.id]">{{
-                                'mapping.current.count' | t: { count: n }
+                              <a class="table-link" [routerLink]="['/mapping', s.id]">{{
+                                'list.assignments' | tn: n
                               }}</a>
                             } @else {
-                              <span class="subtle">{{ 'common.none' | t }}</span>
+                              <span class="cell-meta">{{ 'list.not-assigned' | t }}</span>
                             }
                           </td>
                         }
@@ -253,6 +280,7 @@ interface Row {
                           </time>
                         </td>
                         <td class="actions">
+                          <div class="row-actions">
                           <a class="btn btn--sm" [routerLink]="['/configurations', s.id]">{{
                             'list.open' | t
                           }}</a>
@@ -318,6 +346,7 @@ interface Row {
                               {{ 'common.delete-ellipsis' | t }}
                             </button>
                           </app-menu>
+                          </div>
                         </td>
                       </tr>
                     }
@@ -325,8 +354,9 @@ interface Row {
                 </table>
               </div>
             }
+            </div>
           }
-          <p class="subtle small storage-note">{{ storage().labelKey | t }}</p>
+          <p class="storage-note">{{ storage().labelKey | t }}</p>
         }
       }
     </section>

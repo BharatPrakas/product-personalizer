@@ -96,6 +96,9 @@ const CURSORS: Record<HandleId, string> = {
   rotate: 'grab',
 };
 
+/** On-screen spacing of the pasteboard dot grid (matches `background-size` in _components.scss). */
+const GRID_CELL = 20;
+
 /**
  * The interactive canvas: the mockup (with every printable area composed onto it) or one area's
  * production canvas (with its layers). Rendering uses the same engine as the storefront; selection
@@ -226,6 +229,12 @@ export class StageComponent {
   });
 
   readonly zoomLabel = computed(() => `${Math.round(this.transform().scale * 100)}%`);
+  /** Position of the pasteboard's dot grid: it follows panning so the dots move with the design. */
+  protected readonly gridOffset = computed(() => {
+    const { tx, ty } = this.transform();
+    const wrap = (v: number) => `${(((v % GRID_CELL) + GRID_CELL) % GRID_CELL).toFixed(1)}px`;
+    return { x: wrap(tx), y: wrap(ty) };
+  });
 
   protected readonly cursor = computed(() => {
     if (this.panning()) return 'grabbing';

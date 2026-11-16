@@ -49,12 +49,17 @@ app-stage {
     height: 100%;
   }
 
+  // A dot grid behind the (transparent) canvas, like a design tool's pasteboard. It moves with
+  // panning (--grid-x / --grid-y follow the view offset) and keeps a constant on-screen spacing.
   .stage {
     position: relative;
     width: 100%;
     height: 100%;
     overflow: hidden;
-    background: var(--c-workspace);
+    background-color: var(--c-workspace);
+    background-image: radial-gradient(circle, var(--c-workspace-dot) 1px, transparent 1.5px);
+    background-size: 20px 20px;
+    background-position: var(--grid-x, 0) var(--grid-y, 0);
   }
 
   .stage-canvas,
@@ -137,4 +142,400 @@ app-stage {
     transform: translateX(-50%);
   }
 
+}
+
+// Orders ------------------------------------------------------------------------------------------
+// (These used to be component `styles`, which Angular also appends to the host page's <head>.)
+
+app-auth-image {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--c-surface-sunken);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+
+  img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+}
+
+.auth-image__note {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-1);
+  padding: var(--s-1);
+  font-size: var(--fs-xs);
+  color: var(--c-text-muted);
+  text-align: center;
+}
+
+.missing {
+  color: var(--c-text-subtle);
+}
+
+p.missing {
+  font-size: var(--fs-sm);
+}
+
+.orders-items {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.orders-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+
+.orders-thumbs:empty {
+  display: none;
+}
+
+.orders-products {
+  gap: 2px;
+}
+
+// Order detail
+
+.order-detail__back {
+  align-self: flex-start;
+  margin-block: calc(var(--s-4) * -1) calc(var(--s-3) * -1);
+  margin-inline-start: calc(var(--s-2) * -1);
+}
+
+.order-detail__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--s-5) var(--s-8);
+}
+
+.order-summary__section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.order-detail__heading {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.order-detail__address {
+  display: grid;
+  gap: 2px;
+  font-size: var(--fs-sm);
+  font-style: normal;
+  line-height: var(--lh-normal);
+}
+
+.facts .order-total {
+  padding-top: 6px;
+  font-weight: var(--fw-semibold);
+  color: var(--c-text);
+  border-top: 1px solid var(--c-border);
+}
+
+.order-detail__lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+app-order-line-card {
+  display: block;
+}
+
+// The download status keeps its (empty) live region in the DOM without taking a place in the page.
+app-download-status {
+  display: contents;
+}
+
+.download-status {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: var(--c-surface);
+  border: 1px solid var(--c-primary-soft-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+}
+
+.download-status.is-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.download-status__line {
+  margin: 0;
+  font-weight: var(--fw-medium);
+}
+
+.download-status__bar {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--c-primary);
+}
+
+.download-status__failures {
+  display: grid;
+  gap: var(--s-1);
+  font-size: var(--fs-sm);
+  color: var(--c-danger);
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+}
+
+// Order line card
+
+.line-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding: var(--s-5) var(--s-6);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.line-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding-bottom: var(--s-4);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.line-card__heading {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.line-card__title {
+  font-size: var(--fs-xl);
+  overflow-wrap: anywhere;
+}
+
+.line-card__sub {
+  margin-top: 2px;
+  font-size: var(--fs-sm);
+  color: var(--c-text-subtle);
+}
+
+.line-card__overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: var(--s-6);
+  align-items: start;
+}
+
+@container page (max-width: 760px) {
+  .line-card {
+    padding: var(--s-4);
+  }
+
+  .line-card__overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.line-card__media {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.line-card__placeholder {
+  width: 128px;
+  height: 128px;
+  background: var(--c-surface-sunken);
+  border-radius: var(--r-md);
+}
+
+.line-card__section {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.line-card__gallery {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+
+  li {
+    display: grid;
+    gap: 6px;
+    justify-items: center;
+    max-width: 136px;
+    text-align: center;
+  }
+}
+
+.line-card__thumb {
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: zoom-in;
+}
+
+.line-card__thumb:hover:not(:disabled) app-auth-image {
+  border-color: var(--c-input-border);
+}
+
+.line-card__thumb:focus-visible {
+  outline: 2px solid var(--c-primary);
+  outline-offset: 2px;
+}
+
+.line-card__thumb:disabled {
+  cursor: default;
+}
+
+.line-card__thumb-label {
+  font-size: var(--fs-sm);
+  color: var(--c-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.line-card__facts {
+  padding: var(--s-4);
+  background: var(--c-surface-muted);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+
+.line-card__loading {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-md);
+  color: var(--c-text-muted);
+
+  .spinner {
+    color: var(--c-primary);
+  }
+}
+
+.line-card__block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--c-border);
+}
+
+.line-card__inputs {
+  font-size: var(--fs-md);
+  row-gap: var(--s-3);
+}
+
+.line-card__text {
+  font-weight: var(--fw-medium);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.line-card__swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-inline-end: 2px;
+  vertical-align: -1px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 3px;
+}
+
+.line-card__files {
+  gap: 0;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+
+  > .missing {
+    padding: var(--s-3) var(--s-4);
+  }
+}
+
+.line-card__file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.line-card__file:last-child {
+  border-bottom: 0;
+}
+
+.line-card__file-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--c-text-muted);
+  background: var(--c-surface-sunken);
+  border-radius: var(--r-md);
+}
+
+.line-card__file-text {
+  display: flex;
+  flex: 1 1 160px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.line-card__file-name {
+  font-weight: var(--fw-medium);
+  overflow-wrap: anywhere;
+}
+
+.line-card__file-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-xs);
+  color: var(--c-text-subtle);
+}
+
+.line-card__lightbox {
+  display: flex;
+  justify-content: center;
+
+  app-auth-image {
+    max-width: 100%;
+    height: auto !important;
+    aspect-ratio: 1;
+  }
 }

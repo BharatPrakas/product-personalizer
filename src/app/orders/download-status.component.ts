@@ -62,18 +62,6 @@ import { OrderDownloads } from './order-downloads';
       }
     </div>
   `,
-  styles: `
-    .download-status {
-      display: grid; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--c-border);
-      border-radius: var(--r-md); background: var(--c-surface);
-    }
-    /* Kept in the DOM (empty) so the live region exists before the first announcement. */
-    .download-status.is-hidden { padding: 0; border: 0; }
-    .download-status__line { margin: 0; }
-    .download-status__bar { width: 100%; }
-    .download-status__failures { display: grid; gap: var(--s-1); font-size: var(--fs-sm); }
-    .mono { font-family: var(--font-mono); overflow-wrap: anywhere; }
-  `,
 })
 export class DownloadStatusComponent {
   protected readonly downloads = inject(OrderDownloads);

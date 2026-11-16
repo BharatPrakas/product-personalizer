@@ -16,7 +16,7 @@ export interface PanEvent {
   dy: number;
 }
 
-/** Photo upload with a fixed-aspect crop editor: pan, zoom, directional buttons, reset, remove. */
+/** Photo upload (drop zone) with a fixed-aspect crop editor: pan, zoom, directional buttons, reset, remove. */
 @Component({
   selector: 'app-photo-field',
   imports: [ReactiveFormsModule],
@@ -54,17 +54,23 @@ export interface PanEvent {
 
           <div class="crop-controls">
             @if (photo.fit === 'cover') {
-              <label class="label sub" [for]="id('zoom')">Zoom</label>
-              <input
-                class="range"
-                type="range"
-                [id]="id('zoom')"
-                [min]="minZoom"
-                [max]="maxZoom"
-                step="0.01"
-                [formControl]="zoom"
-                [attr.aria-valuetext]="photo.zoom.toFixed(1) + ' times'"
-              />
+              <div class="zoom-row">
+                <label class="label sub" [for]="id('zoom')">Zoom</label>
+                <div class="zoom-slider">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
+                  <input
+                    class="range"
+                    type="range"
+                    [id]="id('zoom')"
+                    [min]="minZoom"
+                    [max]="maxZoom"
+                    step="0.01"
+                    [formControl]="zoom"
+                    [attr.aria-valuetext]="photo.zoom.toFixed(1) + ' times'"
+                  />
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6v12M6 12h12" /></svg>
+                </div>
+              </div>
             }
 
             <div
@@ -79,7 +85,7 @@ export interface PanEvent {
                 aria-label="Move photo up"
                 (click)="pan.emit({ dx: 0, dy: -nudge })"
               >
-                ▲
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6" /></svg>
               </button>
               <button
                 type="button"
@@ -87,7 +93,7 @@ export interface PanEvent {
                 aria-label="Move photo left"
                 (click)="pan.emit({ dx: -nudge, dy: 0 })"
               >
-                ◀
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6" /></svg>
               </button>
               <button
                 type="button"
@@ -95,7 +101,7 @@ export interface PanEvent {
                 aria-label="Move photo right"
                 (click)="pan.emit({ dx: nudge, dy: 0 })"
               >
-                ▶
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
               </button>
               <button
                 type="button"
@@ -103,26 +109,41 @@ export interface PanEvent {
                 aria-label="Move photo down"
                 (click)="pan.emit({ dx: 0, dy: nudge })"
               >
-                ▼
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
               </button>
             </div>
 
-            <div class="btn-row">
+            <div class="photo-actions">
               <button
                 type="button"
                 class="btn secondary"
                 [attr.aria-pressed]="photo.fit === 'contain'"
                 (click)="fit.emit(photo.fit === 'contain' ? 'cover' : 'contain')"
               >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                </svg>
                 {{ photo.fit === 'contain' ? 'Fill the space' : 'Show whole photo' }}
               </button>
               <button type="button" class="btn secondary" (click)="rotate.emit()">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+                  <path d="M20 4v5h-5" />
+                </svg>
                 Rotate 90°
               </button>
               <button type="button" class="btn secondary" (click)="resetCrop.emit()">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 3-6.7" />
+                  <path d="M3 4v5h5" />
+                </svg>
                 Reset crop
               </button>
               <label class="btn secondary file-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 5h16v14H4z" />
+                  <path d="M4 15l4-4 4 4 3-3 5 5" />
+                </svg>
                 <span>Replace photo</span>
                 <input
                   type="file"
@@ -131,15 +152,25 @@ export interface PanEvent {
                   (change)="onFile($event)"
                 />
               </label>
-              <button type="button" class="btn secondary" (click)="remove.emit()">
+              <button type="button" class="btn secondary remove-photo" (click)="remove.emit()">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+                </svg>
                 Remove photo
               </button>
             </div>
           </div>
         </div>
       } @else {
-        <label class="btn secondary file-btn upload-btn">
-          <span>{{ busy() ? 'Processing…' : 'Upload photo' }}</span>
+        <label class="file-btn dropzone">
+          <span class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 15V4M7 9l5-5 5 5" />
+              <path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4" />
+            </svg>
+          </span>
+          <span class="dropzone-title">{{ busy() ? 'Processing…' : 'Upload photo' }}</span>
+          <span class="dropzone-hint" aria-hidden="true">or drop it here</span>
           <input
             type="file"
             class="file-input"
@@ -160,7 +191,7 @@ export interface PanEvent {
         </p>
       }
       @if (view()?.resolution; as res) {
-        <p class="help" [class.help-warn]="res.level !== 'ok'">
+        <p class="help resolution" [class.help-warn]="res.level !== 'ok'">
           Print resolution: about {{ res.dpi.toFixed(0) }} DPI.
         </p>
       }

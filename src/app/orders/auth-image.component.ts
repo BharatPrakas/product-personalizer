@@ -31,23 +31,6 @@ type State = 'idle' | 'loading' | 'ready' | 'missing' | 'error';
       }
     }
   `,
-  styles: `
-    :host {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      border-radius: var(--r-sm);
-      background: var(--c-surface-muted);
-      border: 1px solid var(--c-border);
-      flex: none;
-    }
-    img { width: 100%; height: 100%; object-fit: contain; display: block; }
-    .auth-image__note {
-      display: inline-flex; flex-direction: column; align-items: center; gap: var(--s-1);
-      padding: var(--s-1); font-size: var(--fs-xs); color: var(--c-text-muted); text-align: center;
-    }
-  `,
 })
 export class AuthImageComponent {
   readonly customizationId = input.required<string>();
