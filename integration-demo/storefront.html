@@ -81,6 +81,13 @@
         <strong>in memory only</strong> and answers with <code>saveResult</code>.
       </p>
       <p class="note">
+        <strong>Resolved by product-id</strong> samples show the storefront flow: the element asks the (fake) API whether the
+        product has a template and, only if it does, renders a <em>Personalize</em> button; clicking it opens the editor in a
+        modal and <em>Save customization</em> hands the design to this page, which answers with <code>saveResult</code>
+        (this page does not use <code>hide-save</code>, so the host persists). The other samples supply a configuration and
+        show the editor inline. Pass <code>mode="preview"</code> to keep the editor inline for a product-id too.
+      </p>
+      <p class="note">
         Downloaded JSON never contains image bytes. To restore a design later a host must also keep
         the uploaded image files (and the PNGs).
       </p>

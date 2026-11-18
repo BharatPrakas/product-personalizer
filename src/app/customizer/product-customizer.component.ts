@@ -1,7 +1,12 @@
+import { NgTemplateOutlet } from '@angular/common';
 import {
   Component,
+  ComponentRef,
   DestroyRef,
   ElementRef,
+  Injector,
+  ViewContainerRef,
+  afterNextRender,
   ViewEncapsulation,
   computed,
   effect,
@@ -10,16 +15,9 @@ import {
   output,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
-import { ActionBarComponent, PriceView } from './components/action-bar.component';
-import { ArtworkFieldComponent } from './components/artwork-field.component';
-import { Choice, ChoiceGroupComponent } from './components/choice-group.component';
-import { PhotoFieldComponent } from './components/photo-field.component';
-import { PreviewComponent } from './components/preview.component';
-import { TextFieldComponent, TextStyleDefaults } from './components/text-field.component';
-import { ViewPickerComponent } from './components/view-picker.component';
-import { ArtworkFieldSpec, ConfigIssue, FieldSpec, TextFieldSpec } from './models/config.models';
-import { ArtworkValue, FieldError, TextValue } from './models/draft.models';
+import { ZbRenderMode, ZbTriggerStyle } from './models/trigger-style';
 import {
   CustomizerChangeDetail,
   CustomizerErrorDetail,
@@ -28,22 +26,23 @@ import {
   SaveResult,
 } from './models/events.models';
 import { LineExtensionValues, PERSONALIZATION_EXTENSION_ID } from './models/extension-contract';
-import { AssetStore } from './services/asset-store.service';
-import { CustomizationPersistence, PersistKind, UploadedFile } from './services/customization-persistence.service';
+import { CustomizationPersistence } from './services/customization-persistence.service';
+import { DesignPersister } from './services/design-persister.service';
+import { DesignSaver, DesignToPersist } from './services/design-saver.service';
 import { ExtensionChannel, newInstanceId } from './services/extension-channel';
 import { CustomizerError, PrepareError, isAbortError } from './services/errors';
-import { ExportService } from './services/export.service';
-import { LoadOutcome, LoadPipeline, LoadRequest } from './services/load-pipeline.service';
-import { SaveCoordinator } from './services/save-coordinator.service';
-import { StateService } from './services/state.service';
+import type { SavePayload } from './services/export.service';
+import type { LoadRequest } from './services/load-pipeline.service';
 import { ResolveOutcome, StorefrontResolver } from './services/storefront-resolver.service';
-import { stableKey } from './util/draft-utils';
 import { coerceBoolean, coerceStringList } from './util/coerce';
-import { formatMinor } from './util/price';
-import { ActiveField } from './util/resolve';
-
-/** Debounce for `customizer-change` while the shopper is typing. */
-export const CHANGE_DEBOUNCE_MS = 150;
+import {
+  DEFAULT_TRIGGER_LABEL,
+  SAVED_TRIGGER_LABEL,
+  canvasColorResolver,
+  coerceTriggerStyle,
+  resolveTriggerStyle,
+} from './util/trigger-style';
+import type { EditorSaveRequest, PersonalizerEditorComponent } from './personalizer-editor.component';
 
 /** Kept for existing importers; see `util/coerce.ts`. */
 export { coerceBoolean as coerceDisabled };
@@ -52,28 +51,50 @@ function coerceTheme(value: unknown): 'light' | 'dark' | 'auto' {
   return value === 'dark' || value === 'auto' ? value : 'light';
 }
 
+function coerceMode(value: unknown): ZbRenderMode | null {
+  return value === 'storefront' || value === 'preview' ? value : null;
+}
+
 /**
  * Where the component publishes `prepareForCart` on its host element; `main.storefront.ts` exposes it
  * as the element's public `prepareForCart()` method (Angular Elements has no method export).
  */
 export const PREPARE_HOOK = Symbol.for('zb-product-customizer.prepareForCart');
 
-/** A prepared customization stays reusable for the same design until the host reports the line added. */
-interface Prepared {
-  key: string;
-  customizationId: string;
-  /** Epoch ms after which the server-side customization may have expired. */
-  validUntil: number;
-}
-
-const FALLBACK_REUSE_MS = 60 * 60 * 1000;
-
 type Resolution =
   | { kind: 'idle' }
   | { kind: 'resolving' }
-  | { kind: 'mapped'; key: string; config: unknown }
+  | { kind: 'mapped'; key: string; configId: string; version: number; config: unknown }
   | { kind: 'unmapped' }
-  | { kind: 'failed' };
+  | { kind: 'failed'; message: string };
+
+/** The design the shopper saved, kept after the modal closes so it can be reopened, edited and added to the cart. */
+interface SavedDesign {
+  payload: SavePayload;
+  valuesKey: string;
+  templateId: string;
+  templateVersion: number;
+  /** `<templateId>@<version>`: the saved design is only ever restored into the template it was made for. */
+  templateKey: string;
+}
+
+interface ResolveRequest {
+  apiBaseUrl: string;
+  storeId: string;
+  productId: string;
+  variantId: string | null;
+  collectionIds: readonly string[];
+}
+
+const sameRequest = (a: ResolveRequest | null, b: ResolveRequest | null): boolean =>
+  a === b ||
+  (!!a &&
+    !!b &&
+    a.apiBaseUrl === b.apiBaseUrl &&
+    a.storeId === b.storeId &&
+    a.productId === b.productId &&
+    a.variantId === b.variantId &&
+    a.collectionIds.join('\n') === b.collectionIds.join('\n'));
 
 function isSaveResult(value: unknown): value is SaveResult {
   if (typeof value !== 'object' || value === null) return false;
@@ -85,37 +106,49 @@ function isSaveResult(value: unknown): value is SaveResult {
   );
 }
 
+/** The product id and schema marker of a published configuration, read without validating it (the editor does that). */
+function peekConfig(config: unknown): { productId: string | null; schemaVersion2: boolean } {
+  const root = typeof config === 'object' && config !== null ? (config as Record<string, unknown>) : {};
+  const product = typeof root['product'] === 'object' && root['product'] !== null ? (root['product'] as Record<string, unknown>) : {};
+  return {
+    productId: typeof product['id'] === 'string' ? product['id'] : null,
+    schemaVersion2: root['schemaVersion'] === 2,
+  };
+}
+
 /**
- * The customizer. Inputs and outputs here are the public custom-element contract
- * (see `models/element-contract.ts`); Angular Elements turns them into properties, attributes
- * and `customizer-*` DOM events. All mutable state lives in services provided on this
- * component, so every element instance is fully independent.
+ * `<zb-product-customizer>`: the storefront shell. It is cheap by design — the personalization editor
+ * (canvas rendering, image handling, export) is a separate component that is only downloaded and created
+ * when it is needed.
  *
- * Every style lives in this component's shadow root (one stylesheet, no child styles), so
- * nothing is added to the host page's CSS and host CSS can't reach the internals.
+ *  - `storefront` mode (the default when the template is resolved from `product-id`): asks the personalization
+ *    API whether the product has a published template, shows a trigger button only if it does, and opens the
+ *    editor in a native modal dialog when the button is clicked. Saving persists the design, announces it to the
+ *    host and closes the modal; the saved design is restored when the modal is reopened.
+ *  - `preview` mode (the default when the host supplies `config` / `config-url`): the editor inline, no trigger.
+ *
+ * The shell owns everything that crosses the boundary with the host: the inputs and `customizer-*` events, the
+ * `zb:event` channel, `prepareForCart()` and the save protocol. Everything is rendered into this component's shadow
+ * root with a single stylesheet, so nothing is added to the host page's CSS and host CSS cannot reach the internals.
  */
 @Component({
   selector: 'app-product-customizer',
-  imports: [
-    PreviewComponent,
-    ViewPickerComponent,
-    ChoiceGroupComponent,
-    TextFieldComponent,
-    PhotoFieldComponent,
-    ArtworkFieldComponent,
-    ActionBarComponent,
-  ],
-  providers: [AssetStore, StateService, SaveCoordinator, LoadPipeline, StorefrontResolver, CustomizationPersistence],
+  imports: [NgTemplateOutlet],
+  providers: [StorefrontResolver, CustomizationPersistence, DesignPersister, DesignSaver],
   encapsulation: ViewEncapsulation.ShadowDom,
   templateUrl: './product-customizer.component.html',
   styleUrl: './product-customizer.component.scss',
   host: {
     '[attr.theme]': 'theme()',
-    '[attr.data-status]': 'state.status()',
-    '[attr.data-save-state]': 'save.state()',
+    '[attr.data-status]': 'status()',
+    '[attr.data-save-state]': 'saveState()',
+    '[attr.data-mode]': 'effectiveMode()',
+    '[attr.data-modal]': 'modalOpen() ? "open" : null',
   },
 })
 export class ProductCustomizerComponent {
+  private static nextId = 0;
+
   // ---- public inputs (property names are the element's property names) -------------------
   readonly config = input<unknown>(null);
   readonly configUrl = input<string | null>(null);
@@ -129,6 +162,12 @@ export class ProductCustomizerComponent {
   readonly saveResult = input<unknown>(null);
   /** Appearance: `light` (default), `dark`, or `auto` (follows the visitor's colour scheme). */
   readonly theme = input<'light' | 'dark' | 'auto', unknown>('light', { transform: coerceTheme });
+
+  // ---- rendering mode and trigger appearance ---------------------------------------------------------
+  /** `storefront` (trigger + modal) or `preview` (inline editor); derived from the other inputs when absent. */
+  readonly mode = input<ZbRenderMode | null, unknown>(null, { transform: coerceMode });
+  /** Builder button style for the trigger (object, or JSON as an attribute). */
+  readonly triggerStyle = input<ZbTriggerStyle | null, unknown>(null, { transform: coerceTriggerStyle });
 
   // ---- resolve-by-product (used only when neither `config` nor `configUrl` is set) -------------
   /** The host's id of the product on this page. */
@@ -146,145 +185,30 @@ export class ProductCustomizerComponent {
   /** Host-defined label of where the element sits (attribute `placement`), echoed by the host, not by events. */
   readonly placement = input<string | null>(null);
   /**
-   * Hides this element's own Save button because the host's Add to cart is the primary action
-   * (attribute `hide-save`). The host then calls `prepareForCart()`.
+   * The host's Add to cart is the primary action: the design is saved to the personalization API by this
+   * element itself (modal Save or `prepareForCart()`), not handed to the host through `customizer-save`.
    */
   readonly hideSave = input<boolean, unknown>(false, { transform: coerceBoolean });
 
-  // ---- public outputs (aliases are the DOM event names) ----------------------------------
+  // ---- public outputs (aliases are the DOM event names) ----------------------------------------
   readonly customizerReady = output<CustomizerReadyDetail>({ alias: 'customizer-ready' });
   readonly customizerChange = output<CustomizerChangeDetail>({ alias: 'customizer-change' });
   readonly customizerSave = output<CustomizerSaveDetail>({ alias: 'customizer-save' });
   readonly customizerError = output<CustomizerErrorDetail>({ alias: 'customizer-error' });
 
-  protected readonly state = inject(StateService);
-  protected readonly save = inject(SaveCoordinator);
-  private readonly pipeline = inject(LoadPipeline);
-  private readonly exporter = inject(ExportService);
-  private readonly resolver = inject(StorefrontResolver);
-  private readonly persistence = inject(CustomizationPersistence);
   private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement;
+  private readonly resolver = inject(StorefrontResolver);
+  private readonly saver = inject(DesignSaver);
   private readonly generatedInstanceId = newInstanceId();
   private readonly channel = new ExtensionChannel(
     this.hostElement,
     () => this.instanceId() || this.generatedInstanceId,
   );
 
-  protected readonly failure = signal<{ message: string; issues: readonly ConfigIssue[] } | null>(
-    null,
-  );
-  protected readonly restoreNotices = signal<readonly string[]>([]);
-
+  // ---- eligibility -----------------------------------------------------------------------------
   private readonly resolution = signal<Resolution>({ kind: 'idle' });
   private readonly retryTick = signal(0);
   private resolveAbort: AbortController | null = null;
-  private abort: AbortController | null = null;
-  private destroyed = false;
-  private changeTimer: ReturnType<typeof setTimeout> | null = null;
-  private lastChangeKey = '';
-  private lastGateKey = '';
-  private renderedSent = false;
-  private prepared: Prepared | null = null;
-  private preparing: Promise<LineExtensionValues> | null = null;
-  private prepareAbort: AbortController | null = null;
-
-  // ---- derived view state ----------------------------------------------------------------
-  protected readonly hostDisabled = this.disabled;
-
-  protected readonly fieldErrors = computed<Readonly<Record<string, readonly FieldError[]>>>(() => {
-    const touched = this.state.touched();
-    const grouped: Record<string, FieldError[]> = {};
-    for (const error of this.state.errors()) {
-      // "Required" is shown after the shopper has visited the field; every other problem immediately.
-      if (error.code === 'required' && !touched.has(error.fieldId)) continue;
-      (grouped[error.fieldId] ??= []).push(error);
-    }
-    return grouped;
-  });
-
-  protected readonly blockers = computed<string[]>(() => {
-    const config = this.state.config();
-    if (!config) return [];
-    const labels = new Map(config.fields.map((f) => [f.id, f.label]));
-    const lines = this.state
-      .errors()
-      .map((e) =>
-        e.code === 'required' ? e.message : `${labels.get(e.fieldId) ?? e.fieldId}: ${e.message}`,
-      );
-    if (this.state.busy().size > 0) lines.push('A photo is still being processed.');
-    return lines.length > 5 ? [...lines.slice(0, 5), `…and ${lines.length - 5} more`] : lines;
-  });
-
-  protected readonly price = computed<PriceView | null>(() => {
-    const spec = this.state.config()?.displayPrice;
-    if (!spec) return null;
-    const { currency, exponent } = spec;
-    return {
-      total: formatMinor(spec.baseMinor + spec.customizationFeeMinor, currency, exponent),
-      base: formatMinor(spec.baseMinor, currency, exponent),
-      fee: formatMinor(spec.customizationFeeMinor, currency, exponent),
-    };
-  });
-
-  protected readonly previewLabel = computed(() => {
-    const config = this.state.config();
-    if (!config) return '';
-    const texts = this.state
-      .activeFields()
-      .map(({ field }) => {
-        const value = this.state.values()[field.id];
-        return field.type === 'text' && value && 'text' in value && value.text.trim()
-          ? `${field.label}: ${value.text}`
-          : null;
-      })
-      .filter(Boolean);
-    return `Live preview of ${config.product.name}${texts.length ? `. ${texts.join('. ')}` : ''}`;
-  });
-
-  protected readonly variantChoices = computed<Choice[]>(() =>
-    (this.state.config()?.variants ?? []).map((v) => ({
-      id: v.id,
-      label: v.label,
-      swatch: v.swatch,
-    })),
-  );
-
-  protected readonly saveDisabled = computed(() => {
-    const state = this.save.state();
-    if (this.hostDisabled() || this.state.status() !== 'ready') return true;
-    if (state === 'no-response') return false; // retry
-    return !this.save.canStart() || !this.state.valid() || this.state.busy().size > 0;
-  });
-
-  protected readonly resetDisabled = computed(
-    () => this.hostDisabled() || this.save.locked() || !this.state.differsFromDefaults(),
-  );
-
-  protected readonly editingLocked = this.state.locked;
-
-  /** A transient failure while asking the API which template is mapped can be retried. */
-  protected readonly canRetry = computed(() => this.resolution().kind === 'failed');
-
-  /**
-   * What the host should know about adding to cart. Only meaningful when the element resolves its own
-   * template from the product (the extension mode); a host that supplies a config manages its own flow.
-   */
-  private readonly gateState = computed<{ allowed: boolean; reason?: string } | null>(() => {
-    if (!this.productMode()) return null;
-    const resolution = this.resolution();
-    if (resolution.kind === 'unmapped') return { allowed: true }; // nothing to personalize here
-    if (resolution.kind === 'failed') {
-      return { allowed: false, reason: 'Personalization is temporarily unavailable. Please try again.' };
-    }
-    if (resolution.kind !== 'mapped' || this.state.status() !== 'ready') {
-      return { allowed: false, reason: 'Personalization is still loading.' };
-    }
-    if (this.hostDisabled()) return { allowed: false, reason: 'Personalization is unavailable right now.' };
-    if (!this.state.valid() || this.state.busy().size > 0) {
-      return { allowed: false, reason: this.blockers()[0] ?? 'Please complete the personalization.' };
-    }
-    return { allowed: true };
-  });
 
   /** True when the host asks for resolution by product rather than supplying a configuration. */
   private readonly productMode = computed(
@@ -296,80 +220,207 @@ export class ProductCustomizerComponent {
       !!this.storeId(),
   );
 
-  constructor() {
-    this.state.bindHostDisabled(this.disabled);
+  protected readonly effectiveMode = computed<ZbRenderMode>(
+    () => this.mode() ?? (this.productMode() ? 'storefront' : 'preview'),
+  );
 
-    // Ask the API which published template is mapped to this product/variant/collections.
-    effect(() => {
-      const request = this.productMode()
+  private readonly resolveRequest = computed<ResolveRequest | null>(
+    () =>
+      this.productMode()
         ? {
             apiBaseUrl: this.apiBaseUrl()!,
             storeId: this.storeId()!,
             productId: this.productId()!,
-            variantId: this.variantId(),
+            variantId: this.variantId() || null,
             collectionIds: this.collectionIds(),
           }
-        : null;
+        : null,
+    { equal: sameRequest },
+  );
+
+  /** What the template says is available for the host's own `config` / `config-url`. */
+  private readonly hasDirectConfig = computed(() => this.hasValue(this.config()) || this.hasValue(this.configUrl()));
+
+  /** Which of the shell's own views is showing. */
+  protected readonly view = computed<'fallback' | 'hidden' | 'unavailable' | 'trigger' | 'inline'>(() => {
+    const resolution = this.resolution();
+    if (this.effectiveMode() === 'storefront') {
+      if (this.modalOpen()) return 'trigger'; // never pull the dialog out from under the shopper
+      if (!this.productMode()) return this.hasDirectConfig() ? 'trigger' : 'hidden';
+      switch (resolution.kind) {
+        case 'mapped':
+          return 'trigger';
+        case 'unmapped':
+          return 'fallback';
+        case 'failed':
+          return 'unavailable';
+        default:
+          return 'hidden'; // eligibility unknown: no button
+      }
+    }
+    return this.productMode() && resolution.kind === 'unmapped' ? 'fallback' : 'inline';
+  });
+
+  // ---- the editor (created lazily) ------------------------------------------------------------------
+  private readonly anchor = viewChild('editorAnchor', { read: ViewContainerRef });
+  private readonly injector = inject(Injector);
+  private readonly editorType = signal<typeof PersonalizerEditorComponent | null>(null);
+  protected readonly editorLoad = signal<'idle' | 'loading' | 'failed'>('idle');
+  protected readonly editor = signal<PersonalizerEditorComponent | null>(null);
+  private editorRef: ComponentRef<PersonalizerEditorComponent> | null = null;
+  private editorRefAnchor: ViewContainerRef | null = null;
+
+  // ---- modal ------------------------------------------------------------------------------------
+  protected readonly titleId = `zbc-modal-title-${++ProductCustomizerComponent.nextId}`;
+  protected readonly confirmId = `zbc-discard-${ProductCustomizerComponent.nextId}`;
+  protected readonly modalOpen = signal(false);
+  protected readonly confirmingDiscard = signal(false);
+  /** Polite announcements for assistive technology (saved, saving, changed product). */
+  protected readonly announcement = signal('');
+  private readonly dialog = viewChild<ElementRef<HTMLDialogElement>>('dialog');
+  private readonly trigger = viewChild<ElementRef<HTMLButtonElement>>('trigger');
+  private readonly keepEditing = viewChild<ElementRef<HTMLButtonElement>>('keepEditing');
+  private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
+  /** The configuration (and its key) the open editor was created with; it never follows a re-resolution. */
+  private readonly activeConfig = signal<unknown>(null);
+  private activeKey = '';
+  private readonly restore = signal<{ initialCustomization: unknown; assetMap: LoadRequest['assetMap'] }>({
+    initialCustomization: null,
+    assetMap: null,
+  });
+  private readonly ackToEditor = signal<SaveResult | null>(null);
+  private closingProgrammatically = false;
+  private pressedOnBackdrop = false;
+
+  // ---- save state --------------------------------------------------------------------------------------
+  protected readonly saved = signal<SavedDesign | null>(null);
+  private pendingHostSave: EditorSaveRequest | null = null;
+  private preparing: Promise<LineExtensionValues> | null = null;
+
+  private destroyed = false;
+  private lastGateKey = '';
+  private lastAnnounced = '';
+  private renderedSent = false;
+
+  // ---- derived view state ------------------------------------------------------------------------------
+  private readonly colorResolver = canvasColorResolver();
+  protected readonly appearance = computed(() => resolveTriggerStyle(this.triggerStyle(), this.colorResolver));
+  protected readonly triggerLabel = computed(
+    () => this.appearance().label ?? (this.saved() ? SAVED_TRIGGER_LABEL : DEFAULT_TRIGGER_LABEL),
+  );
+
+  /** The element-level status (`data-status`): what a host or a test can read without looking inside. */
+  protected readonly status = computed<string>(() => {
+    const resolution = this.resolution();
+    if (this.productMode()) {
+      if (resolution.kind === 'unmapped') return 'not-personalizable';
+      if (resolution.kind === 'failed') return 'invalid-config';
+      if (resolution.kind !== 'mapped' && !this.modalOpen()) return 'loading';
+    }
+    if (this.effectiveMode() === 'storefront') return this.view() === 'trigger' ? 'ready' : 'awaiting-config';
+    if (this.editorLoad() === 'failed') return 'asset-error';
+    return this.editor()?.status() ?? 'loading';
+  });
+
+  protected readonly saveState = computed<string>(() => this.editor()?.saveState() ?? (this.saved() ? 'saved' : 'idle'));
+
+  protected readonly hostDisabled = this.disabled;
+
+  /** What the host should know about adding to cart (only meaningful when the element resolves its own template). */
+  private readonly gateState = computed<{ allowed: boolean; reason?: string } | null>(() => {
+    if (!this.productMode()) return null;
+    const resolution = this.resolution();
+    if (resolution.kind === 'unmapped') return { allowed: true }; // nothing to personalize here
+    if (resolution.kind === 'failed') {
+      return { allowed: false, reason: 'Personalization is temporarily unavailable. Please try again.' };
+    }
+    if (resolution.kind !== 'mapped') return { allowed: false, reason: 'Personalization is still loading.' };
+    if (this.hostDisabled()) return { allowed: false, reason: 'Personalization is unavailable right now.' };
+    if (this.effectiveMode() === 'storefront') {
+      return this.saved() ? { allowed: true } : { allowed: false, reason: 'Personalize this product to add it to your cart.' };
+    }
+    const editor = this.editor();
+    return editor ? editor.gate() : { allowed: false, reason: 'Personalization is still loading.' };
+  });
+
+  /** What the shell itself shows inline while the editor is not (yet) on screen. */
+  protected readonly inlinePanel = computed<'loading' | 'resolve-failed' | 'editor-failed' | null>(() => {
+    const resolution = this.resolution();
+    if (this.productMode()) {
+      if (resolution.kind === 'failed') return 'resolve-failed';
+      if (resolution.kind !== 'mapped') return 'loading';
+    }
+    if (this.editorLoad() === 'failed') return 'editor-failed';
+    return this.editor() ? null : 'loading';
+  });
+
+  protected readonly resolveFailureMessage = computed(() => {
+    const resolution = this.resolution();
+    return resolution.kind === 'failed' ? resolution.message : '';
+  });
+
+  /** Inputs of the editor that follow the shell's inputs. */
+  private readonly editorInputs = computed(() => {
+    const storefront = this.effectiveMode() === 'storefront';
+    const productMode = this.productMode();
+    const resolution = this.resolution();
+    const hostOrigins = this.allowedAssetOrigins();
+    const apiOrigin = productMode ? this.originOf(this.apiBaseUrl()) : null;
+    const restore = this.restore();
+    return {
+      config: storefront ? this.activeConfig() : productMode ? (resolution.kind === 'mapped' ? resolution.config : null) : this.config(),
+      configUrl: productMode ? null : this.configUrl(),
+      baseUrl: this.baseUrl(),
+      // An empty list already means "any http(s) origin"; only extend a restrictive list.
+      allowedAssetOrigins: productMode && apiOrigin && hostOrigins && hostOrigins.length > 0 ? [...hostOrigins, apiOrigin] : hostOrigins,
+      allowLocalAssets: this.allowLocalAssets(),
+      initialCustomization: storefront ? restore.initialCustomization : this.initialCustomization(),
+      assetMap: storefront ? restore.assetMap : this.assetMap(),
+      disabled: this.disabled(),
+      saveResult: this.ackToEditor(),
+      // In the modal the editor's Save button is always the way to confirm the design.
+      hideSave: storefront ? false : this.hideSave(),
+    };
+  });
+
+  /** An editor is wanted inline once its configuration is known, and in the modal while it is open. */
+  private readonly editorWanted = computed(() => {
+    if (this.effectiveMode() === 'storefront') return this.modalOpen();
+    return !this.productMode() || this.resolution().kind === 'mapped';
+  });
+
+  constructor() {
+    // Ask the API which published template is mapped to this product/variant/collections.
+    effect(() => {
+      const request = this.resolveRequest();
       this.retryTick();
       untracked(() => void this.startResolve(request));
     });
 
-    // (Re)load whenever the host assigns a new configuration, restore data or the mapped template changes.
+    // Tell the host what the eligibility check found.
     effect(() => {
       const resolution = this.resolution();
-      const productMode = this.productMode();
-      const apiOrigin = productMode ? this.originOf(this.apiBaseUrl()) : null;
-      const hostOrigins = this.allowedAssetOrigins();
-      const request: LoadRequest = {
-        config: productMode
-          ? resolution.kind === 'mapped'
-            ? resolution.config
-            : null
-          : this.config(),
-        configUrl: productMode ? null : this.configUrl(),
-        baseUrl: this.baseUrl(),
-        // An empty list already means "any http(s) origin"; only extend a restrictive list.
-        allowedOrigins:
-          productMode && apiOrigin && hostOrigins && hostOrigins.length > 0
-            ? [...hostOrigins, apiOrigin]
-            : hostOrigins,
-        allowLocalAssets: this.allowLocalAssets(),
-        initialCustomization: this.initialCustomization(),
-        assetMap: this.assetMap(),
-      };
-      untracked(() => {
-        if (productMode && resolution.kind !== 'mapped') {
-          this.holdForResolution(resolution);
-          return;
-        }
-        void this.startLoad(request, productMode);
-      });
+      const storefront = this.effectiveMode() === 'storefront';
+      untracked(() => this.announceEligibility(resolution, storefront));
+    });
+
+    // Create, feed and destroy the editor.
+    effect(() => {
+      const anchor = this.anchor();
+      const wanted = this.editorWanted();
+      const type = this.editorType();
+      const load = this.editorLoad();
+      untracked(() => this.syncEditor(anchor, wanted, type, load));
+    });
+    effect(() => {
+      const inputs = this.editorInputs();
+      untracked(() => this.pushInputs(inputs));
     });
 
     // Host acknowledgements.
     effect(() => {
       const result = this.saveResult();
-      if (result !== null && result !== undefined) untracked(() => this.applySaveResult(result));
-    });
-
-    // An edit after a result clears the old status line.
-    effect(() => {
-      this.state.editCount();
-      untracked(() => this.save.noteEdit());
-    });
-
-    // customizer-change
-    effect(() => {
-      if (this.state.status() !== 'ready') return;
-      const draft = this.state.customization();
-      if (!draft) return;
-      const snapshot: CustomizerChangeDetail = {
-        draft,
-        valid: this.state.valid(),
-        dirty: this.state.dirty(),
-        errors: this.state.errors().map((e) => ({ ...e })),
-      };
-      untracked(() => this.scheduleChange(snapshot));
+      if (result !== null && result !== undefined) untracked(() => this.onHostSaveResult(result));
     });
 
     // `gate`: the host disables Add to cart while the design cannot be added yet.
@@ -379,17 +430,48 @@ export class ProductCustomizerComponent {
       untracked(() => this.sendGate(gate));
     });
 
-    // `rendered`: once per instance, after the first design is on screen.
+    // `rendered`: once per instance, after the first thing the shopper can use is on screen.
     effect(() => {
-      if (this.state.status() !== 'ready' || this.renderedSent) return;
+      if (this.renderedSent || this.effectiveMode() !== 'storefront' || this.view() !== 'trigger') return;
       this.renderedSent = true;
       untracked(() => requestAnimationFrame(() => !this.destroyed && this.channel.emit('rendered', {})));
     });
 
+    // A different product, store or API invalidates what the shopper saved and any open modal.
+    effect(() => {
+      this.apiBaseUrl();
+      this.storeId();
+      this.productId();
+      untracked(() => this.resetForNewContext());
+    });
+
+    // The discard question takes focus, on its safe answer.
+    effect(() => {
+      const keep = this.keepEditing();
+      if (keep && this.confirmingDiscard()) untracked(() => keep.nativeElement.focus());
+    });
+
+    // Leaving storefront mode (or losing the trigger) closes the modal.
+    effect(() => {
+      if (this.effectiveMode() !== 'storefront' && this.modalOpen()) untracked(() => this.closeModal());
+    });
+
+    // Saving to the personalization API: the saver asks for the host's product context when a save starts and tells
+    // the host (once per customization) when one was created.
+    this.saver.bind({
+      context: () => ({
+        apiBaseUrl: this.apiBaseUrl()!,
+        storeId: this.storeId()!,
+        productId: this.productId() ?? '',
+        variantId: this.variantId() || null,
+        collectionIds: this.collectionIds(),
+      }),
+      saved: (data) => this.channel.emit(`${PERSONALIZATION_EXTENSION_ID}.saved`, data),
+    });
     // The host reports the line was added: this customization is now spoken for (one customization is
     // ordered at most once), so the next add must save a fresh one.
     const stopHostEvents = this.channel.onHostEvent((type) => {
-      if (type === 'cart.line-added') this.prepared = null;
+      if (type === 'cart.line-added') this.saver.forget();
     });
 
     (this.hostElement as unknown as Record<symbol, unknown>)[PREPARE_HOOK] = () => this.prepareForCart();
@@ -401,293 +483,7 @@ export class ProductCustomizerComponent {
     });
   }
 
-  // ---- template helpers -------------------------------------------------------------------
-
-  protected textValue(field: FieldSpec): TextValue {
-    return this.state.values()[field.id] as TextValue;
-  }
-
-  protected artworkValue(field: FieldSpec): ArtworkValue {
-    return this.state.values()[field.id] as ArtworkValue;
-  }
-
-  protected optionChoices(options: readonly { id: string; name: string }[]): Choice[] {
-    return options.map((o) => ({ id: o.id, label: o.name }));
-  }
-
-  /** The style of the first text layer a field feeds: what the customer sees before choosing. */
-  protected layerStyle(entry: ActiveField): TextStyleDefaults {
-    const layer = entry.bindings.map((b) => b.layer).find((l) => l.type === 'text');
-    return {
-      bold: layer?.type === 'text' ? (layer.bold ?? false) : false,
-      italic: layer?.type === 'text' ? (layer.italic ?? false) : false,
-      underline: layer?.type === 'text' ? (layer.underline ?? false) : false,
-      align: layer?.type === 'text' ? layer.align : 'center',
-    };
-  }
-
-  protected asText(field: FieldSpec): TextFieldSpec {
-    return field as TextFieldSpec;
-  }
-
-  protected asArtwork(field: FieldSpec): ArtworkFieldSpec {
-    return field as ArtworkFieldSpec;
-  }
-
-  protected errorsFor(fieldId: string): readonly FieldError[] {
-    return this.fieldErrors()[fieldId] ?? [];
-  }
-
-  protected warningsFor(fieldId: string): readonly string[] {
-    return this.state.evaluation()?.warnings[fieldId] ?? [];
-  }
-
-  protected isBusy(fieldId: string): boolean {
-    return this.state.busy().has(fieldId);
-  }
-
-  protected uploadErrorFor(fieldId: string): string | null {
-    return this.state.uploadErrors()[fieldId] ?? null;
-  }
-
-  // ---- actions -----------------------------------------------------------------------------
-
-  protected async onSave(): Promise<void> {
-    if (this.save.state() === 'no-response') {
-      if (!this.saveDisabled()) this.save.retry((detail) => this.emitSave(detail));
-      return;
-    }
-    const evaluation = this.state.evaluation();
-    const customization = this.state.customization();
-    const composites = this.state.composites();
-    if (this.saveDisabled() || !evaluation || !customization || composites.length === 0) return;
-
-    const valuesKey = this.state.currentKey();
-    const localAssets = this.state.assets.localAssets();
-    try {
-      await this.save.start(
-        () =>
-          this.exporter.export({
-            scenes: evaluation.areas,
-            composites,
-            customization,
-            localAssets,
-          }),
-        (detail) => this.emitSave(detail),
-        valuesKey,
-        () => !this.hostDisabled() && this.state.status() === 'ready',
-      );
-    } catch (error) {
-      const known = error instanceof CustomizerError;
-      this.emitError({
-        code: known ? error.code : 'export-failed',
-        message: known ? error.message : 'The design could not be exported.',
-        recoverable: true,
-      });
-    }
-  }
-
-  protected onReset(): void {
-    this.state.resetAll();
-  }
-
-  // ---- host command: prepare for cart (contract v1, section 5.2) --------------------------------
-
-  /**
-   * Called by the host when the shopper adds to cart. Saves the design to the personalization API and
-   * resolves with the line extension values (`{ customizationId }`) the platform attaches to the cart
-   * line. Rejects with a shopper-safe message to cancel the add. Concurrent calls share one save, and
-   * the same unchanged design reuses its customization.
-   */
-  prepareForCart(): Promise<LineExtensionValues> {
-    if (this.destroyed) return Promise.reject(new Error('The personalization is no longer available.'));
-    if (!this.productMode()) {
-      return Promise.reject(new Error('Personalization is not set up for this page.'));
-    }
-    const resolution = this.resolution();
-    if (resolution.kind === 'unmapped') return Promise.resolve({}); // nothing to attach
-    if (resolution.kind !== 'mapped' || this.state.status() !== 'ready') {
-      return Promise.reject(new Error('Personalization is still loading. Please wait a moment.'));
-    }
-    if (this.hostDisabled()) {
-      return Promise.reject(new Error('Personalization is unavailable right now.'));
-    }
-    if (!this.state.valid() || this.state.busy().size > 0) {
-      return Promise.reject(
-        new Error(this.blockers()[0] ?? 'Please complete the personalization before adding to cart.'),
-      );
-    }
-    this.preparing ??= this.runPrepare().finally(() => (this.preparing = null));
-    return this.preparing;
-  }
-
-  private async runPrepare(): Promise<LineExtensionValues> {
-    const target = { apiBaseUrl: this.apiBaseUrl()!, storeId: this.storeId()! };
-    const controller = new AbortController();
-    this.prepareAbort = controller;
-    try {
-      // A shopper editing mid-save would otherwise get a customization of a design they have left.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const config = this.state.config();
-        const evaluation = this.state.evaluation();
-        const customization = this.state.customization();
-        const composites = this.state.composites();
-        if (!config || !evaluation || !customization || composites.length === 0) {
-          throw new PrepareError('Personalization is still loading. Please wait a moment.');
-        }
-        const valuesKey = this.state.currentKey();
-        const variant = this.variantId() ?? '';
-        const key = `${config.id}@${config.version}|${variant}|${valuesKey}`;
-        if (this.prepared && this.prepared.key === key && this.prepared.validUntil > Date.now()) {
-          return { customizationId: this.prepared.customizationId };
-        }
-
-        const exported = await this.exporter.export({
-          scenes: evaluation.areas,
-          composites,
-          customization,
-          localAssets: this.state.assets.localAssets(),
-        });
-        const files: Array<{ kind: PersistKind; blob: Blob; filename: string }> = [
-          ...exported.assets.map((a) => ({ kind: 'upload' as const, blob: a.blob, filename: a.assetId })),
-          ...exported.artworks.map((a) => ({ kind: 'artwork' as const, blob: a.blob, filename: a.printableAreaId })),
-          ...exported.previews.map((p) => ({ kind: 'preview' as const, blob: p.blob, filename: p.mockupId })),
-        ];
-        const uploaded: UploadedFile[] = [];
-        for (const file of files) {
-          uploaded.push(await this.persistence.upload(target, file, controller.signal));
-        }
-        const refs = (offset: number, count: number) => uploaded.slice(offset, offset + count).map((u) => u.assetId);
-        const uploadRefs = refs(0, exported.assets.length);
-        const artworkRefs = refs(exported.assets.length, exported.artworks.length);
-        const previewRefs = refs(exported.assets.length + exported.artworks.length, exported.previews.length);
-
-        const created = await this.persistence.create(
-          target,
-          {
-            productId: this.productId()!,
-            variantId: this.variantId(),
-            collectionIds: this.collectionIds(),
-            configId: config.id,
-            configVersion: config.version,
-            // What the merchant needs to fulfil the order: the values, and which stored file is which.
-            data: {
-              schema: 1,
-              template: { id: config.id, version: config.version },
-              customization,
-              files: {
-                uploads: exported.assets.map((a, i) => ({
-                  assetId: a.assetId, ref: uploadRefs[i], mimeType: a.mimeType, width: a.width, height: a.height,
-                })),
-                artworks: exported.artworks.map((a, i) => ({
-                  printableAreaId: a.printableAreaId, artworkId: a.artworkId, width: a.width, height: a.height, ref: artworkRefs[i],
-                })),
-                previews: exported.previews.map((p, i) => ({ mockupId: p.mockupId, ref: previewRefs[i] })),
-              },
-            },
-            assets: uploaded,
-          },
-          controller.signal,
-        );
-
-        if (this.state.currentKey() !== valuesKey) continue; // the design changed while saving: save the new one
-        const expires = Date.parse(created.expiresAt);
-        this.prepared = {
-          key,
-          customizationId: created.customizationId,
-          validUntil: Number.isFinite(expires) ? expires - 60_000 : Date.now() + FALLBACK_REUSE_MS,
-        };
-        this.channel.emit(`${PERSONALIZATION_EXTENSION_ID}.saved`, {
-          customizationId: created.customizationId,
-          templateId: config.id,
-          templateVersion: config.version,
-        });
-        return { customizationId: created.customizationId };
-      }
-      throw new PrepareError('Your design changed while it was being saved. Please try again.');
-    } catch (error) {
-      // Only messages we wrote for shoppers leave this method; everything else is made generic.
-      if (error instanceof PrepareError) throw error;
-      if (error instanceof CustomizerError) {
-        this.emitError({ code: error.code, message: error.message, recoverable: error.recoverable });
-        throw new PrepareError(error.message);
-      }
-      if (isAbortError(error)) throw new PrepareError('Saving was cancelled.');
-      this.emitError({ code: 'save-failed', message: 'The design could not be saved.', recoverable: true });
-      throw new PrepareError('Your design could not be saved. Please try again.');
-    } finally {
-      if (this.prepareAbort === controller) this.prepareAbort = null;
-    }
-  }
-
-  // ---- load lifecycle -------------------------------------------------------------------
-
-  private async startLoad(request: LoadRequest, resolvedByProduct = false): Promise<void> {
-    this.abort?.abort();
-    const controller = new AbortController();
-    this.abort = controller;
-    this.save.cancel();
-    this.cancelPendingChange();
-    this.lastChangeKey = '';
-    this.failure.set(null);
-    this.restoreNotices.set([]);
-
-    const nothingSupplied =
-      (request.config === null || request.config === undefined) &&
-      (request.configUrl === null || request.configUrl === undefined || request.configUrl === '');
-    if (nothingSupplied) {
-      this.state.setStatus('awaiting-config');
-      return;
-    }
-
-    this.state.beginLoad();
-    let outcome: LoadOutcome;
-    try {
-      outcome = await this.pipeline.run(request, controller.signal);
-    } catch (error) {
-      if (controller.signal.aborted) return; // superseded: ignore whatever it was doing
-      this.failLoad('asset-error', {
-        code: 'unexpected',
-        message:
-          error instanceof CustomizerError ? error.message : 'The customizer could not start.',
-        recoverable: false,
-      });
-      return;
-    }
-
-    if (controller.signal.aborted || this.destroyed) {
-      // A newer load (or teardown) won the race: release what this one produced.
-      if (outcome.kind === 'ready') {
-        outcome.staticImages.forEach((bitmap) => bitmap.close());
-        outcome.localAssets.forEach((asset) => asset.bitmap.close());
-      }
-      return;
-    }
-
-    switch (outcome.kind) {
-      case 'awaiting':
-        this.state.setStatus('awaiting-config');
-        break;
-      case 'failed':
-        this.failLoad(outcome.status, outcome.error, outcome.issues);
-        break;
-      case 'ready':
-        this.state.commit(outcome);
-        this.restoreNotices.set(outcome.notices.map((notice) => notice.message));
-        for (const notice of outcome.notices) this.emitError(notice);
-        this.emitReady({
-          productId: outcome.config.product.id,
-          templateId: outcome.config.id,
-          templateVersion: outcome.config.version,
-          // The original version-1 event detail is kept exactly as hosts know it.
-          ...(outcome.sourceVersion === 2 ? { schemaVersion: 2 as const } : {}),
-          ...(resolvedByProduct ? { personalizable: true } : {}),
-        });
-        break;
-    }
-  }
-
-  // ---- resolve by product -----------------------------------------------------------------
+  // ---- resolve by product ---------------------------------------------------------------------
 
   private hasValue(value: unknown): boolean {
     return value !== null && value !== undefined && value !== '';
@@ -705,9 +501,12 @@ export class ProductCustomizerComponent {
     this.retryTick.update((n) => n + 1);
   }
 
-  private async startResolve(
-    request: Parameters<StorefrontResolver['resolve']>[0] | null,
-  ): Promise<void> {
+  protected retry(kind: 'resolve' | 'editor'): void {
+    if (kind === 'resolve') this.retryResolve();
+    else this.editorLoad.set('idle');
+  }
+
+  private async startResolve(request: ResolveRequest | null): Promise<void> {
     this.resolveAbort?.abort();
     if (!request) {
       if (this.resolution().kind !== 'idle') this.resolution.set({ kind: 'idle' });
@@ -716,102 +515,90 @@ export class ProductCustomizerComponent {
     const controller = new AbortController();
     this.resolveAbort = controller;
     const previous = this.resolution();
-    // Keep showing the current design while a variant/collection change is re-checked.
-    if (previous.kind !== 'mapped') this.resolution.set({ kind: 'resolving' });
+    // Inline, keep showing the current design while a variant/collection change is re-checked. In the storefront the
+    // answer for the OLD context says nothing about the new one, so the button goes away until it is known.
+    if (previous.kind !== 'mapped' || this.effectiveMode() === 'storefront') this.resolution.set({ kind: 'resolving' });
     let outcome: ResolveOutcome;
     try {
       outcome = await this.resolver.resolve(request, controller.signal);
     } catch (error) {
       if (controller.signal.aborted || this.destroyed) return;
       const known = error instanceof CustomizerError;
-      this.resolution.set({ kind: 'failed' });
-      this.failLoad('invalid-config', {
+      const message = known ? error.message : 'The personalization service could not be reached.';
+      this.resolution.set({ kind: 'failed', message });
+      this.emitError({
         code: known ? error.code : 'config-load-failed',
-        message: known ? error.message : 'The personalization service could not be reached.',
+        message,
         recoverable: known ? error.recoverable : true,
       });
+      this.onEligibilityLost('failed');
       return;
     }
     if (controller.signal.aborted || this.destroyed) return;
     if (outcome.kind === 'unmapped') {
       this.resolution.set({ kind: 'unmapped' });
+      this.onEligibilityLost('unmapped');
       return;
     }
     const key = `${outcome.configId}@${outcome.version}`;
     // Same template and version as before: keep the loaded design (and the shopper's input).
-    if (previous.kind === 'mapped' && previous.key === key) return;
-    this.resolution.set({ kind: 'mapped', key, config: outcome.config });
+    if (previous.kind === 'mapped' && previous.key === key && this.effectiveMode() === 'preview') return;
+    this.resolution.set({ kind: 'mapped', key, configId: outcome.configId, version: outcome.version, config: outcome.config });
+    this.onTemplateResolved(key);
   }
 
-  /** Product mode without a template (yet): show loading, the fallback, or leave the failure panel. */
-  private holdForResolution(resolution: Resolution): void {
-    this.abort?.abort();
-    this.save.cancel();
-    this.cancelPendingChange();
-    this.lastChangeKey = '';
-    this.restoreNotices.set([]);
-    switch (resolution.kind) {
-      case 'resolving':
-        this.failure.set(null);
-        this.state.beginLoad();
-        break;
-      case 'unmapped':
-        this.failure.set(null);
-        this.state.setStatus('not-personalizable');
-        this.emitReady({
-          productId: this.productId() ?? '',
-          templateId: '',
-          templateVersion: 0,
-          personalizable: false,
-        });
-        break;
-      case 'failed': // the failure panel was already set by startResolve
-        break;
-      default:
-        this.state.setStatus('awaiting-config');
+  /** The product has no usable template (any more): what was saved for it cannot be used. */
+  private onEligibilityLost(kind: 'failed' | 'unmapped'): void {
+    if (kind === 'unmapped') this.dropSavedDesign();
+    if (this.modalOpen() && kind === 'unmapped') this.closeModal('This product can no longer be personalized, so your changes were not kept.');
+  }
+
+  /** A template was resolved: an open modal or a saved design built for a different template is obsolete. */
+  private onTemplateResolved(key: string): void {
+    const saved = this.saved();
+    if (saved && saved.templateKey !== key) this.dropSavedDesign();
+    if (this.modalOpen() && this.activeKey !== key) {
+      this.closeModal('This product changed, so your previous personalization was cleared.');
     }
   }
 
-  private failLoad(
-    status: 'invalid-config' | 'asset-error',
-    error: CustomizerErrorDetail,
-    issues: readonly ConfigIssue[] = [],
-  ): void {
-    this.state.setStatus(status);
-    this.failure.set({ message: error.message, issues });
-    this.emitError(error);
+  private resetForNewContext(): void {
+    this.dropSavedDesign();
+    if (this.modalOpen()) this.closeModal('This product changed, so your previous personalization was cleared.');
   }
 
-  private applySaveResult(result: unknown): void {
-    if (!isSaveResult(result)) return;
-    const outcome = this.save.acknowledge(result);
-    if (outcome.applied && outcome.savedKey !== undefined) this.state.markSaved(outcome.savedKey);
+  private dropSavedDesign(): void {
+    this.saved.set(null);
+    this.pendingHostSave = null;
+    this.ackToEditor.set(null);
+    this.saver.reset();
   }
 
-  // ---- events --------------------------------------------------------------------------------
+  // ---- events the host listens to -------------------------------------------------------------
 
-  private scheduleChange(snapshot: CustomizerChangeDetail): void {
-    const key = stableKey(snapshot);
-    if (key === this.lastChangeKey) {
-      this.cancelPendingChange();
-      return;
-    }
-    this.cancelPendingChange();
-    const emit = () => {
-      this.changeTimer = null;
-      this.lastChangeKey = key;
-      if (!this.destroyed) this.customizerChange.emit(structuredClone(snapshot));
-    };
-    if (this.state.lastEditKind === 'text') {
-      this.changeTimer = setTimeout(emit, CHANGE_DEBOUNCE_MS);
+  /** `ready` (both flavours) once the element knows whether the product is personalizable. */
+  private announceEligibility(resolution: Resolution, storefront: boolean): void {
+    if (resolution.kind === 'unmapped') {
+      this.announce('unmapped', () => ({ productId: this.productId() ?? '', templateId: '', templateVersion: 0, personalizable: false }));
+    } else if (resolution.kind === 'mapped' && storefront) {
+      // The editor has not been downloaded yet, so say what is known without it.
+      const peeked = peekConfig(resolution.config);
+      this.announce(`mapped:${resolution.key}`, () => ({
+        productId: peeked.productId ?? this.productId() ?? '',
+        templateId: resolution.configId,
+        templateVersion: resolution.version,
+        ...(peeked.schemaVersion2 ? { schemaVersion: 2 as const } : {}),
+        personalizable: true,
+      }));
     } else {
-      emit();
+      this.lastAnnounced = ''; // the next answer is news again
     }
   }
 
-  private cancelPendingChange(): void {
-    if (this.changeTimer !== null) clearTimeout(this.changeTimer);
-    this.changeTimer = null;
+  private announce(key: string, detail: () => CustomizerReadyDetail): void {
+    if (key === this.lastAnnounced) return;
+    this.lastAnnounced = key;
+    this.emitReady(detail());
   }
 
   private emitReady(detail: CustomizerReadyDetail): void {
@@ -819,10 +606,6 @@ export class ProductCustomizerComponent {
     this.customizerReady.emit(detail);
     // Contract v1 `ready`: `available: false` tells the host to collapse the slot.
     this.channel.emit('ready', { available: detail.personalizable !== false });
-  }
-
-  private emitSave(detail: CustomizerSaveDetail): void {
-    if (!this.destroyed) this.customizerSave.emit(detail);
   }
 
   private emitError(detail: CustomizerErrorDetail): void {
@@ -839,13 +622,326 @@ export class ProductCustomizerComponent {
     this.channel.emit('gate', gate);
   }
 
+  // ---- the editor's life -----------------------------------------------------------------------
+
+  private syncEditor(
+    anchor: ViewContainerRef | undefined,
+    wanted: boolean,
+    type: typeof PersonalizerEditorComponent | null,
+    load: 'idle' | 'loading' | 'failed',
+  ): void {
+    if (this.destroyed) return;
+    if (!wanted || !anchor) {
+      this.destroyEditor();
+      return;
+    }
+    if (this.editorRef && this.editorRefAnchor !== anchor) this.destroyEditor();
+    if (this.editorRef) return;
+    if (!type) {
+      if (load === 'idle') this.loadEditorChunk();
+      return;
+    }
+    const ref = anchor.createComponent(type, { injector: this.injector });
+    this.editorRef = ref;
+    this.editorRefAnchor = anchor;
+    this.pushInputs(this.editorInputs());
+    const editor = ref.instance;
+    editor.editorReady.subscribe((detail) => this.onEditorReady(detail));
+    editor.editorChange.subscribe((detail) => !this.destroyed && this.customizerChange.emit(detail));
+    editor.editorSave.subscribe((request) => this.onEditorSave(request));
+    editor.editorError.subscribe((detail) => this.emitError(detail));
+    ref.onDestroy(() => {
+      if (this.editorRef === ref) {
+        this.editorRef = null;
+        this.editorRefAnchor = null;
+        this.editor.set(null);
+      }
+    });
+    this.editor.set(editor);
+  }
+
+  private pushInputs(inputs: Record<string, unknown>): void {
+    const ref = this.editorRef;
+    if (!ref) return;
+    for (const [name, value] of Object.entries(inputs)) ref.setInput(name, value);
+  }
+
+  private destroyEditor(): void {
+    const ref = this.editorRef;
+    if (!ref) return;
+    this.editorRef = null;
+    this.editorRefAnchor = null;
+    this.editor.set(null);
+    ref.destroy();
+  }
+
+  /** The editor is a separate chunk: fetched the first time one is needed, never before. */
+  private loadEditorChunk(): void {
+    this.editorLoad.set('loading');
+    import('./personalizer-editor.component').then(
+      (module) => {
+        if (this.destroyed) return;
+        this.editorType.set(module.PersonalizerEditorComponent);
+        this.editorLoad.set('idle');
+      },
+      () => {
+        if (this.destroyed) return;
+        this.editorLoad.set('failed');
+        this.emitError({ code: 'unexpected', message: 'The personalizer could not be loaded.', recoverable: true });
+      },
+    );
+  }
+
+  private onEditorReady(detail: CustomizerReadyDetail): void {
+    // In the storefront the eligibility announcement already told the host; the modal opening is not news.
+    if (this.effectiveMode() === 'storefront') return;
+    this.emitReady({ ...detail, ...(this.productMode() ? { personalizable: true } : {}) });
+    if (!this.renderedSent) {
+      this.renderedSent = true;
+      requestAnimationFrame(() => !this.destroyed && this.channel.emit('rendered', {}));
+    }
+  }
+
+  // ---- the modal -------------------------------------------------------------------------------
+
+  protected open(): void {
+    if (this.modalOpen() || this.hostDisabled() || this.view() !== 'trigger') return;
+    const resolution = this.resolution();
+    if (this.productMode() && resolution.kind !== 'mapped') return;
+    const saved = this.saved();
+    this.activeConfig.set(this.productMode() && resolution.kind === 'mapped' ? resolution.config : this.config());
+    this.activeKey = resolution.kind === 'mapped' ? resolution.key : '';
+    this.restore.set(
+      saved
+        ? {
+            initialCustomization: saved.payload.customization,
+            // The saved design's own image files: restored without going back to the network.
+            assetMap: new Map(saved.payload.assets.map((asset) => [asset.assetId, asset.blob])),
+          }
+        : { initialCustomization: this.initialCustomization(), assetMap: this.assetMap() },
+    );
+    this.ackToEditor.set(null);
+    this.pendingHostSave = null;
+    this.announcement.set('');
+    this.modalOpen.set(true);
+    const dialog = this.dialog()?.nativeElement;
+    if (dialog && !dialog.open) dialog.showModal();
+    // The dialog's content is rendered after this click handler returns; focus lands on its first control.
+    afterNextRender(() => this.closeButton()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  /** The shopper (or the browser) asked to close. Never discards or interrupts silently. */
+  protected requestClose(): void {
+    if (!this.modalOpen()) return;
+    if (this.confirmingDiscard()) {
+      this.keepEditingDesign();
+      return;
+    }
+    const editor = this.editor();
+    const saveState = editor?.saveState();
+    if (saveState === 'exporting' || saveState === 'awaiting-host') {
+      this.announcement.set('Your design is being saved. Please wait a moment.');
+      return;
+    }
+    if (editor?.dirty()) {
+      this.confirmingDiscard.set(true);
+      return;
+    }
+    this.closeModal();
+  }
+
+  protected keepEditingDesign(): void {
+    this.confirmingDiscard.set(false);
+  }
+
+  protected discardAndClose(): void {
+    this.closeModal();
+  }
+
+  private closeModal(message?: string): void {
+    this.confirmingDiscard.set(false);
+    if (!this.modalOpen()) return;
+    this.modalOpen.set(false);
+    this.pendingHostSave = null;
+    if (message) this.announcement.set(message);
+    const dialog = this.dialog()?.nativeElement;
+    if (dialog?.open) {
+      this.closingProgrammatically = true;
+      dialog.close();
+    }
+    // The browser restores focus to what opened the dialog; do not rely on it.
+    this.trigger()?.nativeElement.focus();
+  }
+
+  protected onCancel(event: Event): void {
+    event.preventDefault(); // Escape: ask first instead of letting the browser close the dialog
+    this.requestClose();
+  }
+
+  /** The browser closed the dialog itself (a second Escape ignores `cancel`): keep our state and its truth aligned. */
+  protected onNativeClose(): void {
+    if (this.closingProgrammatically) {
+      this.closingProgrammatically = false;
+      return;
+    }
+    if (!this.modalOpen()) return;
+    const editor = this.editor();
+    const busy = editor?.saveState() === 'exporting' || editor?.saveState() === 'awaiting-host';
+    if (busy || editor?.dirty()) {
+      this.dialog()?.nativeElement.showModal();
+      this.requestClose();
+    } else {
+      this.modalOpen.set(false);
+      this.confirmingDiscard.set(false);
+      this.trigger()?.nativeElement.focus();
+    }
+  }
+
+  protected onBackdropDown(event: PointerEvent): void {
+    this.pressedOnBackdrop = event.target === this.dialog()?.nativeElement;
+  }
+
+  protected onBackdropClick(event: MouseEvent): void {
+    // A drag that starts in the panel and ends on the backdrop is not a click on the backdrop.
+    if (this.pressedOnBackdrop && event.target === this.dialog()?.nativeElement) this.requestClose();
+    this.pressedOnBackdrop = false;
+  }
+
+  // ---- saving ----------------------------------------------------------------------------------
+
+  /** The editor froze a design for saving. Who persists it depends on who owns the save: the host, or this element. */
+  private onEditorSave(request: EditorSaveRequest): void {
+    if (this.destroyed) return;
+    if (this.effectiveMode() === 'storefront' && this.hideSave()) {
+      void this.saveFromModal(request);
+      return;
+    }
+    // Host-acknowledged: the host persists and answers with `saveResult`.
+    this.pendingHostSave = request;
+    this.customizerSave.emit(request.detail);
+  }
+
+  private onHostSaveResult(result: unknown): void {
+    if (!isSaveResult(result)) return;
+    this.ackToEditor.set({ ...result }); // a new object each time, so a repeated answer is still seen
+    const pending = this.pendingHostSave;
+    if (!pending || pending.detail.requestId !== result.requestId) return;
+    this.pendingHostSave = null;
+    if (result.status === 'success') this.designSaved(pending);
+  }
+
+  /** The element persists the design itself (extension-managed saving), then answers the editor on the host's behalf. */
+  private async saveFromModal(request: EditorSaveRequest): Promise<void> {
+    const { requestId, ...payload } = request.detail;
+    try {
+      await this.saver.save({
+        payload,
+        valuesKey: request.valuesKey,
+        templateId: request.templateId,
+        templateVersion: request.templateVersion,
+        source: 'save',
+      });
+      if (this.destroyed) return;
+      this.ackToEditor.set({ requestId, status: 'success', message: 'Customization saved.' });
+      this.designSaved(request);
+    } catch (error) {
+      if (this.destroyed) return;
+      this.ackToEditor.set({ requestId, status: 'error', message: this.shopperError(error).message });
+    }
+  }
+
+  /** A save was accepted: remember it, tell the shopper, and get the modal out of the way. */
+  private designSaved(request: EditorSaveRequest): void {
+    // Inline there is no trigger to come back to: the editor itself is the place the design lives.
+    if (this.effectiveMode() !== 'storefront') return;
+    const { requestId, ...payload } = request.detail;
+    void requestId;
+    this.saved.set({
+      payload,
+      valuesKey: request.valuesKey,
+      templateId: request.templateId,
+      templateVersion: request.templateVersion,
+      templateKey: `${request.templateId}@${request.templateVersion}`,
+    });
+    this.announcement.set('Your personalization was saved.');
+    if (this.modalOpen()) this.closeModal('Your personalization was saved.');
+  }
+
+  /** Only messages written for shoppers leave; everything else is made generic. */
+  private shopperError(error: unknown): PrepareError {
+    if (error instanceof PrepareError) return error;
+    if (error instanceof CustomizerError) {
+      this.emitError({ code: error.code, message: error.message, recoverable: error.recoverable });
+      return new PrepareError(error.message);
+    }
+    if (isAbortError(error)) return new PrepareError('Saving was cancelled.');
+    this.emitError({ code: 'save-failed', message: 'The design could not be saved.', recoverable: true });
+    return new PrepareError('Your design could not be saved. Please try again.');
+  }
+
+  // ---- host command: prepare for cart (contract v1, section 5.2) --------------------------------
+
+  /**
+   * Called by the host when the shopper adds to cart. Saves the design to the personalization API and
+   * resolves with the line extension values (`{ customizationId }`) the platform attaches to the cart
+   * line. Rejects with a shopper-safe message to cancel the add. Concurrent calls share one save, and
+   * the same unchanged design reuses its customization.
+   *
+   * Inline, the design is whatever the editor shows now. In the storefront it is the design the shopper
+   * saved in the modal (which the modal's Save may already have persisted); a product the shopper has not
+   * personalized is refused rather than added as the plain product.
+   */
+  prepareForCart(): Promise<LineExtensionValues> {
+    if (this.destroyed) return Promise.reject(new Error('The personalization is no longer available.'));
+    if (!this.productMode()) {
+      return Promise.reject(new Error('Personalization is not set up for this page.'));
+    }
+    const resolution = this.resolution();
+    if (resolution.kind === 'unmapped') return Promise.resolve({}); // nothing to attach
+    if (resolution.kind !== 'mapped') {
+      return Promise.reject(new Error('Personalization is still loading. Please wait a moment.'));
+    }
+    if (this.hostDisabled()) {
+      return Promise.reject(new Error('Personalization is unavailable right now.'));
+    }
+    this.preparing ??= this.runPrepare().finally(() => (this.preparing = null));
+    return this.preparing;
+  }
+
+  private async runPrepare(): Promise<LineExtensionValues> {
+    try {
+      // A shopper editing mid-save would otherwise get a customization of a design they have left.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const editor = this.editor();
+        let design: DesignToPersist;
+        if (editor) {
+          if (editor.status() !== 'ready') throw new PrepareError('Personalization is still loading. Please wait a moment.');
+          const gate = editor.gate();
+          if (!gate.allowed) throw new PrepareError(gate.reason ?? 'Please complete the personalization before adding to cart.');
+          design = { ...(await editor.exportCurrent()), source: 'cart' };
+        } else if (this.effectiveMode() === 'storefront') {
+          const saved = this.saved();
+          if (!saved) throw new PrepareError('Personalize this product before adding it to your cart.');
+          design = { payload: saved.payload, valuesKey: saved.valuesKey, templateId: saved.templateId, templateVersion: saved.templateVersion, source: 'cart' };
+        } else {
+          throw new PrepareError('Personalization is still loading. Please wait a moment.');
+        }
+        const persisted = await this.saver.save(design);
+        if (editor && this.editor() === editor && editor.currentKey() !== design.valuesKey) continue; // the design changed while saving: save the new one
+        return { customizationId: persisted.customizationId };
+      }
+      throw new PrepareError('Your design changed while it was being saved. Please try again.');
+    } catch (error) {
+      throw this.shopperError(error);
+    }
+  }
+
+  // ---- teardown ---------------------------------------------------------------------------------
+
   private teardown(): void {
     this.destroyed = true;
-    this.abort?.abort();
     this.resolveAbort?.abort();
-    this.prepareAbort?.abort();
-    this.cancelPendingChange();
-    this.save.cancel();
-    this.state.dispose();
+    this.saver.dispose();
+    this.destroyEditor(); // the dialog leaves the top layer with its element
   }
 }

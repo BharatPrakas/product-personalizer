@@ -12,9 +12,12 @@ Base URL: `https://<worker-host>/api/v1` (staging and production hosts differ).
 ```
  shopper (product page)                      ZenBasket                               Worker
  ──────────────────────                      ─────────                               ──────
- <zb-product-customizer> renders ─── GET products/{id}/config ───────────────────▶   published template (if mapped)
- emits zb:event: ready / rendered / gate
- Add to cart ─▶ bridge calls element.prepareForCart()
+ <zb-product-customizer> mounts ─── GET products/{id}/config ───────────────────▶   published template (if mapped)
+ emits zb:event: ready / rendered / gate        no template → no button (the bridge collapses the slot)
+ shopper clicks the element's trigger button ─▶ editor opens in a modal (lazy chunk, no second request)
+ Save customization ─▶ element ── POST uploads / POST customizations ──────────▶   status: saved   → { customizationId }
+                       emits zb:event personalization.saved, closes the modal, gate opens
+ Add to cart ─▶ bridge calls element.prepareForCart()   (reuses the saved design: no second customization)
                  element ── POST uploads (photo, print-ready artwork, previews) ──▶   private storage
                  element ── POST customizations ────────────────────────────────▶   status: saved   → { customizationId }
  bridge puts { personalization / customizationId } on the CART LINE ─▶ cart ─▶ order line
@@ -32,6 +35,22 @@ nobody orders (and nobody edits) for 30 days becomes `expired` and its files are
    (`product-id`, `variant-id`, `store-id`, `api-base-url`, `instance-id`, `placement`, `hide-save`), and run
    the **bridge** (reference: `integration-demo/extension-bridge.js`). The bridge is generic — it contains no
    personalization knowledge.
+   - **The element owns the button.** Do not render a personalization button of your own: mount the element
+     whenever the plugin is installed and its placement is enabled. It asks the Worker whether *this* product has a
+     published template and shows its trigger button only if it does (otherwise it reports `ready { available: false }`
+     and the bridge collapses the slot). Keep `hide-save`, so the element saves to the Worker itself.
+   - **Builder button style.** Assign the Builder's button object to the `triggerStyle` property (or JSON in the
+     `trigger-style` attribute): `buttonText`, `buttonColor`, `buttonTextColor`, `buttonFont`, `buttonTextSize`,
+     `buttonTextFontStyle`, `buttonRadius`, `buttonPadding`, `width`, `buttonAlignment`, `buttonBorder*`, `buttonHover*`
+     (the names of the Builder's `ButtonPropertiesModel`; see the root README, "Trigger button style"). Re-assign it when
+     the merchant changes the style; the button restyles in place, with no request. The element validates every value;
+     the modal keeps the personalizer's own design and is not styled by it.
+   - **Re-assign `variant-id` / `collection-ids`** when the shopper changes variant: the element re-asks the Worker and
+     hides its button until it knows the answer.
+   - **Add to cart is gated until the shopper has saved a design** (`gate { allowed: false, reason }`; show the reason).
+     `prepareForCart()` then reuses the saved customization, and rejects with a shopper-safe message if nothing was saved.
+   - Serve every file of `dist/product-personalization/` next to `storefront.js`: the editor is a lazy chunk
+     (`chunk-*.js`) fetched on the first click from the same base URL, so the page's CSP `script-src` must allow it too.
 2. **Store line extensions on the cart line and copy them to the order line** (contract §6). The bridge
    hands the platform `[{ extensionId: "personalization", key: "customizationId", value: "<uuid>" }]`.
    Requirements the platform must implement:

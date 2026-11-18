@@ -38,7 +38,8 @@ const mapped = (version = 1, scope: 'product' | 'variant' | 'collection' = 'prod
   };
 };
 
-const props = () => ({ productId: 'prod-1', apiBaseUrl: env.origin, storeId: 'store-1' });
+// Inline editor in product mode (`mode: 'preview'`), the embedding that predates the trigger button.
+const props = () => ({ productId: 'prod-1', apiBaseUrl: env.origin, storeId: 'store-1', mode: 'preview' });
 
 describe('resolve by product', () => {
   it('loads the template mapped to the product from the public endpoint, without credentials', async () => {
@@ -81,6 +82,7 @@ describe('resolve by product', () => {
           'store-id': 'store-9',
           'variant-id': 'v-3',
           'collection-ids': 'x, y',
+          mode: 'preview',
         },
       },
     );

@@ -13,7 +13,8 @@
  *  - ../element/product-customizer.js  thin compatibility shim for the former output location
  *
  * Budgets (the Angular builder only sees the tiny shared façade as "initial", so they are
- * enforced here on the real per-entry graph):
+ * enforced here on the real per-entry graph). The storefront graph is the shell (eligibility, trigger, modal);
+ * the personalization editor is a lazy chunk fetched by the first click on the trigger, so it is not in it:
  *   storefront  warning 440 kB, error 700 kB   (raw bytes; the warning was 400 kB until the extension contract
  *                                              (zb:event, prepareForCart, saving to the API) added ~9 kB, and
  *                                              420 kB until the storefront redesign added ~15 kB of styles,
@@ -156,8 +157,14 @@ function initialGraph(entry) {
   return [...seen].sort();
 }
 
-// The storefront must never ship editor / admin code (it is downloaded by every shopper).
-const FORBIDDEN_IN_STOREFRONT = ['zb-personalization-admin', 'config-published', 'mapping-changed'];
+// The storefront must never ship editor / admin code (it is downloaded by every shopper). The personalization
+// editor itself is a lazy chunk opened by the trigger button; 'Waiting for configuration' is text only it renders.
+const FORBIDDEN_IN_STOREFRONT = [
+  'zb-personalization-admin',
+  'config-published',
+  'mapping-changed',
+  'Waiting for configuration',
+];
 
 const sizeOf = (file) => statSync(join(out, file)).size;
 const entries = {};

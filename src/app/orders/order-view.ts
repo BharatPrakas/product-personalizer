@@ -1,6 +1,6 @@
 /**
- * Pure mapping from what the storefront saved (`customizations.data`, see `prepareForCart` in
- * product-customizer.component.ts) plus the pinned template version to what the Orders detail page
+ * Pure mapping from what the storefront saved (`customizations.data`, built by
+ * `customizer/services/design-persister.service.ts` for the modal's Save and for `prepareForCart`) plus the pinned template version to what the Orders detail page
  * shows. Everything is defensive: `data` is shopper-submitted JSON, the template version may no
  * longer be readable, and files may be gone. Unknown labels fall back to the raw ids.
  */

@@ -258,6 +258,21 @@ describe('read-only', () => {
     );
     await adminHost.waitView(page, 'a', 'preview');
     expect(await insideCount(page, 'a', '.editor')).toBe(0);
+    // The preview is the personalization editor itself, inline, with no storefront trigger button in front of it.
+    await page.waitForFunction(
+      () => !!document.getElementById('a')!.shadowRoot!.querySelector('app-customer-preview app-product-customizer')?.shadowRoot?.querySelector('.zbc form'),
+      { timeout: 20000 },
+    );
+    expect(
+      await page.evaluate(() => {
+        const el = document.getElementById('a')!.shadowRoot!.querySelector('app-customer-preview app-product-customizer') as HTMLElement;
+        return {
+          mode: el.getAttribute('data-mode'),
+          triggers: el.shadowRoot!.querySelectorAll('button.trigger').length,
+          dialogs: el.shadowRoot!.querySelectorAll('dialog').length,
+        };
+      }),
+    ).toEqual({ mode: 'preview', triggers: 0, dialogs: 0 });
     await page.close();
   });
 });

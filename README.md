@@ -239,6 +239,8 @@ disconnect; a detached instance cannot be re-attached). Restore a draft by setti
 | `disabled` | `disabled` | Disables all inputs and Save. Absent/`"false"` is false; empty/`"true"`/any other string is true |
 | `saveResult` | none | `{requestId, status: 'success' \| 'error', message?}`: the host's acknowledgement |
 | `allowedAssetOrigins` | none | *Extension.* Origin allow-list (`['https://cdn.example']`). Empty means any http(s) origin; the page's own origin is always allowed |
+| `mode` | `mode` | `storefront` (a trigger button, shown only for a personalizable product, opens the editor in a modal) or `preview` (the editor inline, no trigger). Absent: `storefront` when the template is resolved from `product-id`, `preview` when `config` / `config-url` is supplied. See [Storefront mode](#storefront-mode-a-button-only-where-it-applies) |
+| `triggerStyle` | `trigger-style` (JSON) | The trigger button's appearance, in the ZenBasket Builder's button model. See [Trigger button style](#trigger-button-style-zenbasket-builder) |
 | `productId` | `product-id` | *Resolve by product.* The host's id of the product on this page |
 | `variantId` | `variant-id` | The host's currently selected variant; a variant mapping wins over a product mapping |
 | `collectionIds` | `collection-ids` | Collections of the product (`string[]` property, or comma separated attribute) |
@@ -248,6 +250,86 @@ disconnect; a detached instance cannot be re-attached). Restore a draft by setti
 Setting `config`/`configUrl`/`baseUrl`/`initialCustomization`/`assetMap` (re)starts a load: the previous draft is
 discarded, in-flight loads are aborted and late responses are ignored. Use the `dirty` flag from
 `customizer-change` to confirm with the shopper **before** swapping the configuration.
+
+### Storefront mode: a button, only where it applies
+
+On a product page the element no longer unfolds the whole editor into the page. It is a **lightweight shell**:
+
+1. It mounts without rendering any editor and asks the personalization API (the existing public read described in
+   the next section) whether the product has a published template. Nothing is shown while it waits, and nothing
+   blocks the page.
+2. **No published template** (nothing mapped, draft-only, archived, unknown store): no button at all, only the
+   `fallback` slot, `data-status="not-personalizable"`, `ready { available: false }`.
+3. **A published template**: a **trigger button** (default label *Personalize*). The editor is **not** downloaded or
+   created yet.
+4. A click opens the existing editor in an accessible **modal** (a native `<dialog>` in the browser's top layer: no
+   page container clips it or stacks above it, the page behind is inert, Tab stays inside, Escape closes, focus
+   returns to the button). The editor's code is a separate chunk that is fetched by that first click; the template
+   already in hand is reused, so there is no second API call.
+5. **Save customization** in the modal validates, saves and closes it. The button becomes *Edit personalization* and
+   the design is restored when the modal is reopened. Closing with unsaved changes asks first (*Keep editing* /
+   *Discard changes*); closing is refused while a save is in progress.
+
+The element never touches the cart: the host still adds to cart, calling `prepareForCart()` (below).
+
+**Who saves.** The distinction the element always had is kept:
+
+| | Attribute | Save in the modal | Host hears |
+|---|---|---|---|
+| Element-managed (the platform extension flow) | `hide-save` | the element saves the design to the personalization API itself and closes on success | `zb:event` `personalization.saved { customizationId, templateId, templateVersion, productId, variantId?, expiresAt?, source: 'save' }` |
+| Host-acknowledged | none | emits `customizer-save` and waits for `saveResult`; closes on `success` | `customizer-save` (unchanged), then your `saveResult` |
+
+In the modal the Save button is always shown; `hide-save` only chooses who persists. A failed save keeps the modal open,
+shows why, and Save retries (the same retry, 30 s timeout and idempotency as before). `prepareForCart()` reuses a
+saved, unchanged design instead of saving it again; a product the shopper has not personalized is refused (and
+`gate` stays `allowed: false` with a reason) rather than added as the plain product. Saving never adds to the cart.
+
+**Reacting to the product.** Changing `product-id`, `variant-id`, `collection-ids`, `store-id` or `api-base-url`
+re-asks the API, **hides the button at once** (eligibility is unknown), ignores stale answers and aborts superseded
+requests. A saved design is kept only while the product and the resolved template (id *and* version) are the same; an
+open modal whose template changed is closed. Changing `trigger-style` never causes a request or touches the editor.
+
+**Not in the modal flow, and unchanged:** `mode="preview"` (and any host-supplied `config` / `config-url`) render the
+editor inline exactly as before. The admin app's live preview uses it explicitly (`<app-product-customizer mode="preview">`),
+so the trigger never appears there.
+
+> **Behaviour change for hosts that embedded the inline editor by `product-id`:** that is now the trigger + modal.
+> Add `mode="preview"` to keep the inline editor.
+
+### Trigger button style (ZenBasket Builder)
+
+```js
+element.triggerStyle = {            // or attribute trigger-style='{"buttonColor":"#0a5c36", ...}'
+  buttonText: 'Personalize this product',
+  buttonColor: '#0a5c36',           // background
+  buttonTextColor: '#ffffff',
+  buttonFont: 'Georgia, serif',
+  buttonTextSize: 18,               // px
+  buttonTextFontStyle: ['B'],       // 'B' bold, 'I' italic, 'U' underline
+  buttonRadius: 24,                 // px, optional borderRadiusPositions: ['TL','TR','BR','BL']
+  buttonPadding: 12,                // px (vertical); buttonPaddingInline defaults to twice that
+  width: 320,                       // px, or 'full'
+  buttonAlignment: 'center',        // 'start' | 'center' | 'end' (also 'left' / 'right')
+  buttonBorderColor: '#112233', buttonBorderThickness: 2, buttonBorderPositions: ['T','B'], borderStyle: 'solid',
+  buttonHoverColor: '#083d24', buttonHoverTextColor: '#fff', buttonBorderHoverColor: '#000', // unless isButtonHoverEffect === false
+  buttonDisabledColor: '#ccc', buttonDisabledTextColor: '#666', buttonDisabledBorderColor: '#999',
+};
+```
+
+The names and units are those of the Builder's own button model (`ButtonPropertiesModel` in the store admin's
+theme editor), so a Builder button object can be passed as it is; unknown keys are ignored. `buttonDisabled*` is an
+addition (the Builder has no disabled state yet).
+
+* **Validated, never injected.** Each field is checked against a narrow grammar (colour, bounded number, keyword,
+  font name) and anything else is dropped so the default applies. The result is a set of CSS custom properties
+  written one by one through the CSSOM, never CSS text: a value cannot add a rule, `url()`, `var()` or a second
+  declaration, and a strict `style-src` CSP is unaffected. The label is plain text.
+* **Readable by construction.** A text colour below 4.5:1 on the chosen background is replaced by black or white
+  (hover pair included). The focus ring is a dark ring with a light halo, visible on any background the merchant picks.
+* **Update in place.** Assign a new object any time (`element.triggerStyle = ...`): the button is restyled, no request
+  is made and nothing is reloaded. Missing values fall back to the defaults / `--customizer-primary`, `--customizer-radius`.
+* Only the trigger follows the Builder. The modal keeps the Personalizer's own design (`--customizer-*` theming, `theme`).
+* `::part(trigger)` exposes the button to host CSS as well.
 
 ### Resolve by product (no `config` / `config-url` needed)
 
@@ -277,9 +359,11 @@ the API is not asked.
 * Nothing mapped: the element renders only the `fallback` slot (host-provided light-DOM content), sets
   `data-status="not-personalizable"` and emits `customizer-ready` with `{ personalizable: false, templateId: '',
   templateVersion: 0, productId }` so the theme can hide the whole section.
-* Changing `variant-id` / `collection-ids` / `product-id` re-resolves. The same template id and version keeps the
-  loaded design (and the shopper's input); a new published version or a different template replaces it.
-* A failing service shows a recoverable error with **Try again** (`customizer-error` code `config-load-failed`).
+* Changing `variant-id` / `collection-ids` / `product-id` re-resolves. In `storefront` mode the button is hidden until
+  the new answer is in; inline (`preview`) the same template id and version keeps the loaded design (and the shopper's
+  input) and a new published version or a different template replaces it.
+* A failing service shows no button, a short *temporarily unavailable* line with **Try again** (inline: the
+  recoverable error panel), and `customizer-error` code `config-load-failed`; Add to cart stays gated.
 * The URL policy still applies to the answer: asset URLs outside the page origin / `allowedAssetOrigins` are
   rejected (the API origin is added automatically when you set a restrictive list).
 * The response is cacheable (`ETag`, `Cache-Control: s-maxage`, `stale-while-revalidate`), so repeat views are cheap.
@@ -290,7 +374,7 @@ Plain `CustomEvent`s dispatched on the element. The `customizer-*` events below 
 
 | Event | `event.detail` |
 |---|---|
-| `customizer-ready` | `{productId, templateId, templateVersion}` (+ `schemaVersion: 2` for v2 configurations, + `personalizable` when resolved by product; `templateId`/`templateVersion` carry the configuration id/version), once per successful load, after fonts and images are ready |
+| `customizer-ready` | `{productId, templateId, templateVersion}` (+ `schemaVersion: 2` for v2 configurations, + `personalizable` when resolved by product; `templateId`/`templateVersion` carry the configuration id/version). Inline: once per successful load, after fonts and images are ready. `storefront` mode: once the product is known to be (not) personalizable, before the editor exists; opening the modal does not repeat it |
 | `customizer-change` | `{draft, valid, dirty, errors}`; text edits debounced by 150 ms, other edits immediate; contains no image bytes |
 | `customizer-save` | `{requestId, customization, previewBlob, artworkBlob, assets, artworks, previews}`; `artworks` has one production PNG per active printable area (`artworkBlob` is the first), `previews` one composite per active mockup (`previewBlob` is the first) |
 | `customizer-error` | `{code, message, fieldId?, recoverable}`; sanitised (never contains shopper text or photo content) |
@@ -309,8 +393,8 @@ page: `integration-demo/extension-bridge.js`, `integration-demo/storefront-cart.
 | Surface | What |
 |---|---|
 | attributes / properties | `instance-id` (generated if absent), `placement` (host label), `hide-save` (hide the element's own Save button: the host's Add to cart is the primary action) |
-| event `zb:event` | `bubbles` + `composed`. `detail = { contract: 1, extensionId, instanceId, slot, type, data, ts }` with standard types `ready {available}`, `rendered`, `gate {allowed, reason?}`, `error {code, recoverable}` (no message) and the custom `personalization.saved {customizationId, templateId, templateVersion}` |
-| method `prepareForCart()` | Call on Add to cart, **after** `await customElements.whenDefined('zb-product-customizer')`. Saves the design (photo, print-ready artwork per area, previews, then the customization) and resolves `{ customizationId }`, or `{}` for a product with no personalization; rejects with a shopper-safe `Error` to cancel the add. Concurrent calls share one save; an unchanged design reuses its customization |
+| event `zb:event` | `bubbles` + `composed`. `detail = { contract: 1, extensionId, instanceId, slot, type, data, ts }` with standard types `ready {available}`, `rendered`, `gate {allowed, reason?}`, `error {code, recoverable}` (no message) and the custom `personalization.saved {customizationId, templateId, templateVersion, productId, variantId?, expiresAt?, source: 'save' \| 'cart'}` (identifiers and metadata only; the last four fields were added after the first release). In `storefront` mode `ready` arrives when the trigger is known to apply, `rendered` once the button is on screen, and `gate` is `allowed: false` until the shopper has saved a design |
+| method `prepareForCart()` | Call on Add to cart, **after** `await customElements.whenDefined('zb-product-customizer')`. Saves the design (photo, print-ready artwork per area, previews, then the customization) and resolves `{ customizationId }`, or `{}` for a product with no personalization; rejects with a shopper-safe `Error` to cancel the add. Concurrent calls share one save; an unchanged design reuses its customization (including the one the modal's Save already stored). In `storefront` mode it uses the design the shopper saved in the modal and refuses a product they have not personalized |
 | host event `zb:host-event` | Dispatch `{ type: 'cart.line-added' }` on the element after the line is created, so the next add saves a fresh customization |
 
 Put only the returned `customizationId` on the cart line (as a line extension, namespace `personalization`). The
@@ -326,7 +410,8 @@ Set on the element or any ancestor: `--customizer-primary` (default `#296FD7`), 
 asks of form controls). The widget draws its own white surface so contrast holds on any host background.
 
 For debugging the host element mirrors its state in `data-status` (`awaiting-config`, `loading`, `ready`,
-`invalid-config`, `asset-error`, `not-personalizable`) and `data-save-state`. These are diagnostic, not part of the contract.
+`invalid-config`, `asset-error`, `not-personalizable`), `data-save-state`, `data-mode` (`storefront` | `preview`) and
+`data-modal` (`open`). In `storefront` mode `ready` means the trigger is showing. These are diagnostic, not part of the contract.
 
 ## Using the admin element
 
@@ -635,6 +720,34 @@ mutation-checked: removing their fix makes them fail.
 
 ## Verification (what was actually run)
 
+Storefront trigger + modal (2026-11-18; the editor split out of the element into a lazy chunk). Baseline before the change on the
+same machine: 419 unit tests, 157 browser tests passed / 12 failed (the mock harness did not answer the presigned-upload routes,
+see below) / 2 skipped.
+
+| Check | Result |
+|---|---|
+| `npm run test:ci` (38 spec files; new: `trigger-style`, `design-persister`, `design-saver`) | 448 passed (was 419) |
+| `npm run build:element` then the whole browser suite (headless Chrome, production bundles) | 231 passed, 2 skipped (the env-gated cloud end-to-end), 0 failed. New: `storefront-trigger` (27 tests), `storefront-modal` (34) and a read-only admin check that the live preview is the inline editor with no trigger. The 12 earlier failures are fixed: the mock now answers the presign routes with the Worker's own `direct_upload_not_configured`, so the element takes its proxied-upload fallback (the direct PUT path itself is covered by `direct-upload.spec.ts` and the cloud e2e, not by these browser tests) |
+| `npm run test:types` (new `mode`, `triggerStyle`, `ZbTriggerStyle`, `PersonalizationSavedData` with `@ts-expect-error` guards) | passes |
+| `npm run build` (standalone app) | succeeds, no budget warnings |
+| Storefront initial download (`MANIFEST.json`) | 429.4 kB -> 278.6 kB (the editor, about 63 kB raw / 17 kB gzip plus what only it needs, is a lazy chunk); budgets unchanged (warning 440 kB, error 700 kB) |
+
+What the new browser specs cover: no button for an unmapped product, with a pending answer, and after a failure (with
+Try again); the button for a mapped one; stale answers and rapid variant changes; no editor chunk requested and no second API
+call before / on the click; Builder style (property, JSON attribute, in-place update with no request, hover, disabled,
+focus ring, hostile values, contrast correction, no `<style>` added to the page, hostile host CSS, strict CSP); `preview`
+mode and mode switching; two instances; the modal (native top layer, accessible name, focus in and back, Escape, backdrop,
+discard question, refusal to close while saving); both save flows (element-managed and host-acknowledged: success, failure
+with retry, stale acknowledgement, 30 s retry with the same request id); reopening a saved design; `prepareForCart()` reuse
+and concurrency; product / variant / template changes while the modal is open; the 360 px and desktop layouts; stacking
+above a clipping, `contain: paint`, max-z-index host; scroll containment; Tab never reaching the page; a failed editor
+download and its recovery; axe-core (WCAG 2.2 AA + best practice) on the trigger, unavailable state, open modal and discard
+question at 1280 px and 360 px.
+
+**Not verified here:** Safari, Firefox, iOS (native `<dialog>`, `inert`, `dvh` and overscroll behaviour were exercised in Chrome
+only), a low-end mobile profile, and the real ZenBasket storefront (the host-side changes above are the platform team's).
+`archived` / draft-only templates are resolved by the Worker and covered by its tests, not re-tested in the browser.
+
 Two-element release (admin element, product mapping, markups, resolve-by-product, backend routes):
 
 | Check | Result |
@@ -693,6 +806,11 @@ canvas. **A low-end mobile device profile was not measured**, so the brief's mob
 
 ### Known limitations
 
+- **Storefront trigger and modal:** the eligibility answer includes the whole published configuration (the sample templates are
+  11–16 kB raw, about 2 kB gzip, and the answer is HTTP-cacheable with an ETag), which the editor reuses when opened; a
+  lightweight eligibility-only mode would only matter for very large templates that shoppers rarely open, and is not
+  built. Add to cart stays gated until the shopper has saved a design (there is no "optional personalization" mode). The
+  modal's own strings are English, like the rest of the storefront element. `triggerStyle` styles the button only.
 - **Admin language coverage:** the admin chrome, list, editor, inspectors and dialogs are externalised (English,
   French, Arabic; about 500 keys). Still English: validator / server issue texts (shared with the server), names stored
   as template *content* ("Front view", "Print area 1" ...), the shopper-facing storefront strings, and `admin-error`

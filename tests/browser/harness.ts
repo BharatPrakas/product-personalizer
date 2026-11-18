@@ -109,6 +109,18 @@ function createMockApi(): { api: MockApi; handler: Handler } {
       res.end(JSON.stringify(answer.body ?? { data: [] }));
       return true;
     }
+    // Presigned direct uploads are not simulated here: the Worker's own answer for "not switched on" makes the
+    // element fall back to the proxied `/uploads` route below. (The direct protocol has its own unit tests.)
+    if (/^\/api\/v1\/storefront\/personalization\/uploads\/(url|complete)$/.test(url.pathname)) {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': '*' });
+        res.end();
+        return true;
+      }
+      res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: { code: 'direct_upload_not_configured' } }));
+      return true;
+    }
     const shopper = SHOPPER.exec(url.pathname);
     if (shopper) {
       const endpoint = shopper[1] as 'uploads' | 'customizations';

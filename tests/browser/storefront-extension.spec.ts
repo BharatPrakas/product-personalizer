@@ -39,7 +39,9 @@ const mapped = () => {
   return { body: { data: { personalizable: true, configId: config.id, version: config.version, scope: 'product', config } } };
 };
 
-const props = () => ({ productId: 'prod-1', apiBaseUrl: env.origin, storeId: 'store-1' });
+// The inline editor in product mode (`mode: 'preview'`): the embedding that predates the trigger button. The
+// trigger + modal flow is covered by storefront-trigger.spec.ts and storefront-modal.spec.ts.
+const props = () => ({ productId: 'prod-1', apiBaseUrl: env.origin, storeId: 'store-1', mode: 'preview' });
 
 /** Gives the shopper a valid design (a photo is the only required field left). */
 async function makeValid(page: import('puppeteer-core').Page, id: string): Promise<void> {
@@ -210,7 +212,17 @@ describe('prepareForCart()', () => {
 
     const saved = (await host.zbEvents(page)).filter((e) => e.type === 'personalization.saved');
     expect(saved).toHaveLength(1);
-    expect(saved[0].data).toEqual({ customizationId: 'cz-1', templateId: 'tshirt-personalization', templateVersion: 1 });
+    // The three original fields are unchanged; productId, variantId, expiresAt and source were added (additively).
+    expect(saved[0].data).toEqual({
+      customizationId: 'cz-1',
+      templateId: 'tshirt-personalization',
+      templateVersion: 1,
+      productId: 'prod-1',
+      variantId: 'white',
+      expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+      source: 'cart',
+    });
+    expect(JSON.stringify(saved[0].data)).not.toMatch(/atok|utok|token/i); // identifiers and metadata only
     await page.close();
   });
 

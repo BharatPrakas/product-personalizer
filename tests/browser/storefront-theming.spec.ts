@@ -110,7 +110,7 @@ describe('storefront theming hooks', () => {
       body: { data: { personalizable: false } },
     });
     const { page } = await openHost(env);
-    await host.mount(page, 'a', { productId: 'slow', apiBaseUrl: env.origin, storeId: 's' });
+    await host.mount(page, 'a', { productId: 'slow', apiBaseUrl: env.origin, storeId: 's', mode: 'preview' });
     await host.waitStatus(page, 'a', 'loading');
     expect(await insideCount(page, 'a', '.skeleton')).toBe(1);
     expect(await style(page, 'a', '.skeleton', 'display')).toBe('grid');

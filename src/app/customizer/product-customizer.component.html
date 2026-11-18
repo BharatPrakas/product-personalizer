@@ -1,167 +1,143 @@
-@if (state.status() === 'not-personalizable') {
-  <slot name="fallback"></slot>
-} @else {
-<section class="zbc" aria-label="Product customizer">
-  @switch (state.status()) {
-    @case ('awaiting-config') {
-      <p class="notice" role="status">Waiting for configuration…</p>
-    }
-    @case ('loading') {
-      <p class="notice" role="status">
-        <span class="spinner" aria-hidden="true"></span> Loading customizer…
+<ng-template #loadingPanel>
+  <section class="zbc" aria-label="Product customizer">
+    <p class="notice" role="status">
+      <span class="spinner" aria-hidden="true"></span> Loading customizer…
+    </p>
+    <!-- Placeholder with the final layout, so the first paint is already the right shape. -->
+    <div class="skeleton" aria-hidden="true">
+      <div class="skeleton-preview"></div>
+      <div class="skeleton-lines"><span></span><span></span><span></span><span></span></div>
+    </div>
+  </section>
+</ng-template>
+
+<ng-template #failedPanel let-kind="kind">
+  <section class="zbc" aria-label="Product customizer">
+    <div class="panel" role="alert">
+      @if (kind === 'resolve') {
+        <h2 class="panel-title">This product can&#39;t be customized right now</h2>
+        <p>{{ resolveFailureMessage() }}</p>
+      } @else {
+        <h2 class="panel-title">The personalizer could not be loaded</h2>
+        <p>Check your connection and try again.</p>
+      }
+      <button type="button" class="btn" (click)="retry(kind)">Try again</button>
+    </div>
+  </section>
+</ng-template>
+
+@switch (view()) {
+  @case ('fallback') {
+    <slot name="fallback"></slot>
+  }
+
+  @case ('unavailable') {
+    <!-- The API could not be asked: no button that might promise too much, and a way to ask again. -->
+    <div class="trigger-wrap" [attr.data-align]="appearance().align">
+      <p class="unavailable" role="status">
+        Personalization is temporarily unavailable.
+        <button type="button" class="link-btn" (click)="retryResolve()">Try again</button>
       </p>
-      <!-- Placeholder with the final layout, so the first paint is already the right shape. -->
-      <div class="skeleton" aria-hidden="true">
-        <div class="skeleton-preview"></div>
-        <div class="skeleton-lines"><span></span><span></span><span></span><span></span></div>
-      </div>
-    }
-    @case ('invalid-config') {
-      <div class="panel" role="alert">
-        <h2 class="panel-title">This product can't be customized right now</h2>
-        <p>{{ failure()?.message }}</p>
-        @if (canRetry()) {
-          <button type="button" class="btn" (click)="retryResolve()">Try again</button>
-        }
-        @if (failure()?.issues?.length) {
-          <ul class="issues">
-            @for (issue of failure()!.issues.slice(0, 8); track $index) {
-              <li>
-                <span class="issue-path">{{ issue.path || 'config' }}</span> {{ issue.message }}
-              </li>
-            }
-          </ul>
-        }
-      </div>
-    }
-    @case ('asset-error') {
-      <div class="panel" role="alert">
-        <h2 class="panel-title">A required image or font is missing</h2>
-        <p>{{ failure()?.message }}</p>
-      </div>
-    }
-    @case ('ready') {
-      @if (state.config(); as config) {
-        <div class="layout">
-          <div class="preview-col">
-            @if (state.composite(); as composite) {
-              <app-preview [composite]="composite" [label]="previewLabel()" />
-            }
-            @if (state.composites().length > 1) {
-              <app-view-picker
-                [views]="state.composites()"
-                [selected]="state.mockup()?.id ?? null"
-                (picked)="state.setMockup($event)"
-              />
-            }
+    </div>
+  }
+
+  @case ('trigger') {
+    <div class="trigger-wrap" [attr.data-align]="appearance().align">
+      <button
+        #trigger
+        type="button"
+        class="trigger"
+        part="trigger"
+        aria-haspopup="dialog"
+        [attr.aria-expanded]="modalOpen()"
+        [disabled]="hostDisabled()"
+        [style]="appearance().vars"
+        (click)="open()"
+      >
+        {{ triggerLabel() }}
+      </button>
+      @if (saved()) {
+        <p class="saved-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+          Your personalization is saved
+        </p>
+      }
+      <!-- While the dialog is open the rest of the page is inert, so what happens then is announced from inside it. -->
+      <p class="sr-only" role="status" aria-live="polite">{{ modalOpen() ? '' : announcement() }}</p>
+    </div>
+
+    <dialog
+      #dialog
+      class="modal"
+      [attr.aria-labelledby]="titleId"
+      (cancel)="onCancel($event)"
+      (close)="onNativeClose()"
+      (pointerdown)="onBackdropDown($event)"
+      (click)="onBackdropClick($event)"
+    >
+      @if (modalOpen()) {
+        <div class="modal-panel">
+          <div class="modal-main" [attr.inert]="confirmingDiscard() ? '' : null">
+            <header class="modal-header">
+              <h2 class="modal-title" [id]="titleId">Personalize your product</h2>
+              <button #closeButton type="button" class="modal-close" aria-label="Close" (click)="requestClose()">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </header>
+            <div class="modal-body">
+              @if (!editor()) {
+                @if (editorLoad() === 'failed') {
+                  <ng-container *ngTemplateOutlet="failedPanel; context: { kind: 'editor' }" />
+                } @else {
+                  <ng-container *ngTemplateOutlet="loadingPanel" />
+                }
+              }
+              <ng-container #editorAnchor />
+            </div>
           </div>
 
-          <form
-            class="controls-col"
-            novalidate
-            aria-label="Personalization options"
-            (submit)="$event.preventDefault()"
-          >
-            <header class="panel-header">
-              <h2 class="product-name">{{ config.product.name }}</h2>
-            </header>
-
-            @for (notice of restoreNotices(); track notice) {
-              <p class="notice notice-warn" role="status">
-                <span class="warning-mark" aria-hidden="true">i</span> {{ notice }}
+          @if (confirmingDiscard()) {
+            <div
+              class="discard"
+              role="alertdialog"
+              aria-modal="true"
+              [attr.aria-labelledby]="confirmId + '-title'"
+              [attr.aria-describedby]="confirmId + '-text'"
+            >
+              <h2 class="discard-title" [id]="confirmId + '-title'">Discard your changes?</h2>
+              <p [id]="confirmId + '-text'">
+                You have changes that are not saved. If you close now, they will be lost.
               </p>
-            }
-
-            @if (config.variants.length > 1) {
-              <app-choice-group
-                legend="Options"
-                name="variant"
-                [choices]="variantChoices()"
-                [selected]="state.variantId()"
-                [disabled]="editingLocked()"
-                (picked)="state.setVariant($event)"
-              />
-            }
-
-            @for (group of state.groups(); track group.areaId) {
-              <section class="area-group" [attr.aria-label]="group.areaName">
-                @if (state.groups().length > 1) {
-                  <h3 class="group-title">{{ group.areaName }}</h3>
-                }
-                @if (group.options.length > 1) {
-                  <app-choice-group
-                    legend="Design"
-                    [name]="'art-' + group.areaId"
-                    [choices]="optionChoices(group.options)"
-                    [selected]="group.artwork?.id ?? null"
-                    [disabled]="editingLocked()"
-                    (picked)="state.setAreaArtwork(group.areaId, $event)"
-                  />
-                }
-                @for (entry of group.fields; track entry.field.id) {
-                  @let field = entry.field;
-                  @switch (field.type) {
-                    @case ('text') {
-                      <app-text-field
-                        [field]="asText(field)"
-                        [allFonts]="config.fonts"
-                        [value]="textValue(field)"
-                        [layerStyle]="layerStyle(entry)"
-                        [errors]="errorsFor(field.id)"
-                        [disabled]="editingLocked()"
-                        (changed)="state.setText(field.id, $event)"
-                        (blurred)="state.touch(field.id)"
-                      />
-                    }
-                    @case ('image') {
-                      <app-photo-field
-                        [field]="field"
-                        [view]="state.photoViews()[field.id] ?? null"
-                        [busy]="isBusy(field.id)"
-                        [uploadError]="uploadErrorFor(field.id)"
-                        [errors]="errorsFor(field.id)"
-                        [warnings]="warningsFor(field.id)"
-                        [disabled]="editingLocked()"
-                        (file)="state.uploadImage(field.id, $event)"
-                        (pan)="state.panImage(field.id, $event.dx, $event.dy)"
-                        (zoomTo)="state.zoomImage(field.id, $event)"
-                        (resetCrop)="state.resetCrop(field.id)"
-                        (fit)="state.setImageFit(field.id, $event)"
-                        (rotate)="state.rotateImage(field.id)"
-                        (remove)="state.removeImage(field.id)"
-                        (blurred)="state.touch(field.id)"
-                      />
-                    }
-                    @case ('artwork') {
-                      <app-artwork-field
-                        [field]="asArtwork(field)"
-                        [value]="artworkValue(field)"
-                        [errors]="errorsFor(field.id)"
-                        [disabled]="editingLocked()"
-                        (changed)="state.setArtwork(field.id, $event); state.touch(field.id)"
-                      />
-                    }
-                  }
-                }
-              </section>
-            }
-
-            <app-action-bar
-              [price]="price()"
-              [blockers]="blockers()"
-              [state]="save.state()"
-              [message]="save.message()"
-              [saveDisabled]="saveDisabled()"
-              [resetDisabled]="resetDisabled()"
-              [showSave]="!hideSave()"
-              [blockersTitle]="hideSave() ? 'Before you can add to cart:' : 'Before you can save:'"
-              (save)="onSave()"
-              (reset)="onReset()"
-            />
-          </form>
+              <div class="btn-row">
+                <button #keepEditing type="button" class="btn primary" (click)="keepEditingDesign()">
+                  Keep editing
+                </button>
+                <button type="button" class="btn danger" (click)="discardAndClose()">Discard changes</button>
+              </div>
+            </div>
+          }
         </div>
+        <p class="sr-only" role="status" aria-live="polite">{{ announcement() }}</p>
+      }
+    </dialog>
+  }
+
+  @case ('inline') {
+    @switch (inlinePanel()) {
+      @case ('loading') {
+        <ng-container *ngTemplateOutlet="loadingPanel" />
+      }
+      @case ('resolve-failed') {
+        <ng-container *ngTemplateOutlet="failedPanel; context: { kind: 'resolve' }" />
+      }
+      @case ('editor-failed') {
+        <ng-container *ngTemplateOutlet="failedPanel; context: { kind: 'editor' }" />
       }
     }
+    <ng-container #editorAnchor />
   }
-</section>
+}
+
+@if (view() !== 'trigger') {
+  <p class="sr-only" role="status" aria-live="polite">{{ announcement() }}</p>
 }

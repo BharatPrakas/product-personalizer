@@ -7,6 +7,7 @@ import type { CustomizerConfig } from './config.models';
 import type { ProductConfig } from './product.models';
 import type { AssetMapInput, Customization } from './draft.models';
 import type { LineExtensionValues, ZbEvent } from './extension-contract';
+import type { ZbRenderMode, ZbTriggerStyle } from './trigger-style';
 import type {
   CustomizerChangeDetail,
   CustomizerErrorDetail,
@@ -58,6 +59,21 @@ export interface ZbProductCustomizerElement extends HTMLElement {
   saveResult: SaveResult | null;
   /** Appearance (attribute `theme`): `light` (default), `dark`, or `auto` (follows `prefers-color-scheme`). */
   theme: 'light' | 'dark' | 'auto';
+
+  // ---- rendering mode ----------------------------------------------------------------------------
+  /**
+   * How the element renders (attribute `mode`). `storefront` shows a trigger button, only for a product that has
+   * a published template, and opens the editor in a modal; `preview` renders the editor inline with no trigger.
+   * Absent, it is `storefront` when the template is resolved from `product-id` and `preview` when `config` /
+   * `configUrl` is supplied. Hosts that embedded the inline editor by `product-id` before the trigger existed set
+   * `mode="preview"` to keep it.
+   */
+  mode: ZbRenderMode | null;
+  /**
+   * Appearance of the trigger button (attribute `trigger-style`, as JSON). Names and units are the ZenBasket
+   * Builder's button model; see `ZbTriggerStyle`. Changing it restyles the button without reloading anything.
+   */
+  triggerStyle: ZbTriggerStyle | string | null;
 
   // ---- resolve by product: used when neither `config` nor `configUrl` is set ---------------------
   /** The host's id of the product on this page (attribute `product-id`). */

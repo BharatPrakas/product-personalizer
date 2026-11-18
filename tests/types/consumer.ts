@@ -14,11 +14,14 @@ import type {
   Customization,
   LineExtensionValues,
   MappingChangedDetail,
+  PersonalizationSavedData,
   ProductMapping,
   ProductRef,
   SaveResult,
   ViewChangeDetail,
   ZbEvent,
+  ZbRenderMode,
+  ZbTriggerStyle,
   ZbStandardEventData,
   ZbPersonalizationAdminElement,
   ZbProductCustomizerElement,
@@ -136,6 +139,56 @@ resolving.addEventListener('customizer-ready', (event) => {
 resolving.productId = 42;
 // @ts-expect-error collectionIds is a list of strings
 resolving.collectionIds = 'a,b';
+
+// ---- storefront: rendering mode and the trigger button's Builder style -------------------------------
+resolving.mode = 'storefront';
+resolving.mode = 'preview';
+resolving.mode = null;
+const renderMode: ZbRenderMode = 'preview';
+void renderMode;
+// @ts-expect-error the modes are storefront | preview
+resolving.mode = 'inline';
+
+// The Builder's button model: names and px units as the Builder stores them.
+const builderButton: ZbTriggerStyle = {
+  buttonText: 'Personalize this product',
+  buttonColor: '#0a5c36',
+  buttonTextColor: '#ffffff',
+  buttonFont: 'Georgia, serif',
+  buttonTextSize: 18,
+  buttonTextFontStyle: ['B', 'U'],
+  buttonRadius: 24,
+  borderRadiusPositions: ['TL', 'BR'],
+  buttonPadding: 12,
+  width: 'full',
+  buttonAlignment: 'center',
+  buttonBorderColor: '#112233',
+  buttonBorderThickness: 2,
+  buttonBorderPositions: ['T', 'B'],
+  borderStyle: 'dashed',
+  isButtonHoverEffect: true,
+  buttonHoverColor: '#083d24',
+  buttonDisabledColor: '#cccccc',
+};
+resolving.triggerStyle = builderButton;
+resolving.triggerStyle = '{"buttonColor":"#0a5c36"}'; // the attribute form
+resolving.triggerStyle = null;
+// @ts-expect-error sizes are numbers (px), as in the Builder
+const badSize: ZbTriggerStyle = { buttonTextSize: '18px' };
+// @ts-expect-error the Builder says buttonColor, not backgroundColor
+const badName: ZbTriggerStyle = { backgroundColor: '#000' };
+void [badSize, badName];
+
+// `personalization.saved` carries identifiers and metadata only.
+resolving.addEventListener('zb:event', (event) => {
+  if (event.detail.type !== 'personalization.saved') return;
+  const saved = event.detail.data as PersonalizationSavedData;
+  const ids: [string, string, number, string] = [saved.customizationId, saved.templateId, saved.templateVersion, saved.productId];
+  const source: 'save' | 'cart' = saved.source;
+  void [ids, source, saved.variantId, saved.expiresAt];
+  // @ts-expect-error no token or file bytes are part of the event
+  void saved.accessToken;
+});
 
 // ---- store admin element ----------------------------------------------------------------------------
 const admin = document.createElement('zb-personalization-admin');

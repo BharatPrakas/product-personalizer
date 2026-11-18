@@ -123,6 +123,9 @@ interface ZbContext {
   Add to cart is then the primary action).
   Implemented by the personalization element today: `instance-id`, `store-id`, `api-base-url`, `product-id`,
   `variant-id`, `collection-ids`, `placement`, `hide-save`. `locale` and the single `context` object are not yet.
+  The personalization element also takes two optional, extension-specific inputs that are not part of the generic
+  contract: `mode` (`storefront` | `preview`) and `trigger-style` / `triggerStyle` (the Builder's button model for
+  its trigger button). A host that mounts it for a product page needs neither.
 - An element MUST work when only attributes are set and MUST react to later changes.
 - Identifiers are strings, exactly as the platform knows them (for products: the product id).
 - The platform renders a storefront slot only when the extension is installed and enabled for the store.
@@ -157,6 +160,11 @@ interface ZbEvent<T = unknown> {
 | `gate` | `{ allowed: boolean; reason?: string }` | While `allowed` is `false`, the host disables the primary action (Add to cart) and may show `reason`. Typically `false` while loading, then `true` once the extension knows (immediately for a product it has nothing to do with). |
 | `error` | `{ code: string; recoverable: boolean }` | Logged and counted per extension; never shown raw to shoppers. `data` MUST NOT contain shopper content. |
 | `auth.expired` | `{}` | Storeadmin only: host replies by assigning a fresh `authToken` (section 8). |
+
+A slot an extension fills with a button that opens its own UI (as personalization does) still follows this table:
+`ready` is sent when the extension knows whether it applies to the product (not when its UI is opened), `rendered`
+when the button is on screen, and `gate` stays `allowed: false` until the shopper has done what the extension needs
+(for personalization: saved a design).
 
 **Custom types** MUST be prefixed with the extension id (`personalization.saved`). The platform forwards
 them to analytics/logging with the extension id and otherwise ignores them. Core code MUST NOT branch on
@@ -385,8 +393,9 @@ secret is scoped to one (store, extension) pair and rotatable.
 |---|---|
 | Manifest | `id: personalization`; storeadmin slot `zb-personalization-admin`; storefront slot `zb-product-customizer`; permissions `cart.line-extensions:write`, `order.events:receive`; line key `customizationId`, `onReorder: drop`. |
 | Context | `store-id`, `product-id`, `variant-id`, `locale` arrive as attributes/properties. The element resolves the template for the product itself. |
-| Events | `ready { available }` (`false` when no template is mapped → slot collapses); `rendered`; `gate { allowed:false }` until the design is valid; custom `personalization.saved { customizationId }` for analytics only. |
-| Cart | Host calls `prepareForCart()`; the element saves the design to its backend (`POST /customizations`) and resolves `{ customizationId }`; the platform writes it as a **line extension**. If saving fails it rejects with a shopper-safe message and the add is cancelled. |
+| Events | `ready { available }` (`false` when no template is mapped → slot collapses; sent before the editor exists); `rendered` (the trigger button is on screen); `gate { allowed:false }` until the shopper has saved a valid design; custom `personalization.saved { customizationId, templateId, templateVersion, productId, variantId?, expiresAt?, source }` for analytics only (identifiers and metadata, no tokens or bytes). |
+| UI | The element renders a trigger button only for a product with a published template; the editor opens in a modal (a lazy chunk). The button's look is the merchant's Builder button style, passed as `triggerStyle`. |
+| Cart | The shopper saves the design in the modal (the element saves it to its backend: `POST /customizations`) or the host calls `prepareForCart()`, which reuses the saved design or saves it, and resolves `{ customizationId }`; the platform writes it as a **line extension**. If saving fails it rejects with a shopper-safe message and the add is cancelled. |
 | Order | On payment confirmation the platform sends `order.confirmed` with `lines[].extensions.customizationId`. The Worker verifies the signature, links each customization to its order line in one transaction (idempotent on `eventId`; a different order/line is a conflict) and replies with per-line `results`. |
 | Admin auth | Storeadmin assigns the short-lived extension token to `authToken`; the Worker verifies it. |
 | Reorder | `drop` — a customization can be ordered once. |
@@ -398,6 +407,7 @@ secret is scoped to one (store, extension) pair and rotatable.
 | Webhook signing, per-store encrypted credentials, rotation | **implemented** (Worker) |
 | Order events: contract-v1 envelope (multi-line, `extensions`, per-line `results`, stored replay) at `/integrations/personalization/events` | **implemented** (Worker) |
 | Storefront element: `zb:event` (bubbling, composed) with `ready` / `rendered` / `gate` / `error` and `personalization.saved`; `instance-id`, `placement`, `hide-save`; `prepareForCart()`; saves to the Worker itself | **implemented** (element). The original `customizer-*` events and the `customizer-save` flow are unchanged |
+| Storefront element renders its own trigger button (only for a personalizable product) and opens the editor in a modal; Builder `triggerStyle`; `mode` | **implemented** (element). `personalization.saved` gained `productId`, `variantId`, `expiresAt`, `source` (additive). The host stops rendering its own personalization button and passes the Builder style |
 | Reference host bridge + demo product page (`integration-demo/extension-bridge.js`, `storefront-cart.html`) | **implemented** — generic, manifest-driven, covered by browser tests |
 | Admin token | Worker verifies HS256 (`JWT_SIGNING_SECRET`) or a dev token. EdDSA/RS256 via JWKS **not yet** (waiting on decision 2) |
 | Install / uninstall lifecycle endpoint | **not yet**. The Worker has no install state: a store is registered by its first authenticated request and there is no enable/disable flag until this endpoint exists |

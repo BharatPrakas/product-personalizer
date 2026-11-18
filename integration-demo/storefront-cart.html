@@ -19,6 +19,12 @@
       pre { background: #101018; color: #e8e8f0; padding: 12px; border-radius: 6px; overflow: auto; font-size: 0.8rem; max-height: 320px; }
       .panel { background: #fff; border: 1px solid #e2e2ea; border-radius: 8px; padding: 16px; }
       zb-product-customizer { display: block; }
+      label { display: block; margin: 8px 0 4px; font-weight: 600; font-size: 0.9rem; }
+      textarea, select { width: 100%; box-sizing: border-box; font: inherit; font-size: 0.85rem; }
+      textarea { min-height: 150px; font-family: ui-monospace, monospace; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+      .row button { min-height: 36px; font-size: 0.9rem; }
+      #log { max-height: 220px; }
     </style>
   </head>
   <body>
@@ -31,6 +37,13 @@
           disabled while the extension says so, and on click asks the extension to prepare, then puts the
           returned values on the cart line.
         </p>
+        <p>
+          The element decides for itself whether this product can be personalized: it renders a
+          <strong>trigger button</strong> only when the product has a published template (try
+          <code>?product=plain-product</code>, which has none, and the slot stays empty). The button opens the editor
+          in a <strong>modal</strong>; <em>Save customization</em> stores the design and closes it; Add to cart then
+          reuses that design. The page only supplies the product context and the button style (right).
+        </p>
         <p id="setup"></p>
         <!-- The slot. `data-zb-slot` is only a marker for the page; the manifest decides which tag it may host. -->
         <div data-zb-slot="storefront.product.detail.block" id="slot" class="panel"></div>
@@ -40,6 +53,22 @@
       </section>
       <section>
         <div class="panel">
+          <h2>What the host controls</h2>
+          <label for="variant">Selected variant (<code>variantId</code>: re-checks the template)</label>
+          <select id="variant"><option value="">none</option><option value="white">white</option><option value="navy">navy</option></select>
+          <label for="style">Builder button style (<code>triggerStyle</code>, the Builder's button model)</label>
+          <textarea id="style" spellcheck="false"></textarea>
+          <div class="row">
+            <button id="apply-style" type="button">Apply style</button>
+            <button id="reset-style" type="button">Reset</button>
+          </div>
+          <p id="style-note" role="status"></p>
+        </div>
+        <div class="panel" style="margin-top: 16px">
+          <h2>Events the page received</h2>
+          <pre id="log" aria-live="off">—</pre>
+        </div>
+        <div class="panel" style="margin-top: 16px">
           <h2>Cart (simulated)</h2>
           <pre id="cart">[]</pre>
           <h2>What the order event would carry</h2>
@@ -128,16 +157,72 @@
         }
       });
 
-      // Load the extension bundle (a module) and mount it in the slot, configured only through attributes.
+      // The button style as the Builder stores it for a button (its `ButtonPropertiesModel` names, px numbers).
+      const DEFAULT_STYLE = {
+        buttonText: 'Personalize this product',
+        buttonColor: '#0a5c36',
+        buttonTextColor: '#ffffff',
+        buttonFont: 'Georgia, serif',
+        buttonTextSize: 18,
+        buttonTextFontStyle: ['B'],
+        buttonRadius: 24,
+        buttonPadding: 12,
+        width: 320,
+        buttonAlignment: 'start',
+        buttonHoverColor: '#083d24',
+        buttonHoverTextColor: '#ffffff',
+      };
+      const styleBox = document.getElementById('style');
+      const styleNote = document.getElementById('style-note');
+      styleBox.value = JSON.stringify(q.has('style') ? JSON.parse(q.get('style')) : DEFAULT_STYLE, null, 2);
+      const currentStyle = () => {
+        try {
+          styleNote.textContent = '';
+          return JSON.parse(styleBox.value);
+        } catch {
+          styleNote.textContent = 'That is not valid JSON; the button keeps its last style.';
+          return undefined;
+        }
+      };
+
+      // Load the extension bundle (a module) and mount it in the slot. Everything the element needs is the
+      // product context (ids), where the personalization API is, and optionally the button style.
       await import(bundle);
       const el = document.createElement('zb-product-customizer');
       el.setAttribute('product-id', product);
       el.setAttribute('store-id', store);
       el.setAttribute('api-base-url', api);
       el.setAttribute('placement', 'product-detail');
+      // The host's Add to cart is the primary action: the element saves the design to the API itself (modal Save
+      // or prepareForCart) and announces it with `personalization.saved`.
       el.setAttribute('hide-save', '');
       if (variant) el.setAttribute('variant-id', variant);
+      el.triggerStyle = currentStyle(); // an object property; the Builder style, applied without any CSS from this page
       document.getElementById('slot').append(el);
+
+      document.getElementById('apply-style').addEventListener('click', () => {
+        const style = currentStyle();
+        if (style !== undefined) el.triggerStyle = style; // restyles the button in place: no request, nothing reloaded
+      });
+      document.getElementById('reset-style').addEventListener('click', () => {
+        styleBox.value = JSON.stringify(DEFAULT_STYLE, null, 2);
+        el.triggerStyle = DEFAULT_STYLE;
+      });
+      const variantSelect = document.getElementById('variant');
+      variantSelect.value = variant ?? '';
+      variantSelect.addEventListener('change', () => {
+        el.variantId = variantSelect.value || null; // the element asks the API again for this variant
+      });
+
+      // What the page hears from the element (every `zb:event` bubbles to the document).
+      const log = document.getElementById('log');
+      const lines = [];
+      document.addEventListener('zb:event', (event) => {
+        const { type, data } = event.detail;
+        if (type === 'rendered') return;
+        lines.push(`${new Date().toLocaleTimeString()}  ${type}  ${JSON.stringify(data)}`);
+        log.textContent = lines.slice(-12).join('\n');
+      });
       window.testPageReady = true;
     </script>
   </body>

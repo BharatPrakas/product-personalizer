@@ -96,7 +96,9 @@ type Device = 'desktop' | 'mobile';
     </header>
     <div class="preview-stage">
       <div class="preview-frame" [class.preview-frame--mobile]="device() === 'mobile'">
+        <!-- The merchant's own preview of the template: the editor itself, never the storefront's trigger button. -->
         <app-product-customizer
+          mode="preview"
           [config]="config()"
           [baseUrl]="assetBase"
           [allowLocalAssets]="true"

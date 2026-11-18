@@ -47,21 +47,29 @@ const addDisabled = (page: import('puppeteer-core').Page) =>
   page.$eval('#add', (b) => (b as HTMLButtonElement).disabled);
 const cart = (page: import('puppeteer-core').Page) => page.evaluate(() => (window as any).testCart);
 
+/** What a shopper does: click the trigger, personalize in the modal, Save. Add to cart opens once it is saved. */
 async function makeValid(page: import('puppeteer-core').Page) {
   await page.waitForFunction(
-    () => document.querySelector('zb-product-customizer')?.getAttribute('data-status') === 'ready',
+    () => document.querySelector('zb-product-customizer')?.shadowRoot?.querySelector('button.trigger'),
     { timeout: 20000 },
   );
   await page.evaluate(() => {
     document.querySelector('zb-product-customizer')!.id = 'a';
   });
+  await page.evaluate(() => (document.getElementById('a')!.shadowRoot!.querySelector('button.trigger') as HTMLButtonElement).click());
+  await page.waitForFunction(() => !!document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] .zbc form'), { timeout: 20000 });
   await upload(page, 'a', ASSET_PATHS.samplePhoto);
   await waitForCrop(page, 'a');
+  await page.waitForFunction(
+    () => !(document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] button.primary') as HTMLButtonElement).disabled,
+    { timeout: 20000 },
+  );
+  await page.evaluate(() => (document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] button.primary') as HTMLButtonElement).click());
   await page.waitForFunction(() => !(document.getElementById('add') as HTMLButtonElement).disabled, { timeout: 20000 });
 }
 
 describe('demo product page (generic bridge + personalization element)', () => {
-  it('keeps Add to cart disabled until the design is valid, then puts only { customizationId } on the cart line', async () => {
+  it('keeps Add to cart disabled until the shopper has saved a design, then puts only { customizationId } on the cart line', async () => {
     env.api.responses.set('prod-1', mapped());
     const page = await openDemo();
     await page.waitForFunction(() => (window as any).testBridge.instances().length > 0, { timeout: 20000 });
@@ -94,15 +102,39 @@ describe('demo product page (generic bridge + personalization element)', () => {
     await page.close();
   });
 
-  it('cancels the add with the extension’s shopper-safe message and keeps the page usable', async () => {
+  it('keeps Add to cart closed when the modal save fails, and says why inside the modal', async () => {
     env.api.responses.set('prod-1', mapped());
     env.api.shopper.createAnswer = { status: 429, body: { error: { code: 'rate_limited' } } };
     const page = await openDemo();
+    await page.waitForFunction(() => document.querySelector('zb-product-customizer')?.shadowRoot?.querySelector('button.trigger'), { timeout: 20000 });
+    await page.evaluate(() => {
+      document.querySelector('zb-product-customizer')!.id = 'a';
+      (document.getElementById('a')!.shadowRoot!.querySelector('button.trigger') as HTMLButtonElement).click();
+    });
+    await page.waitForFunction(() => !!document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] .zbc form'), { timeout: 20000 });
+    await upload(page, 'a', ASSET_PATHS.samplePhoto);
+    await waitForCrop(page, 'a');
+    await page.waitForFunction(() => !(document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] button.primary') as HTMLButtonElement).disabled, { timeout: 20000 });
+    await page.evaluate(() => (document.getElementById('a')!.shadowRoot!.querySelector('dialog[open] button.primary') as HTMLButtonElement).click());
+    await page.waitForFunction(() => document.getElementById('a')!.getAttribute('data-save-state') === 'host-error', { timeout: 30000 });
+    expect(await page.$eval('zb-product-customizer', (e) => e.shadowRoot!.querySelector('dialog[open] .status')!.textContent)).toMatch(/too many requests/i);
+    expect(await addDisabled(page)).toBe(true); // nothing is saved, so nothing can be added
+    expect(await cart(page)).toEqual([]);
+    await page.close();
+  });
+
+  it('cancels the add with the extension’s shopper-safe message and keeps the page usable', async () => {
+    env.api.responses.set('prod-1', mapped());
+    const page = await openDemo();
     await makeValid(page);
+    await page.click('#add');
+    await page.waitForFunction(() => (window as any).testCart.length === 1, { timeout: 30000 });
+    // The line is in the cart, so the next add saves a fresh customization; the API refuses it.
+    env.api.shopper.createAnswer = { status: 429, body: { error: { code: 'rate_limited' } } };
     await page.click('#add');
     await page.waitForFunction(() => document.getElementById('notice')!.textContent!.length > 0, { timeout: 30000 });
     expect(await page.$eval('#notice', (e) => e.textContent)).toMatch(/too many requests/i);
-    expect(await cart(page)).toEqual([]);
+    expect(await cart(page)).toHaveLength(1);
     expect(await addDisabled(page)).toBe(false); // the shopper can try again
     await page.close();
   });

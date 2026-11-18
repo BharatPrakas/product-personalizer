@@ -31,13 +31,33 @@
   box-sizing: border-box;
 }
 
-.zbc {
-  // Reset every inherited property the host page may have set on <zb-product-customizer> itself
-  // (letter-spacing, text-transform, white-space, ...). Custom properties are not affected by `all`.
-  all: initial;
-  display: block;
-  box-sizing: border-box;
+@mixin zbc-type {
+  font-family: var(
+    --zb-font,
+    var(
+      --customizer-font-family,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      Arial,
+      sans-serif
+    )
+  );
+  font-size: 16px;
+  font-weight: 400;
+  font-style: normal;
+  line-height: 1.5;
+  letter-spacing: normal;
+  text-align: start;
+  text-transform: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+}
 
+// The design tokens the editor and the modal's own chrome share.
+@mixin zbc-tokens {
   --c-primary: var(--zb-accent, var(--customizer-primary, #296fd7));
   --c-radius: var(--zb-radius, var(--customizer-radius, 8px));
   --c-radius-lg: calc(var(--c-radius) + 4px);
@@ -66,6 +86,16 @@
   --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.06);
   --shadow-md: 0 6px 16px -4px rgba(17, 24, 39, 0.12), 0 2px 4px -2px rgba(17, 24, 39, 0.06);
   color-scheme: light;
+}
+
+.zbc {
+  // Reset every inherited property the host page may have set on <zb-product-customizer> itself
+  // (letter-spacing, text-transform, white-space, ...). Custom properties are not affected by `all`.
+  all: initial;
+  display: block;
+  box-sizing: border-box;
+
+  @include zbc-tokens;
 
   // Typography lives here, not on :host: a host-page rule such as `* { font-family: ... }` matches the
   // host element itself and would beat :host styles, but it cannot match elements inside the shadow root.
@@ -75,28 +105,7 @@
   color: var(--c-text);
   background: var(--c-surface); // the surface is always opaque, so contrast never depends on the host page
   border-radius: var(--c-radius);
-  font-family: var(
-    --zb-font,
-    var(
-      --customizer-font-family,
-      system-ui,
-      -apple-system,
-      'Segoe UI',
-      Roboto,
-      'Helvetica Neue',
-      Arial,
-      sans-serif
-    )
-  );
-  font-size: 16px;
-  font-weight: 400;
-  font-style: normal;
-  line-height: 1.5;
-  letter-spacing: normal;
-  text-align: start;
-  text-transform: none;
-  -webkit-text-size-adjust: 100%;
-  -webkit-font-smoothing: antialiased;
+  @include zbc-type;
 }
 
 @container (min-width: 760px) {
@@ -134,12 +143,14 @@
   color-scheme: dark;
 }
 
-:host([theme='dark']) .zbc {
+:host([theme='dark']) .zbc,
+:host([theme='dark']) .modal-panel {
   @include dark-palette;
 }
 
 @media (prefers-color-scheme: dark) {
-  :host([theme='auto']) .zbc {
+  :host([theme='auto']) .zbc,
+  :host([theme='auto']) .modal-panel {
     @include dark-palette;
   }
 }
@@ -1485,5 +1496,308 @@ app-action-bar {
   .skeleton-preview,
   .skeleton-lines span {
     animation: none;
+  }
+}
+
+// ---- storefront shell: trigger button, modal and discard prompt ------------------------------------
+// The editor above is rendered into the dialog (or inline); everything below is the shell around it.
+
+app-personalizer-editor {
+  display: block;
+}
+
+.trigger-wrap {
+  @include zbc-tokens;
+  @include zbc-type;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px 16px;
+  width: 100%;
+  color: var(--c-text);
+}
+
+.trigger-wrap[data-align='center'] {
+  justify-content: center;
+}
+
+.trigger-wrap[data-align='end'] {
+  justify-content: flex-end;
+}
+
+// The Builder's style arrives as --zbt-* custom properties (validated by util/trigger-style.ts); each has a default.
+.trigger {
+  --zbt-base-bg: var(--zbt-bg, var(--zb-accent, var(--customizer-primary, #296fd7)));
+  --zbt-base-color: var(--zbt-color, #ffffff);
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--zbt-width, auto);
+  max-width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding-block: var(--zbt-pad-block, 12px);
+  padding-inline: var(--zbt-pad-inline, 24px);
+  font-family: var(--zbt-font, var(--zb-font, var(--customizer-font-family, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif)));
+  font-size: var(--zbt-size, 16px);
+  font-weight: var(--zbt-weight, 600);
+  font-style: var(--zbt-fstyle, normal);
+  line-height: 1.25;
+  letter-spacing: normal;
+  text-align: center;
+  text-decoration: var(--zbt-decoration, none);
+  text-transform: none;
+  color: var(--zbt-base-color);
+  background-color: var(--zbt-base-bg);
+  border-style: var(--zbt-bs, solid);
+  border-width: var(--zbt-bw, 0);
+  border-color: var(--zbt-bc, transparent);
+  border-radius: var(--zbt-radius, var(--zb-radius, var(--customizer-radius, 8px)));
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: manipulation;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .trigger {
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease,
+      border-color 0.15s ease;
+  }
+}
+
+.trigger:hover:not(:disabled) {
+  color: var(--zbt-hover-color, var(--zbt-base-color));
+  background-color: var(--zbt-hover-bg, color-mix(in srgb, var(--zbt-base-bg) 86%, #000));
+  border-color: var(--zbt-hover-bc, var(--zbt-bc, transparent));
+}
+
+// Visible on any background the merchant picks: a dark ring with a light halo between it and the button.
+.trigger:focus-visible,
+.link-btn:focus-visible,
+.modal-close:focus-visible {
+  outline: 3px solid #111827;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px #ffffff;
+}
+
+.trigger:disabled {
+  cursor: not-allowed;
+  opacity: var(--zbt-dis-opacity, 0.55);
+  color: var(--zbt-dis-color, var(--zbt-base-color));
+  background-color: var(--zbt-dis-bg, var(--zbt-base-bg));
+  border-color: var(--zbt-dis-bc, var(--zbt-bc, transparent));
+}
+
+@media (forced-colors: active) {
+  .trigger {
+    border: 2px solid ButtonText;
+  }
+}
+
+// Both notes bring their own opaque surface, like the editor does: their contrast must not depend on the host page.
+.saved-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 12px 4px 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--c-ok);
+  background: var(--c-ok-bg);
+  border-radius: 999px;
+}
+
+.saved-note svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.unavailable {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 14px;
+  color: var(--c-muted);
+  background: var(--c-subtle);
+  border-radius: var(--c-radius);
+}
+
+.link-btn {
+  padding: 4px 2px;
+  font: inherit;
+  color: var(--c-accent-text);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+// ---- modal --------------------------------------------------------------------------------------
+// A native <dialog> opened with showModal(): it lives in the browser's top layer, so no host container can clip
+// it or stack above it, the rest of the page is inert while it is open and Tab stays inside it. It covers the
+// viewport itself (transparent) so that scroll on the backdrop is contained here too, never passed to the page.
+
+.modal {
+  box-sizing: border-box;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.modal:not([open]) {
+  display: none;
+}
+
+.modal[open] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal::backdrop {
+  background: rgba(17, 24, 39, 0.62);
+}
+
+.modal-panel {
+  @include zbc-tokens;
+  @include zbc-type;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, calc(100% - 48px));
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  color: var(--c-text);
+  background: var(--c-surface);
+  border-radius: var(--c-radius-lg);
+  box-shadow: 0 24px 64px -12px rgba(17, 24, 39, 0.5);
+  overflow: hidden;
+}
+
+.modal-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 12px 12px 12px 24px;
+  border-bottom: 1px solid var(--c-border-soft);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--c-text);
+  background: transparent;
+  border: 0;
+  border-radius: var(--c-radius);
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  background: var(--c-subtle);
+}
+
+.modal-close svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+// The editor lays itself out against the width it is given: here the modal's, not the host element's.
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  container-type: inline-size;
+}
+
+.modal-body .zbc {
+  border-radius: 0;
+}
+
+.discard {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  background: color-mix(in srgb, var(--c-surface) 96%, transparent);
+}
+
+.discard-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.discard p {
+  margin: 0;
+  max-width: 48ch;
+  color: var(--c-muted);
+}
+
+// Phones: the modal is the screen.
+@media (max-width: 640px) {
+  .modal-panel {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    border-radius: 0;
+  }
+
+  .modal-header {
+    padding-left: 16px;
+  }
+
+  .discard {
+    padding: 20px;
   }
 }
