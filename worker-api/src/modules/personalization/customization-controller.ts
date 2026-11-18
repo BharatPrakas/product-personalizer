@@ -1,10 +1,10 @@
 /**
  * HTTP handlers for customizations.
  *
- * Shopper routes are PUBLIC (no merchant token): every one is addressed to a store by `?storeId=`, is
- * rate-limited per store + client IP, and answers CORS from that store's own origin allow-list. Writes
- * additionally refuse a browser Origin the store has not allowed. Responses are never cacheable.
- * Error responses carry the same CORS headers, so the storefront can read the error code.
+ * Shopper routes are PUBLIC (no token of any kind): every one is addressed to a store by `?storeId=`, must
+ * name a known store, is rate-limited per store + client IP, and answers `Access-Control-Allow-Origin: *`
+ * without credentials. Responses are not cacheable, except the customized image. Error responses carry the
+ * same CORS headers, so the storefront can read the error code.
  *
  * Merchant routes are authenticated and always scoped to the token's store.
  */
@@ -18,7 +18,7 @@ import { onError } from '../../middleware/error-handler';
 import { ok, created } from '../../shared/responses';
 import { CustomizationService } from './customization-service';
 import { StorefrontService, type ResolvedStore } from './storefront-service';
-import { storefrontCorsHeaders } from './storefront-controller';
+import { etagMatches, publicCorsHeaders } from './storefront-controller';
 import {
   MAX_CUSTOMIZATION_DATA_BYTES,
   STORE_KEY_PATTERN,
@@ -35,6 +35,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Room for the asset list and envelope on top of the data limit. */
 const MAX_JSON_BODY_BYTES = MAX_CUSTOMIZATION_DATA_BYTES + 64 * 1024;
 
+const CACHE_IMAGE = 'public, max-age=86400, immutable';
+/** A page shows several customized images, so image reads get a proportionally larger budget. */
+const IMAGE_LIMIT_FACTOR = 5;
+
 const clientIp = (c: Context<AppEnv>) => c.req.header('cf-connecting-ip') ?? 'unknown';
 
 function serviceFor(c: Context<AppEnv>): CustomizationService {
@@ -44,6 +48,7 @@ function serviceFor(c: Context<AppEnv>): CustomizationService {
     storage: () => createObjectStorage(c.env, config),
     config,
     logger: c.get('logger'),
+    publicOrigin: new URL(c.req.url).origin,
   });
 }
 
@@ -63,11 +68,6 @@ function uuidParam(c: Context<AppEnv>, name: string): string {
   // A malformed id can never exist: 404, and it never reaches Postgres as a bad uuid.
   if (!value || !UUID.test(value)) throw new NotFoundError();
   return value.toLowerCase();
-}
-
-function bearerToken(c: Context<AppEnv>): string | null {
-  const match = /^Bearer\s+(.+)$/i.exec(c.req.header('authorization')?.trim() ?? '');
-  return match ? match[1].trim() : null;
 }
 
 async function readJson(c: Context<AppEnv>): Promise<unknown> {
@@ -97,36 +97,30 @@ interface ShopperRequest {
 }
 
 /**
- * Shared pipeline for shopper routes: validate the store key, rate-limit, resolve the store and its
- * CORS policy, run the handler, and make sure success AND error responses carry CORS headers.
+ * Shared pipeline for shopper routes: validate the store key, rate-limit, resolve the (known) store, run
+ * the handler, and make sure success AND error responses carry CORS headers.
  */
 function shopperRoute(
   limiter: RateLimiter,
-  options: { write: boolean },
+  options: { write: boolean; bucket?: 'image' },
   handler: (c: Context<AppEnv>, req: ShopperRequest) => Promise<Response>,
 ) {
   return async (c: Context<AppEnv>): Promise<Response> => {
-    let cors = new Headers({ Vary: 'Origin' });
+    const cors = publicCorsHeaders();
     try {
       const { storeId } = customerStoreQuerySchema.parse(c.req.query());
       const config = c.get('config');
-      const limit = options.write ? config.storefrontWriteRateLimit : config.storefrontRateLimit;
+      const limit = options.write
+        ? config.storefrontWriteRateLimit
+        : config.storefrontRateLimit * (options.bucket === 'image' ? IMAGE_LIMIT_FACTOR : 1);
       const keyPart = STORE_KEY_PATTERN.test(storeId) ? storeId : 'invalid';
-      const decision = await limiter.check(
-        `cz:${options.write ? 'w' : 'r'}:${keyPart}:${clientIp(c)}`,
-        limit,
-        config.storefrontRateWindowSeconds,
-      );
+      const bucket = options.bucket ?? (options.write ? 'w' : 'r');
+      const decision = await limiter.check(`cz:${bucket}:${keyPart}:${clientIp(c)}`, limit, config.storefrontRateWindowSeconds);
       if (!decision.allowed) throw new RateLimitError(decision.retryAfterSeconds);
 
       const store = await storefrontFor(c).resolveStore(storeId);
-      cors = storefrontCorsHeaders(c.req.header('origin'), store);
       // Unknown, disabled and malformed store keys are indistinguishable.
       if (!store) throw new NotFoundError('That store was not found.');
-      const origin = c.req.header('origin');
-      if (options.write && origin && !store.allowedOrigins.includes(origin.toLowerCase())) {
-        throw new ApiError(403, 'origin_not_allowed', 'This origin is not allowed to save customizations for this store.');
-      }
       return applyHeaders(await handler(c, { store, service: serviceFor(c) }), cors);
     } catch (error) {
       return applyHeaders(await onError(error as Error, c), cors);
@@ -138,16 +132,16 @@ function shopperRoute(
 export const initiateCustomerUpload = (limiter: RateLimiter) =>
   shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
     const body = customerInitiateUploadSchema.parse(await readJson(c));
-    const initiated = await service.initiateUpload(store, body, bearerToken(c));
+    const initiated = await service.initiateUpload(store, body);
     // A presigned URL is a bearer capability: never cacheable.
     return created(c, initiated);
   });
 
-/** `POST /uploads/complete` — verify the uploaded object; the upload token is the credential. */
+/** `POST /uploads/complete` — verify the uploaded object and create the unattached asset. */
 export const completeCustomerUpload = (limiter: RateLimiter) =>
   shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
     const body = completeUploadSchema.parse(await readJson(c));
-    return ok(c, await service.completeUpload(store, body.uploadId, bearerToken(c)));
+    return ok(c, await service.completeUpload(store, body.uploadId));
   });
 
 export const uploadCustomerAsset = (limiter: RateLimiter) =>
@@ -178,36 +172,41 @@ export const createCustomization = (limiter: RateLimiter) =>
     return created(c, saved);
   });
 
-export const getCustomizationForShopper = (limiter: RateLimiter) =>
-  shopperRoute(limiter, { write: false }, async (c, { store, service }) =>
-    ok(c, await service.getForShopper(store, uuidParam(c, 'id'), bearerToken(c))),
-  );
-
 export const updateCustomization = (limiter: RateLimiter) =>
   shopperRoute(limiter, { write: true }, async (c, { store, service }) => {
     const body = updateCustomizationSchema.parse(await readJson(c));
-    const saved = await service.update(store, uuidParam(c, 'id'), bearerToken(c), {
+    const saved = await service.update(store, uuidParam(c, 'id'), {
       data: body.data as Record<string, unknown>,
       assets: body.assets,
     });
     return ok(c, saved);
   });
 
-export const getCustomizationAssetForShopper = (limiter: RateLimiter) =>
-  shopperRoute(limiter, { write: false }, async (c, { store, service }) => {
-    const { object, contentType, checksum } = await service.getAssetForShopper(
-      store,
-      uuidParam(c, 'id'),
-      uuidParam(c, 'assetId'),
-      bearerToken(c),
-    );
-    return privateFile(object, contentType, checksum);
+/**
+ * `GET /customization-images/:assetId` — the customized image, for `<img src>` on any page. Only an attached
+ * `preview` of the named store is served (everything else is 404), always with the type the bytes were
+ * sniffed as at upload. The URL changes with every new preview, so the response is immutable.
+ */
+export const getCustomizationImage = (limiter: RateLimiter) =>
+  shopperRoute(limiter, { write: false, bucket: 'image' }, async (c, { store, service }) => {
+    const asset = await service.findPublicImage(store, uuidParam(c, 'assetId'));
+    const headers = new Headers({
+      'Content-Type': asset.content_type,
+      'Cache-Control': CACHE_IMAGE,
+      'X-Content-Type-Options': 'nosniff',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+    });
+    // The stored SHA-256 identifies the bytes, so a conditional hit never touches object storage.
+    if (asset.checksum_sha256) {
+      const etag = `"${asset.checksum_sha256}"`;
+      headers.set('ETag', etag);
+      if (etagMatches(c.req.header('if-none-match'), etag)) return new Response(null, { status: 304, headers });
+    }
+    const { object } = await service.openPublicImage(asset);
+    headers.set('Content-Length', String(object.size));
+    return new Response(object.body, { status: 200, headers });
   });
-
-export const getCustomizationAssetUrlForShopper = (limiter: RateLimiter) =>
-  shopperRoute(limiter, { write: false }, async (c, { store, service }) =>
-    ok(c, await service.getAssetUrlForShopper(store, uuidParam(c, 'id'), uuidParam(c, 'assetId'), bearerToken(c))),
-  );
 
 function privateFile(
   object: { body: ReadableStream; size: number },
@@ -223,25 +222,6 @@ function privateFile(
   });
   if (checksum) headers.set('X-Checksum-Sha256', checksum);
   return new Response(object.body, { status: 200, headers });
-}
-
-/** CORS preflight for the shopper routes. Only an allowed origin of a known store gets ACAO headers. */
-export function customerPreflight(limiter: RateLimiter) {
-  return async (c: Context<AppEnv>): Promise<Response> => {
-    const config = c.get('config');
-    const decision = await limiter.check(`pre:${clientIp(c)}`, config.storefrontRateLimit, config.storefrontRateWindowSeconds);
-    if (!decision.allowed) throw new RateLimitError(decision.retryAfterSeconds);
-    const key = c.req.query('storeId');
-    const store = key ? await storefrontFor(c).resolveStore(key) : null;
-    const headers = storefrontCorsHeaders(c.req.header('origin'), store);
-    if (headers.has('Access-Control-Allow-Origin')) {
-      headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
-      headers.set('Access-Control-Allow-Headers', c.req.header('access-control-request-headers') ?? 'Authorization,Content-Type');
-      headers.set('Access-Control-Max-Age', '600');
-    }
-    headers.append('Vary', 'Access-Control-Request-Headers');
-    return new Response(null, { status: 204, headers });
-  };
 }
 
 // ---- merchant (authenticated, store-scoped) ----

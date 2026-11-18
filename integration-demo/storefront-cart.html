@@ -100,7 +100,8 @@
         personalization: {
           tag: 'zb-product-customizer',
           permissions: ['cart.line-extensions:write', 'order.events:receive'],
-          lineExtensionKeys: ['customizationId'],
+          lineExtensionKeys: ['customizationId', 'customizedImageUrl'],
+          lineExtensionMaxLength: { customizedImageUrl: 2048 },
         },
       };
 

@@ -185,7 +185,8 @@ resolving.addEventListener('zb:event', (event) => {
   const saved = event.detail.data as PersonalizationSavedData;
   const ids: [string, string, number, string] = [saved.customizationId, saved.templateId, saved.templateVersion, saved.productId];
   const source: 'save' | 'cart' = saved.source;
-  void [ids, source, saved.variantId, saved.expiresAt];
+  const image: string | undefined = saved.customizedImageUrl;
+  void [ids, source, saved.variantId, saved.expiresAt, image];
   // @ts-expect-error no token or file bytes are part of the event
   void saved.accessToken;
 });

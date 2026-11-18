@@ -12,7 +12,7 @@ const ALLOWED_HEADERS = 'Authorization,Content-Type,X-Request-Id,If-Match';
 const MAX_AGE = '600';
 
 /**
- * Public storefront routes decide CORS per store (the store's own allowed origins), so the global
+ * Public storefront routes answer their own CORS (`*`, no credentials), so the global
  * admin allow-list must not apply to them and they handle OPTIONS themselves.
  */
 const STOREFRONT_PATH = /^\/api\/[^/]+\/storefront\//;

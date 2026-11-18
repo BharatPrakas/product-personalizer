@@ -72,6 +72,12 @@ const STOREFRONT = /^\/api\/v1\/storefront\/personalization\/products\/([^/]+)\/
 function createMockApi(): { api: MockApi; handler: Handler } {
   let assetCounter = 0;
   let customizationCounter = 0;
+  const assetKinds = new Map<string, string>();
+  const newAsset = (kind: string | undefined): string => {
+    const id = `asset-${++assetCounter}`;
+    assetKinds.set(id, kind ?? '');
+    return id;
+  };
   const api: MockApi = {
     shopper: { requests: [] },
     responses: new Map(),
@@ -80,11 +86,18 @@ function createMockApi(): { api: MockApi; handler: Handler } {
     reset() {
       assetCounter = 0;
       customizationCounter = 0;
+      assetKinds.clear();
       api.shopper = { requests: [] };
       api.responses.clear();
       api.admin.clear();
       api.requests.length = 0;
     },
+  };
+  const previewUrl = (host: string | undefined, assets: Array<{ assetId: string }> | undefined, storeId: string | undefined): string | null => {
+    const preview = assets?.find((a) => assetKinds.get(a.assetId) === 'preview');
+    return preview
+      ? `http://${host}/api/v1/storefront/personalization/customization-images/${preview.assetId}?storeId=${encodeURIComponent(storeId ?? '')}`
+      : null;
   };
   const handler: Handler = (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
@@ -151,12 +164,12 @@ function createMockApi(): { api: MockApi; handler: Handler } {
           }
           const data =
             endpoint === 'uploads'
-              ? { assetId: `asset-${++assetCounter}`, uploadToken: `utok-${assetCounter}`, kind: entry.query['kind'] }
+              ? { assetId: newAsset(entry.query['kind']), kind: entry.query['kind'] }
               : {
                   customizationId: `cz-${++customizationCounter}`,
                   status: 'saved',
-                  accessToken: `atok-${customizationCounter}`,
-                  accessTokenExpiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+                  // Like the Worker: the first `preview` of the save, as a public absolute URL.
+                  customizedImageUrl: previewUrl(req.headers.host, entry.json?.assets, entry.query['storeId']),
                   expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
                 };
           res.writeHead(201, { 'content-type': 'application/json', 'cache-control': 'no-store' });

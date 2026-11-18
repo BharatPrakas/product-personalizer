@@ -47,12 +47,17 @@ export interface ZbStandardEventData {
 
 /**
  * `data` of this extension's `personalization.saved` event (the shopper's design was saved to the
- * personalization API). Identifiers and metadata only: never image bytes, access tokens or storage credentials.
- * `productId`, `variantId`, `expiresAt` and `source` were added after the first release of the event; the
- * three original fields are unchanged.
+ * personalization API). Identifiers, URLs and metadata only: never image bytes, tokens or storage credentials.
+ * `productId`, `variantId`, `expiresAt`, `source` and `customizedImageUrl` were added after the first release
+ * of the event; the three original fields are unchanged.
  */
 export interface PersonalizationSavedData {
   customizationId: string;
+  /**
+   * Public, absolute https URL (at most 2048 characters) of the customized image, usable as a plain `<img src>`.
+   * Opaque to the host. Omitted when the API returned none.
+   */
+  customizedImageUrl?: string;
   templateId: string;
   templateVersion: number;
   /** The host's product id this design belongs to. */

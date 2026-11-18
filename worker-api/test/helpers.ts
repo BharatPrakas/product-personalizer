@@ -169,7 +169,6 @@ export function makeEnv(bucket: InMemoryR2 = new InMemoryR2()): Env & { bucket: 
     DEV_STORE_ID: STORE_A,
     ASSET_SIGNING_SECRET: 'test-asset-signing-secret',
     INTEGRATION_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
-    CUSTOMIZATION_TOKEN_SECRET: 'test-customization-token-secret',
     STOREFRONT_WRITE_RATE_LIMIT: '100000',
     ORDER_CALLBACK_RATE_LIMIT: '100000',
     bucket,
@@ -441,7 +440,7 @@ export async function storefrontConfig(storeId: string = STORE_A, productId: str
 
 export async function uploadCustomerImage(
   storeId: string = STORE_A,
-  kind: 'upload' | 'preview' = 'upload',
+  kind: 'upload' | 'preview' | 'artwork' = 'upload',
   env?: Partial<Env>,
 ): Promise<any> {
   const res = await call(`${STOREFRONT}/uploads?storeId=${storeId}&kind=${kind}`, {
@@ -457,17 +456,18 @@ export async function uploadCustomerImage(
 
 export interface SavedCustomization {
   customizationId: string;
-  accessToken: string;
+  status: 'saved';
+  customizedImageUrl: string | null;
   expiresAt: string;
 }
 
-/** Save a customization the way the storefront does; returns its id and access token. */
+/** Save a customization the way the storefront does; returns the public save response. */
 export async function saveCustomization(
   options: {
     storeId?: string;
     productId?: string;
     data?: Record<string, unknown>;
-    assets?: Array<{ assetId: string; uploadToken: string }>;
+    assets?: Array<{ assetId: string }>;
     env?: Partial<Env>;
   } = {},
 ): Promise<SavedCustomization> {
@@ -488,6 +488,16 @@ export async function saveCustomization(
   });
   if (res.status !== 201) throw new Error(`saveCustomization failed: ${res.status} ${await res.text()}`);
   return (await json(res)).data;
+}
+
+/** Fetch the public customized image anonymously (no Authorization, no Origin). */
+export async function fetchCustomizationImage(
+  assetId: string,
+  storeId: string | null = STORE_A,
+  options: Pick<CallOptions, 'headers' | 'method' | 'env' | 'application'> = {},
+): Promise<Response> {
+  const query = storeId === null ? '' : `?storeId=${storeId}`;
+  return call(`${STOREFRONT}/customization-images/${assetId}${query}`, { token: null, ...options });
 }
 
 export async function createCredential(storeId: string = STORE_A): Promise<{ id: string; secret: string }> {

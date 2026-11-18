@@ -16,7 +16,7 @@ const design = (over: Partial<DesignToPersist> = {}): DesignToPersist => ({
 describe('DesignSaver', () => {
   let context: SaveContext;
   let saved: PersonalizationSavedData[];
-  let calls: Array<{ resolve: (v: { customizationId: string; expiresAt: string }) => void; reject: (e: unknown) => void; signal: AbortSignal }>;
+  let calls: Array<{ resolve: (v: { customizationId: string; customizedImageUrl: string | null; expiresAt: string }) => void; reject: (e: unknown) => void; signal: AbortSignal }>;
   let saver: DesignSaver;
 
   beforeEach(() => {
@@ -33,7 +33,7 @@ describe('DesignSaver', () => {
     saver.bind({ context: () => context, saved: (data) => saved.push(data) });
   });
 
-  const finish = (i: number, id = `cz-${i + 1}`) => calls[i].resolve({ customizationId: id, expiresAt: '2999-01-01T00:00:00Z' });
+  const finish = (i: number, id = `cz-${i + 1}`) => calls[i].resolve({ customizationId: id, customizedImageUrl: `https://api.example/img/${id}`, expiresAt: '2999-01-01T00:00:00Z' });
 
   it('shares one request between concurrent saves of the same design (a modal Save and an Add to cart)', async () => {
     const first = saver.save(design());
@@ -45,6 +45,7 @@ describe('DesignSaver', () => {
     expect(saved).toHaveLength(1); // announced once, by the request that did the work
     expect(saved[0]).toEqual({
       customizationId: 'cz-1',
+      customizedImageUrl: 'https://api.example/img/cz-1',
       templateId: 'tpl',
       templateVersion: 2,
       productId: 'p1',
@@ -54,11 +55,20 @@ describe('DesignSaver', () => {
     });
   });
 
+  it('leaves customizedImageUrl out of the announcement when the API returned none', async () => {
+    const first = saver.save(design());
+    calls[0].resolve({ customizationId: 'cz-1', customizedImageUrl: null, expiresAt: '2999-01-01T00:00:00Z' });
+    await first;
+    expect('customizedImageUrl' in saved[0]).toBe(false);
+  });
+
   it('reuses a saved design until the line is reported added, then saves a new one', async () => {
     const first = saver.save(design());
     finish(0);
     await first;
-    expect((await saver.save(design())).customizationId).toBe('cz-1');
+    const reused = await saver.save(design());
+    expect(reused.customizationId).toBe('cz-1');
+    expect(reused.customizedImageUrl).toBe('https://api.example/img/cz-1'); // a reused save keeps its image
     expect(calls).toHaveLength(1);
     saver.forget();
     const again = saver.save(design());
@@ -87,7 +97,7 @@ describe('DesignSaver', () => {
 
   it('does not reuse a design after its customization may have expired', async () => {
     const first = saver.save(design());
-    calls[0].resolve({ customizationId: 'cz-1', expiresAt: new Date(Date.now() + 30_000).toISOString() }); // within the 60 s margin
+    calls[0].resolve({ customizationId: 'cz-1', customizedImageUrl: null, expiresAt: new Date(Date.now() + 30_000).toISOString() }); // within the 60 s margin
     await first;
     saver.save(design());
     expect(calls).toHaveLength(2);

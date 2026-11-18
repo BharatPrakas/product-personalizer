@@ -183,25 +183,3 @@ describe('markups', () => {
     expect(rows.map((r) => r.action).sort()).toEqual(['markup.create', 'markup.delete', 'markup.update']);
   });
 });
-
-describe('storefront settings', () => {
-  it('stores normalised, de-duplicated origins per store and rejects bad ones', async () => {
-    expect((await json(await call(`${ADMIN}/settings/storefront`))).data).toEqual({ storefrontOrigins: [] });
-
-    const put = await call(`${ADMIN}/settings/storefront`, {
-      method: 'PUT',
-      body: { storefrontOrigins: ['https://Shop.Example.com/', 'https://shop.example.com', 'http://localhost:3000'] },
-    });
-    expect(put.status).toBe(200);
-    expect((await json(put)).data.storefrontOrigins).toEqual(['https://shop.example.com', 'http://localhost:3000']);
-    expect((await json(await call(`${ADMIN}/settings/storefront`))).data.storefrontOrigins).toHaveLength(2);
-    // Another store's settings are independent.
-    expect((await json(await call(`${ADMIN}/settings/storefront`, { storeId: STORE_B }))).data.storefrontOrigins).toEqual([]);
-
-    for (const bad of ['shop.example.com', 'https://shop.example.com/path', 'ftp://x.example', 'https://u:p@x.example', 'javascript:alert(1)']) {
-      const res = await call(`${ADMIN}/settings/storefront`, { method: 'PUT', body: { storefrontOrigins: [bad] } });
-      expect(res.status, bad).toBe(422);
-    }
-    expect((await call(`${ADMIN}/settings/storefront`, { token: null })).status).toBe(401);
-  });
-});

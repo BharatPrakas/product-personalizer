@@ -329,19 +329,19 @@ describe('R2 asset flow', () => {
     expect((await call(`${path}${otherSig}`, { token: null })).status).toBe(404);
   });
 
-  it('lets the admin origin load the delivery URL cross-origin, and not a stranger', async () => {
+  it('lets any origin load the delivery URL cross-origin, with a credential-free wildcard', async () => {
     const asset = (await json(await upload())).data;
     const url = pathAndQuery(asset.deliveryUrl);
 
-    const admin = await call(url, { token: null, origin: 'http://localhost:4200' });
-    expect(admin.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:4200');
+    for (const origin of ['http://localhost:4200', 'http://evil.example']) {
+      const res = await call(url, { token: null, origin });
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+      expect(res.headers.has('Access-Control-Allow-Credentials')).toBe(false);
+    }
 
     const preflight = await call(url, { method: 'OPTIONS', token: null, origin: 'http://localhost:4200' });
     expect(preflight.status).toBe(204);
-    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('http://localhost:4200');
-
-    const stranger = await call(url, { token: null, origin: 'http://evil.example' });
-    expect(stranger.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe('*');
   });
 
   it('re-points a config saved with the old Bearer-only URL at the signed URL when it is read', async () => {

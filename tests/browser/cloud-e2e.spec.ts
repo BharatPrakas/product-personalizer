@@ -60,12 +60,6 @@ describe.skipIf(!enabled)(
       config.product.name = unique;
       config.assetBaseUrl = `${env.origin}/nested/path/customizer/assets/`; // absolute: the API serves it as is
 
-      // Allow this page origin to read the public storefront route.
-      const origins = await call('PUT', '/settings/storefront', {
-        storefrontOrigins: [env.origin],
-      });
-      expect(origins.status).toBe(200);
-
       const { page } = await openAdminHost(env);
       await adminHost.mount(page, 'a', {
         apiBaseUrl: API,

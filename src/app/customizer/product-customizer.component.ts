@@ -883,8 +883,8 @@ export class ProductCustomizerComponent {
 
   /**
    * Called by the host when the shopper adds to cart. Saves the design to the personalization API and
-   * resolves with the line extension values (`{ customizationId }`) the platform attaches to the cart
-   * line. Rejects with a shopper-safe message to cancel the add. Concurrent calls share one save, and
+   * resolves with the line extension values (`{ customizationId, customizedImageUrl? }`) the platform
+   * attaches to the cart line. Rejects with a shopper-safe message to cancel the add. Concurrent calls share one save, and
    * the same unchanged design reuses its customization.
    *
    * Inline, the design is whatever the editor shows now. In the storefront it is the design the shopper
@@ -928,7 +928,10 @@ export class ProductCustomizerComponent {
         }
         const persisted = await this.saver.save(design);
         if (editor && this.editor() === editor && editor.currentKey() !== design.valuesKey) continue; // the design changed while saving: save the new one
-        return { customizationId: persisted.customizationId };
+        return {
+          customizationId: persisted.customizationId,
+          ...(persisted.customizedImageUrl ? { customizedImageUrl: persisted.customizedImageUrl } : {}),
+        };
       }
       throw new PrepareError('Your design changed while it was being saved. Please try again.');
     } catch (error) {

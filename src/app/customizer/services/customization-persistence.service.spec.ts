@@ -1,8 +1,9 @@
-import { CustomizationPersistence, SHOPPER_PATH } from './customization-persistence.service';
+import { CustomizationPersistence, SHOPPER_PATH, publicImageUrl } from './customization-persistence.service';
 import { CustomizerError } from './errors';
 
 const target = { apiBaseUrl: 'https://api.example.com/', storeId: 'store 1' };
 const signal = () => new AbortController().signal;
+const IMAGE_URL = 'https://api.example.com/api/v1/storefront/personalization/customization-images/0b6f3a52-0000-4000-8000-000000000001?storeId=store%201';
 
 function mockFetch(responder: (url: string, init: RequestInit) => Response | Promise<Response>) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
@@ -29,7 +30,6 @@ describe('CustomizationPersistence', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'image/png' },
       expiresIn: 300,
-      uploadToken: 'tok-1',
     };
 
     /** Routes the Worker calls and the storage PUT through one fetch stub, recording every request. */
@@ -39,17 +39,17 @@ describe('CustomizationPersistence', () => {
         calls.push({ url, init });
         if (url.startsWith('https://bucket.example/')) return overrides.put?.(init) ?? new Response(null, { status: 200 });
         if (url.includes('/uploads/url')) return overrides.initiate?.() ?? json(201, { data: initiation });
-        if (url.includes('/uploads/complete')) return overrides.complete?.() ?? json(200, { data: { assetId: 'a1', uploadToken: 'tok-2' } });
+        if (url.includes('/uploads/complete')) return overrides.complete?.() ?? json(200, { data: { assetId: 'a1' } });
         return json(500, {});
       });
       return calls;
     }
 
-    it('asks the Worker for a URL, sends the bytes straight to storage, then confirms with the upload token', async () => {
+    it('asks the Worker for a URL, sends the bytes straight to storage, then confirms', async () => {
       const calls = stubNetwork();
       const blob = png();
       const result = await service.upload(target, { kind: 'artwork', blob, filename: 'front' }, signal(), { retryDelayMs: 1 });
-      expect(result).toEqual({ assetId: 'a1', uploadToken: 'tok-2' });
+      expect(result).toEqual({ assetId: 'a1' });
       expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
         `${SHOPPER_PATH}/uploads/url`,
         '/pending/up-1',
@@ -68,8 +68,8 @@ describe('CustomizationPersistence', () => {
       expect(storage.init.headers).toEqual({ 'Content-Type': 'image/png' });
       expect(new Headers(storage.init.headers).has('authorization')).toBe(false);
 
-      // The upload token authorizes confirmation on the Worker — and only there.
-      expect(new Headers(complete.init.headers).get('authorization')).toBe('Bearer tok-1');
+      // The API is anonymous: no call carries a credential of any kind.
+      for (const call of calls) expect(new Headers(call.init.headers).has('authorization')).toBe(false);
       expect(JSON.parse(complete.init.body as string)).toEqual({ uploadId: 'up-1' });
       expect(new URL(complete.url).searchParams.get('storeId')).toBe('store 1');
     });
@@ -82,7 +82,7 @@ describe('CustomizationPersistence', () => {
       }
     });
 
-    it('renews an expired URL with the upload token, and succeeds', async () => {
+    it('renews an expired URL, and succeeds', async () => {
       let puts = 0;
       const calls = stubNetwork({ put: () => new Response(null, { status: ++puts === 1 ? 403 : 200 }) });
       const result = await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1 });
@@ -90,12 +90,12 @@ describe('CustomizationPersistence', () => {
       const initiations = calls.filter((c) => c.url.includes('/uploads/url'));
       expect(initiations).toHaveLength(2);
       expect(JSON.parse(initiations[1].init.body as string).uploadId).toBe('up-1');
-      expect(new Headers(initiations[1].init.headers).get('authorization')).toBe('Bearer tok-1');
+      expect(new Headers(initiations[1].init.headers).has('authorization')).toBe(false);
     });
 
     it('retries a lost confirmation without sending the file again', async () => {
       let confirms = 0;
-      const calls = stubNetwork({ complete: () => (++confirms === 1 ? json(503, { error: { code: 'storage_unavailable' } }) : json(200, { data: { assetId: 'a1', uploadToken: 'tok-2' } })) });
+      const calls = stubNetwork({ complete: () => (++confirms === 1 ? json(503, { error: { code: 'storage_unavailable' } }) : json(200, { data: { assetId: 'a1' } })) });
       await service.upload(target, { kind: 'upload', blob: png() }, signal(), { retryDelayMs: 1 });
       expect(calls.filter((c) => c.url.startsWith('https://bucket.example/'))).toHaveLength(1);
       expect(calls.filter((c) => c.url.includes('/uploads/complete'))).toHaveLength(2);
@@ -144,11 +144,11 @@ describe('CustomizationPersistence', () => {
       mockFetch((url, init) => {
         calls.push({ url, init });
         if (url.includes('/uploads/url')) return json(503, { error: { code: 'direct_upload_not_configured' } });
-        return json(201, { data: { assetId: 'a9', uploadToken: 't9' } });
+        return json(201, { data: { assetId: 'a9' } });
       });
       const blob = png();
       const result = await service.upload(target, { kind: 'artwork', blob, filename: 'front' }, signal(), { retryDelayMs: 1 });
-      expect(result).toEqual({ assetId: 'a9', uploadToken: 't9' });
+      expect(result).toEqual({ assetId: 'a9' });
       const proxied = new URL(calls[1].url);
       expect(proxied.pathname).toBe(`${SHOPPER_PATH}/uploads`);
       expect(proxied.searchParams.get('kind')).toBe('artwork');
@@ -171,24 +171,46 @@ describe('CustomizationPersistence', () => {
     });
   });
 
-  it('creates a customization and returns its id, token and expiry', async () => {
+  it('creates a customization and returns its id, customized image URL and expiry', async () => {
     const calls = mockFetch(() =>
-      json(201, { data: { customizationId: 'cz', accessToken: 'tok', expiresAt: '2026-12-01T00:00:00Z' } }),
+      json(201, { data: { customizationId: 'cz', customizedImageUrl: IMAGE_URL, expiresAt: '2026-12-01T00:00:00Z' } }),
     );
     const created = await service.create(
       target,
-      { productId: 'p1', variantId: 'v1', collectionIds: ['c1'], configId: 'cfg', configVersion: 3, data: { a: 1 }, assets: [{ assetId: 'a1', uploadToken: 't1' }] },
+      { productId: 'p1', variantId: 'v1', collectionIds: ['c1'], configId: 'cfg', configVersion: 3, data: { a: 1 }, assets: [{ assetId: 'a1' }] },
       signal(),
     );
-    expect(created).toEqual({ customizationId: 'cz', accessToken: 'tok', expiresAt: '2026-12-01T00:00:00Z' });
+    expect(created).toEqual({ customizationId: 'cz', customizedImageUrl: IMAGE_URL, expiresAt: '2026-12-01T00:00:00Z' });
+    expect(new Headers(calls[0].init.headers).has('authorization')).toBe(false);
+    expect(calls[0].init.credentials).toBe('omit');
     expect(JSON.parse(calls[0].init.body as string)).toEqual({
       productId: 'p1', variantId: 'v1', collectionIds: ['c1'], configId: 'cfg', configVersion: 3, data: { a: 1 },
-      assets: [{ assetId: 'a1', uploadToken: 't1' }],
+      assets: [{ assetId: 'a1' }],
     });
   });
 
+  it.each([
+    ['plain http', 'http://api.example.com/i.png'],
+    ['a javascript: URL', 'javascript:alert(1)'],
+    ['a relative URL', '/api/v1/image'],
+    ['a URL with credentials', 'https://user:pw@api.example.com/i.png'],
+    ['more than 2048 characters', `https://api.example.com/${'a'.repeat(2100)}`],
+    ['a non-string', 42],
+  ])('drops a customizedImageUrl that is %s instead of passing it on', async (_name, value) => {
+    mockFetch(() => json(201, { data: { customizationId: 'cz', customizedImageUrl: value } }));
+    const created = await service.create(target, { productId: 'p', configId: 'c', configVersion: 1, data: {}, assets: [] }, signal());
+    expect(created.customizedImageUrl).toBeNull();
+    expect(created.customizationId).toBe('cz');
+  });
+
+  it('accepts plain http only for a loopback host (local development)', () => {
+    expect(publicImageUrl('http://127.0.0.1:8787/a.png?storeId=s')).toBe('http://127.0.0.1:8787/a.png?storeId=s');
+    expect(publicImageUrl('http://localhost:8787/a.png')).toBe('http://localhost:8787/a.png');
+    expect(publicImageUrl(IMAGE_URL)).toBe(IMAGE_URL);
+  });
+
   it('omits empty optional fields', async () => {
-    const calls = mockFetch(() => json(201, { data: { customizationId: 'cz', accessToken: 't' } }));
+    const calls = mockFetch(() => json(201, { data: { customizationId: 'cz' } }));
     await service.create(target, { productId: 'p', variantId: null, collectionIds: [], configId: 'c', configVersion: 1, data: {}, assets: [] }, signal());
     const body = JSON.parse(calls[0].init.body as string);
     expect('variantId' in body).toBe(false);

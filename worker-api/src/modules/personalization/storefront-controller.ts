@@ -1,6 +1,6 @@
 /**
  * PUBLIC storefront handlers (no merchant token). Responsibilities kept here: per-store + client-IP
- * rate limiting, per-store CORS, strong ETag / conditional requests and cache headers. Business
+ * rate limiting, public CORS, strong ETag / conditional requests and cache headers. Business
  * resolution lives in `StorefrontService`.
  *
  * Responses intentionally omit `requestId` from the JSON body: the body must be byte-stable across
@@ -12,7 +12,7 @@ import { createObjectStorage } from '../../storage';
 import type { AppEnv } from '../../shared/context';
 import { BadRequestError, NotFoundError, RateLimitError } from '../../shared/errors';
 import type { RateLimiter } from '../../shared/rate-limit';
-import { StorefrontService, type ResolvedStore } from './storefront-service';
+import { StorefrontService } from './storefront-service';
 import { MAX_COLLECTION_IDS, STORE_KEY_PATTERN, storefrontConfigQuerySchema } from './validation';
 
 const CACHE_PERSONALIZABLE = 'public, max-age=60, s-maxage=300, stale-while-revalidate=600';
@@ -32,20 +32,15 @@ function serviceFor(c: Context<AppEnv>): StorefrontService {
   });
 }
 
-/** CORS headers for one request, from the STORE's own allow-list (empty list = no cross-origin). */
-export function storefrontCorsHeaders(
-  origin: string | undefined,
-  store: ResolvedStore | null,
-  /** Extra origins trusted for this response, e.g. the merchant admin origins (asset route only). */
-  trustedOrigins: readonly string[] = [],
-): Headers {
-  const headers = new Headers({ Vary: 'Origin' });
-  const normalized = origin?.toLowerCase();
-  if (origin && normalized && store && (store.allowedOrigins.includes(normalized) || trustedOrigins.includes(normalized))) {
-    headers.set('Access-Control-Allow-Origin', origin);
-    headers.set('Access-Control-Expose-Headers', 'ETag, X-Request-Id');
-  }
-  return headers;
+/**
+ * CORS for every public storefront response. The routes are anonymous and credential-free, so any origin
+ * may read them: `*` is never combined with credentials, and nothing here varies by caller.
+ */
+export function publicCorsHeaders(): Headers {
+  return new Headers({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Expose-Headers': 'ETag, X-Request-Id',
+  });
 }
 
 async function strongEtag(body: string): Promise<string> {
@@ -118,7 +113,7 @@ export function getProductConfig(limiter: RateLimiter) {
 
     const service = serviceFor(c);
     const store = await service.resolveStore(query.storeId);
-    const cors = storefrontCorsHeaders(c.req.header('origin'), store);
+    const cors = publicCorsHeaders();
     if (!store) {
       return conditionalJson(c, { personalizable: false }, CACHE_NOT_PERSONALIZABLE, cors);
     }
@@ -142,10 +137,9 @@ export function getPublicAsset(limiter: RateLimiter) {
     const service = serviceFor(c);
     const resolved = await service.resolveAsset(c.req.param('assetId') ?? '', c.req.query('sig') ?? null);
     if (!resolved) throw new NotFoundError('That asset was not found.');
-    const { asset, store, signed } = resolved;
+    const { asset, signed } = resolved;
 
-    // The merchant admin app (listed in CORS_ALLOWED_ORIGINS) loads these URLs from saved configs.
-    const headers = storefrontCorsHeaders(c.req.header('origin'), store, c.get('config').corsAllowedOrigins);
+    const headers = publicCorsHeaders();
     // A signed URL can expose a draft asset, so keep it out of shared caches.
     headers.set('Cache-Control', signed ? 'private, max-age=3600' : CACHE_ASSET);
     headers.set('X-Content-Type-Options', 'nosniff');
@@ -169,26 +163,14 @@ export function getPublicAsset(limiter: RateLimiter) {
   };
 }
 
-/** CORS preflight for either public route. Answers 204; only an allowed origin gets ACAO headers. */
-export function preflight(limiter: RateLimiter, target: 'config' | 'asset') {
+/** CORS preflight for every public route. Answers 204 for any origin; rate limited like the routes themselves. */
+export function preflight(limiter: RateLimiter) {
   return async (c: Context<AppEnv>): Promise<Response> => {
     await enforceRateLimit(c, limiter, `pre:${clientIp(c)}`);
-    const service = serviceFor(c);
-    let store: ResolvedStore | null = null;
-    if (target === 'config') {
-      const key = c.req.query('storeId');
-      store = key ? await service.resolveStore(key) : null;
-    } else {
-      store = (await service.resolveAsset(c.req.param('assetId') ?? '', c.req.query('sig') ?? null))?.store ?? null;
-    }
-    const trusted = target === 'asset' ? c.get('config').corsAllowedOrigins : [];
-    const headers = storefrontCorsHeaders(c.req.header('origin'), store, trusted);
-    if (headers.has('Access-Control-Allow-Origin')) {
-      headers.set('Access-Control-Allow-Methods', 'GET,HEAD,OPTIONS');
-      headers.set('Access-Control-Allow-Headers', c.req.header('access-control-request-headers') ?? 'If-None-Match');
-      headers.set('Access-Control-Max-Age', '600');
-    }
-    headers.append('Vary', 'Access-Control-Request-Headers');
+    const headers = publicCorsHeaders();
+    headers.set('Access-Control-Allow-Methods', 'GET,HEAD,POST,PUT,OPTIONS');
+    headers.set('Access-Control-Allow-Headers', 'Content-Type, If-None-Match');
+    headers.set('Access-Control-Max-Age', '600');
     return new Response(null, { status: 204, headers });
   };
 }

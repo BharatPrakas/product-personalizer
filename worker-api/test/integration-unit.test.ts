@@ -8,7 +8,6 @@ import {
   parseMasterKey,
 } from '../src/modules/integration-credentials/crypto';
 import { checkTimestamp, signBody, signatureMatches } from '../src/modules/integration-credentials/signature';
-import { issueCustomerToken, verifyCustomerToken } from '../src/modules/personalization/customer-token';
 import { customizationKeyPrefix, assetKeyPrefix, generateCustomizationObjectKey } from '../src/storage/object-storage';
 import { TEST_ENCRYPTION_KEY } from './helpers';
 
@@ -77,40 +76,6 @@ describe('request signing', () => {
     expect(checkTimestamp('abc', now, 300).ok).toBe(false);
     expect(checkTimestamp('1700000000.5', now, 300).ok).toBe(false);
     expect(checkTimestamp(undefined, now, 300).ok).toBe(false);
-  });
-});
-
-describe('customer tokens', () => {
-  const secret = 'token-secret';
-  const now = new Date('2026-01-01T00:00:00Z');
-  const claims = { scope: 'customization' as const, storeId: 'store_a', subject: 'AAAAAAAA-0000-4000-8000-000000000001' };
-
-  it('verifies for the exact scope, store and subject (case-insensitive id)', () => {
-    const { token } = issueCustomerToken(secret, claims, 60, now);
-    expect(verifyCustomerToken(secret, token, { ...claims, subject: claims.subject.toLowerCase() }, now)).toBe('ok');
-  });
-
-  it('rejects another subject, store or scope', () => {
-    const { token } = issueCustomerToken(secret, claims, 60, now);
-    expect(verifyCustomerToken(secret, token, { ...claims, subject: 'bbbbbbbb-0000-4000-8000-000000000001' }, now)).toBe('wrong_subject');
-    expect(verifyCustomerToken(secret, token, { ...claims, storeId: 'store_b' }, now)).toBe('wrong_subject');
-    expect(verifyCustomerToken(secret, token, { ...claims, scope: 'upload' }, now)).toBe('wrong_subject');
-  });
-
-  it('expires', () => {
-    const { token, expiresAt } = issueCustomerToken(secret, claims, 60, now);
-    expect(verifyCustomerToken(secret, token, claims, new Date(expiresAt.getTime() - 1000))).toBe('ok');
-    expect(verifyCustomerToken(secret, token, claims, expiresAt)).toBe('expired');
-  });
-
-  it('rejects forged, re-signed and malformed tokens', () => {
-    const { token } = issueCustomerToken(secret, claims, 60, now);
-    expect(verifyCustomerToken('other-secret', token, claims, now)).toBe('bad_signature');
-    const [prefix, body, sig] = token.split('.');
-    const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url').toString()), exp: 9999999999 })).toString('base64url');
-    expect(verifyCustomerToken(secret, `${prefix}.${forged}.${sig}`, claims, now)).toBe('bad_signature');
-    expect(verifyCustomerToken(secret, 'nope', claims, now)).toBe('malformed');
-    expect(verifyCustomerToken(secret, '', claims, now)).toBe('malformed');
   });
 });
 

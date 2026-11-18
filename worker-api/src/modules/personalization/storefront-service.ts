@@ -37,7 +37,6 @@ export interface StorefrontContext {
 
 export interface ResolvedStore {
   storeId: string;
-  allowedOrigins: readonly string[];
 }
 
 export type StorefrontPayload =
@@ -65,8 +64,7 @@ export class StorefrontService {
   /** null for a malformed or unknown store — callers must not distinguish the cases. */
   async resolveStore(storeKey: string): Promise<ResolvedStore | null> {
     if (!STORE_KEY_PATTERN.test(storeKey)) return null;
-    const settings = await this.stores.get(storeKey);
-    return settings ? { storeId: storeKey, allowedOrigins: settings.storefrontOrigins } : null;
+    return (await this.stores.exists(storeKey)) ? { storeId: storeKey } : null;
   }
 
   async resolveConfig(
@@ -110,7 +108,7 @@ export class StorefrontService {
     };
   }
 
-  /** The asset row plus its store's CORS settings, or null when it must not be served. */
+  /** The asset row plus its (known) store, or null when it must not be served. */
   async resolveAsset(
     assetId: string,
     signature: string | null = null,

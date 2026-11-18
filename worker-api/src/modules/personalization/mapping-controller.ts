@@ -1,5 +1,5 @@
 /**
- * HTTP handlers for mappings, markups and storefront settings (authenticated admin routes). The
+ * HTTP handlers for mappings and markups (authenticated admin routes). The
  * store id always comes from the verified tenant context, never from the request.
  */
 
@@ -10,7 +10,6 @@ import { BadRequestError, NotFoundError, PayloadTooLargeError } from '../../shar
 import { created, noContent, ok } from '../../shared/responses';
 import { MappingService } from './mapping-service';
 import { MarkupService } from './markup-service';
-import { SettingsService } from './settings-service';
 import type { StoreContext } from './support';
 import {
   MAX_MARKUP_BODY_BYTES,
@@ -19,7 +18,6 @@ import {
   createMarkupSchema,
   mappingListQuerySchema,
   markupListQuerySchema,
-  storefrontSettingsSchema,
   updateMappingSchema,
   updateMarkupSchema,
 } from './validation';
@@ -116,15 +114,4 @@ export async function updateMarkup(c: Context<AppEnv>): Promise<Response> {
 export async function deleteMarkup(c: Context<AppEnv>): Promise<Response> {
   await new MarkupService(storeContext(c)).delete(idParam(c));
   return noContent(c);
-}
-
-// ---- settings ----
-
-export async function getStorefrontSettings(c: Context<AppEnv>): Promise<Response> {
-  return ok(c, await new SettingsService(storeContext(c)).getStorefront());
-}
-
-export async function putStorefrontSettings(c: Context<AppEnv>): Promise<Response> {
-  const body = storefrontSettingsSchema.parse(await jsonBody(c));
-  return ok(c, await new SettingsService(storeContext(c)).setStorefrontOrigins(body.storefrontOrigins));
 }

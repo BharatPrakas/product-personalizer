@@ -849,12 +849,12 @@ describe('signed order events — optional order details', () => {
     const events = await queryDb<any>('SELECT * FROM integration_events');
     const stored = JSON.stringify([audit, events]);
     for (const value of PII) expect(stored).not.toContain(value);
-    // The shopper's own read of the customization carries no order details.
+    // There is no shopper read path, so nothing public can carry order details.
     const shopper = await call(
       `${STOREFRONT}/customizations/${customization.customizationId}?storeId=${STORE_A}`,
-      { token: null, headers: { Authorization: `Bearer ${customization.accessToken}` } },
+      { token: null },
     );
-    expect(shopper.status).toBe(200);
+    expect(shopper.status).not.toBe(200);
     const shopperBody = await shopper.text();
     for (const value of PII) expect(shopperBody).not.toContain(value);
   });

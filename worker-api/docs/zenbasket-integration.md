@@ -266,26 +266,31 @@ old one is stored).
 
 ## 5. Shopper API (used by the storefront element — the host does not call it)
 
-Public, no merchant token. Every route needs `?storeId=<store key>`; CORS is answered from the store's own
-allowed origins (set under `PUT /plugins/personalization/settings/storefront`), and **writes from a browser
-Origin that is not allowed are refused (403)**. All responses are `Cache-Control: no-store`.
+Public and anonymous: no merchant token, no key, secret or shopper token of any kind. Every route needs
+`?storeId=<store key>` (a routing label, not a credential; an unknown store is `404`). CORS is
+`Access-Control-Allow-Origin: *` without credentials on every response. All responses are `Cache-Control: no-store`
+except the customized image.
 Base: `/api/v1/storefront/personalization`.
 
 | Call | Auth | Purpose |
 |---|---|---|
 | `GET /products/{productId}/config?storeId=…[&variantId=…&collectionIds=a,b]` | – | The published config for the product (`configId`, `version`, `config`) or `{personalizable:false}`. |
-| `POST /uploads?storeId=…&kind=upload\|artwork\|preview[&filename=…]` (raw PNG/JPEG/WebP body) | – | Store a private image through the Worker (legacy; disabled when `LEGACY_PROXY_UPLOADS=false`). `upload` = the shopper's photo, `artwork` = the print-ready file of a printable area, `preview` = a composite. → `{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, uploadTokenExpiresAt }` |
-| `POST /uploads/url?storeId=…` `{ kind, contentType, size, filename? }` | – | **Preferred.** Start a direct upload: → `201 { uploadId, assetId, uploadUrl, method:"PUT", headers, expiresIn, uploadToken, uploadTokenExpiresAt }`. `PUT` the file to `uploadUrl` with exactly `headers` (straight to object storage — no `Authorization`), then confirm. |
-| `POST /uploads/complete?storeId=…` `{ uploadId }` | `Bearer <uploadToken>` | Verify the stored file. → the same body as `POST /uploads` (`{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, … }`). Idempotent. See `docs/direct-uploads.md`. |
-| `POST /customizations?storeId=…` | – | Save. Body: `{ productId, variantId?, collectionIds?, configId, configVersion, data, assets:[{assetId, uploadToken}] }` → `201 { customizationId, status:"saved", accessToken, accessTokenExpiresAt, expiresAt }` |
-| `GET /customizations/{id}?storeId=…` | `Bearer accessToken` | Read back. 410 once expired. |
-| `PUT /customizations/{id}?storeId=…` | `Bearer accessToken` | Replace `data` and the asset list; refreshes the 30-day window. 409 `customization_not_editable` once ordered. |
-| `GET /customizations/{id}/assets/{assetId}?storeId=…` | `Bearer accessToken` | The private file (`Cache-Control: private, no-store`). |
+| `POST /uploads?storeId=…&kind=upload\|artwork\|preview[&filename=…]` (raw PNG/JPEG/WebP body) | – | Store a private image through the Worker (legacy; disabled when `LEGACY_PROXY_UPLOADS=false`). `upload` = the shopper's photo, `artwork` = the print-ready file of a printable area, `preview` = a composite. → `{ assetId, kind, contentType, sizeBytes, width, height }` |
+| `POST /uploads/url?storeId=…` `{ kind, contentType, size, filename? }` | – | **Preferred.** Start a direct upload: → `201 { uploadId, assetId, uploadUrl, method:"PUT", headers, expiresIn }`. `PUT` the file to `uploadUrl` with exactly `headers` (straight to object storage — no `Authorization`), then confirm. |
+| `POST /uploads/complete?storeId=…` `{ uploadId }` | – | Verify the stored file. → the same body as `POST /uploads` (`{ assetId, kind, contentType, sizeBytes, width, height }`). Idempotent. See `docs/direct-uploads.md`. |
+| `POST /customizations?storeId=…` | – | Save. Body: `{ productId, variantId?, collectionIds?, configId, configVersion, data, assets:[{assetId}] }` → `201 { customizationId, status:"saved", customizedImageUrl, expiresAt }` |
+| `PUT /customizations/{id}?storeId=…` | – | Replace `data` and the asset list; refreshes the 30-day window; returns the same body as `POST` (a new preview gives a new `customizedImageUrl`). 409 `customization_not_editable` once ordered. |
+| `GET /customization-images/{assetId}?storeId=…` | – | The customized image, a plain `<img src>` target: only an attached `preview` of that store, sniffed content type, `Cache-Control: public, max-age=86400, immutable`, `ETag`, `nosniff`, CORP `cross-origin`, CORS `*`. Anything else is `404`. |
 
 Rules worth knowing:
-- **The id alone never authorizes anything.** The `accessToken` (HMAC-signed, scoped to one customization and
-  store, 7-day default lifetime) is required to read or change it. The element keeps it in memory and does
-  **not** hand it to the host: only `customizationId` goes onto the cart line.
+- **There are no shopper tokens.** Ids are unguessable UUIDs and the API never reads a customization or a
+  customer's original file back to a shopper: the only public read is the customized image. `PUT` is authorized
+  by the customization id alone, so the id is a capability (it is returned to the element and carried on the
+  cart line; it is not part of any public URL — `customizedImageUrl` carries the preview's asset id).
+- **`customizedImageUrl`** (also on the element's `prepareForCart()` result and `personalization.saved` event) is the
+  absolute URL of the FIRST `preview` asset of the save, `null` when the save has none. ZenBasket stores it as an
+  opaque string (≤ 2048 characters, https; the element drops anything else) and renders it with a plain `<img>`.
+  It changes whenever the saved preview changes, so a cart line never shows a stale image.
 - The config is **resolved from the mapping** for `productId`; `configId`/`configVersion` are what the element
   rendered. A changed mapping → `409 config_changed`; an unknown version → `422`. The version is **pinned**, so
   republishing never alters existing customizations.
@@ -329,16 +334,14 @@ customization routes above.
 | Name | Kind | Default | Purpose |
 |---|---|---|---|
 | `INTEGRATION_ENCRYPTION_KEY` | **secret** | – | 32 bytes, base64. Encrypts integration secrets at rest. Required for credentials + events (503 otherwise). |
-| `CUSTOMIZATION_TOKEN_SECRET` | **secret** | – | Signs shopper access/upload tokens. Required for uploads + customizations (503 otherwise). |
 | `ORDER_CALLBACK_TOLERANCE_SECONDS` | var | 300 | Timestamp window. |
 | `ORDER_CALLBACK_RATE_LIMIT` | var | 600 | Event requests per client IP per window. |
 | `STOREFRONT_WRITE_RATE_LIMIT` | var | 30 | Shopper writes (uploads, saves) per store+IP per window. |
 | `CUSTOMIZATION_RETENTION_DAYS` | var | 30 | Inactivity expiry. |
-| `CUSTOMIZATION_TOKEN_TTL_SECONDS` | var | 604800 | Shopper token lifetime. |
 | `UNATTACHED_UPLOAD_TTL_HOURS` / `ASSET_DELETE_GRACE_HOURS` / `EXPIRED_TOMBSTONE_DAYS` | var | 24 / 24 / 30 | Cleanup timings. |
 
 Set the secrets with `wrangler secret put INTEGRATION_ENCRYPTION_KEY --env <env>` (generate with
-`openssl rand -base64 32`) and `wrangler secret put CUSTOMIZATION_TOKEN_SECRET --env <env>`.
+`openssl rand -base64 32`).
 **Losing or changing `INTEGRATION_ENCRYPTION_KEY` makes every stored integration secret undecryptable** —
 back it up in your secret manager; recovery is to issue new credentials.
 

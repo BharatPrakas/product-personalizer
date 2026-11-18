@@ -266,10 +266,6 @@ export function validateMarkupPayload(raw: unknown): ConfigValidation {
   return { ok: issues.length === 0, issues };
 }
 
-export const storefrontSettingsSchema = z.object({
-  storefrontOrigins: z.array(z.string().trim().min(1).max(300)).max(20),
-});
-
 // ---- storefront (public) ----------------------------------------------------------------------------
 
 /** Store keys are the platform's external store ids; anything outside this alphabet cannot be one. */
@@ -315,8 +311,6 @@ export const customerInitiateUploadSchema = z.object({
 
 const assetRefSchema = z.object({
   assetId: uuidSchema,
-  /** Required to attach a new upload; omitted for assets already attached to this customization. */
-  uploadToken: z.string().min(1).max(2048).optional(),
 });
 
 const customizationDataSchema = z.unknown().superRefine((value, ctx) => {

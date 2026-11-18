@@ -2,7 +2,7 @@
  * Application assembly: the middleware pipeline, the public health endpoint and the three route
  * groups of the API (their URL prefixes live in shared/api-paths.ts):
  *
- *  - storefront     public, no token; per-store CORS and rate limits
+ *  - storefront     public, no credentials; `Access-Control-Allow-Origin: *` and rate limits
  *  - integrations   signed server-to-server calls; every handler authenticates the caller itself
  *  - merchant       Bearer token + tenant resolution
  */
@@ -23,6 +23,7 @@ import * as integration from './modules/personalization/integration-controller';
 import * as mappings from './modules/personalization/mapping-controller';
 import * as orders from './modules/personalization/order-controller';
 import * as storefront from './modules/personalization/storefront-controller';
+import { publicCorsHeaders } from './modules/personalization/storefront-controller';
 import { ok } from './shared/responses';
 import { RateLimiter, type RateLimitStore } from './shared/rate-limit';
 
@@ -76,10 +77,6 @@ function merchantRoutes(): Hono<AppEnv> {
   router.put('/markups/:id', mappings.updateMarkup);
   router.delete('/markups/:id', mappings.deleteMarkup);
 
-  // Per-store storefront settings (allowed CORS origins)
-  router.get('/settings/storefront', mappings.getStorefrontSettings);
-  router.put('/settings/storefront', mappings.putStorefrontSettings);
-
   // Customer customizations (merchant read access; private files stream only through here)
   router.get('/customizations', customizations.listCustomizations);
   router.get('/customizations/:id', customizations.getCustomization);
@@ -111,31 +108,31 @@ function storefrontRoutes(rateLimiter: RateLimiter): Hono<AppEnv> {
     // Raw `Response`s bypass the global header merge, so set the correlation id explicitly.
     c.res.headers.set('X-Request-Id', c.get('requestId'));
     if (c.res.status >= 400) c.res.headers.set('Cache-Control', 'no-store');
-    if (!c.res.headers.has('Vary')) c.res.headers.set('Vary', 'Origin');
+    // Errors thrown before a handler built its own headers (429, 4xx) must stay readable cross-origin too.
+    if (!c.res.headers.has('Access-Control-Allow-Origin')) {
+      for (const [name, value] of publicCorsHeaders()) c.res.headers.set(name, value);
+    }
   });
+  const preflight = storefront.preflight(rateLimiter);
   router.get('/products/:externalId/config', storefront.getProductConfig(rateLimiter));
-  router.options('/products/:externalId/config', storefront.preflight(rateLimiter, 'config'));
+  router.options('/products/:externalId/config', preflight);
   router.get('/assets/:assetId', storefront.getPublicAsset(rateLimiter));
-  router.options('/assets/:assetId', storefront.preflight(rateLimiter, 'asset'));
+  router.options('/assets/:assetId', preflight);
 
-  // Shopper customizations: private uploads, save, and token-gated read / update.
-  const preflight = customizations.customerPreflight(rateLimiter);
+  // Shopper customizations: uploads, save / update, and the public customized image.
   router.post('/uploads', customizations.uploadCustomerAsset(rateLimiter)); // legacy: bytes proxied
   router.options('/uploads', preflight);
-  // Direct upload: presigned PUT straight to R2/S3, then confirm with the upload token.
+  // Direct upload: presigned PUT straight to R2/S3, then confirm.
   router.post('/uploads/url', customizations.initiateCustomerUpload(rateLimiter));
   router.options('/uploads/url', preflight);
   router.post('/uploads/complete', customizations.completeCustomerUpload(rateLimiter));
   router.options('/uploads/complete', preflight);
   router.post('/customizations', customizations.createCustomization(rateLimiter));
   router.options('/customizations', preflight);
-  router.get('/customizations/:id', customizations.getCustomizationForShopper(rateLimiter));
   router.put('/customizations/:id', customizations.updateCustomization(rateLimiter));
   router.options('/customizations/:id', preflight);
-  router.get('/customizations/:id/assets/:assetId', customizations.getCustomizationAssetForShopper(rateLimiter));
-  router.options('/customizations/:id/assets/:assetId', preflight);
-  router.get('/customizations/:id/assets/:assetId/url', customizations.getCustomizationAssetUrlForShopper(rateLimiter));
-  router.options('/customizations/:id/assets/:assetId/url', preflight);
+  router.get('/customization-images/:assetId', customizations.getCustomizationImage(rateLimiter));
+  router.options('/customization-images/:assetId', preflight);
   return router;
 }
 

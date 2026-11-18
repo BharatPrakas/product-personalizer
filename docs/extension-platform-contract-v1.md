@@ -69,7 +69,10 @@ not hard-code extensions in client code). The side navigation, the loader and th
   "backend": { "baseUrl": "https://api.example.com" },
   "permissions": ["cart.line-extensions:write", "order.events:receive"],
   "lineExtensions": {
-    "keys": { "customizationId": { "maxLength": 64 } },
+    "keys": {
+      "customizationId": { "maxLength": 64 },
+      "customizedImageUrl": { "maxLength": 2048 }
+    },
     "affectsLineIdentity": ["customizationId"],
     "onReorder": "drop"
   },
@@ -207,8 +210,12 @@ input LineExtensionInput { extensionId: String!  key: String!  value: String! }
 Rules (enforced **server-side** — the client is untrusted):
 1. `extensionId` MUST be installed and enabled for the store and hold `cart.line-extensions:write`;
    `key` MUST be declared in its manifest; `value` MUST satisfy the manifest limits. Otherwise the add-to-cart is rejected.
-2. Limits: at most 8 keys per extension per line, key ≤ 40 chars, value ≤ 512 chars, ≤ 4 KB per line in total.
-   Values MUST be identifiers or opaque tokens — **no personal data** (names, emails, free text).
+2. Limits: at most 8 keys per extension per line, key ≤ 40 chars, value ≤ 512 chars unless the manifest key declares a larger `maxLength` (never above 2048), ≤ 4 KB per line in total.
+   Values MUST be identifiers, opaque tokens or URLs — **no personal data** (names, emails, free text).
+   A value MAY be a **public URL the host renders as-is** (e.g. `customizedImageUrl`, §13): the manifest declares
+   its `maxLength` (≤ 2048), it MUST be an absolute `https` URL, and the host MUST treat it as an opaque string it
+   stores and echoes — never parses, signs, fetches server-side or adds credentials to. Keys not listed in
+   `affectsLineIdentity` do not split lines.
 3. **Line identity.** Today identical product + variant lines merge. The merge key becomes
    `(product, variant, hash of the extension entries listed in affectsLineIdentity)`, so two different
    customizations of one product are two lines.
@@ -393,9 +400,9 @@ secret is scoped to one (store, extension) pair and rotatable.
 |---|---|
 | Manifest | `id: personalization`; storeadmin slot `zb-personalization-admin`; storefront slot `zb-product-customizer`; permissions `cart.line-extensions:write`, `order.events:receive`; line key `customizationId`, `onReorder: drop`. |
 | Context | `store-id`, `product-id`, `variant-id`, `locale` arrive as attributes/properties. The element resolves the template for the product itself. |
-| Events | `ready { available }` (`false` when no template is mapped → slot collapses; sent before the editor exists); `rendered` (the trigger button is on screen); `gate { allowed:false }` until the shopper has saved a valid design; custom `personalization.saved { customizationId, templateId, templateVersion, productId, variantId?, expiresAt?, source }` for analytics only (identifiers and metadata, no tokens or bytes). |
+| Events | `ready { available }` (`false` when no template is mapped → slot collapses; sent before the editor exists); `rendered` (the trigger button is on screen); `gate { allowed:false }` until the shopper has saved a valid design; custom `personalization.saved { customizationId, customizedImageUrl?, templateId, templateVersion, productId, variantId?, expiresAt?, source }` for analytics only (identifiers, a public image URL and metadata; no tokens or bytes). |
 | UI | The element renders a trigger button only for a product with a published template; the editor opens in a modal (a lazy chunk). The button's look is the merchant's Builder button style, passed as `triggerStyle`. |
-| Cart | The shopper saves the design in the modal (the element saves it to its backend: `POST /customizations`) or the host calls `prepareForCart()`, which reuses the saved design or saves it, and resolves `{ customizationId }`; the platform writes it as a **line extension**. If saving fails it rejects with a shopper-safe message and the add is cancelled. |
+| Cart | The shopper saves the design in the modal (the element saves it to its backend: `POST /customizations`) or the host calls `prepareForCart()`, which reuses the saved design or saves it, and resolves `{ customizationId, customizedImageUrl? }`; the platform writes both as **line extensions**. `customizedImageUrl` is **optional and opaque** (≤ 2048 chars, https only; omitted when the API returned none or the element could not accept the value), the public URL of the shopper's customized image, usable as a plain `<img src>` on product-detail and cart pages with no plugin-specific code, key or secret on the platform side. It is the image of the saved design: it changes whenever the design changes, so the platform stores the value it got with the line and never has to re-fetch it. If saving fails it rejects with a shopper-safe message and the add is cancelled. |
 | Order | On payment confirmation the platform sends `order.confirmed` with `lines[].extensions.customizationId`. The Worker verifies the signature, links each customization to its order line in one transaction (idempotent on `eventId`; a different order/line is a conflict) and replies with per-line `results`. |
 | Admin auth | Storeadmin assigns the short-lived extension token to `authToken`; the Worker verifies it. |
 | Reorder | `drop` — a customization can be ordered once. |

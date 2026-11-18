@@ -65,7 +65,7 @@ worker-api/
 │   ├── modules/
 │   │   ├── personalization/     # configs, assets, mappings, markups, storefront, customizations, order events, cleanup
 │   │   ├── integration-credentials/  # per-store encrypted HMAC secrets + signature checks
-│   │   ├── store-settings/      # per-store settings (storefront CORS origins); a row makes a store "known"
+│   │   ├── store-settings/      # known stores; a row makes a store "known" to the public routes
 │   │   ├── audit/               # append-only audit log
 │   │   └── health/              # GET /health
 │   ├── database/                # thin D1 binding wrapper (connection.ts) — no transaction helper:
@@ -168,7 +168,7 @@ with SQLite's `json_valid()`/`json_type()` rather than Postgres's `jsonb_typeof(
 
 | Table | Purpose |
 |---|---|
-| `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. `storefront_origins` (a JSON array in a `TEXT` column) holds the store's allowed CORS origins. |
+| `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. It has no other columns of its own. |
 | `audit_logs` | Append-only log of privileged operations (identifiers + small metadata only; never secrets or payloads). |
 | `integration_credentials` | Per-store HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. |
 
@@ -311,19 +311,21 @@ Authenticated (Bearer token; store comes from the verified token, never from the
 | POST | `/markups` | `{ name, kind, payload }` -> 201 |
 | PUT | `/markups/:id` | `{ name?, payload? }` |
 | DELETE | `/markups/:id` | 204 |
-| GET / PUT | `/settings/storefront` | `{ storefrontOrigins: string[] }` - the store's allowed CORS origins (see below) |
 
 `configId` in every mapping request/response is the configuration's **client id** (`ConfigRecordDto.id`,
 e.g. `cfg-ab12cd34`), the same id used in `/configs/:configId`. `GET /configs` and `GET /configs/:id`
 now also carry an optional `mappingCount`.
 
-Public (no token), under `/api/v1/storefront/personalization`:
+Public (anonymous: no token, key or secret of any kind), under `/api/v1/storefront/personalization`:
 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/products/:externalId/config` | `?storeId=` (required) `&variantId=` `&collectionIds=a,b,c` (max 20) |
 | GET | `/assets/:assetId` | streams a stored image if a published, non-archived config of the owning store references it |
-| OPTIONS | both of the above | per-store CORS preflight |
+| POST | `/uploads/url`, `/uploads/complete` (legacy: `/uploads`) | `?storeId=`; direct image upload, see [docs/direct-uploads.md](docs/direct-uploads.md) |
+| POST / PUT | `/customizations`, `/customizations/:id` | `?storeId=`; save / replace a customization; the response carries `customizedImageUrl` |
+| GET | `/customization-images/:assetId` | `?storeId=`; the customized image, for `<img src>` (see "Customized image" below) |
+| OPTIONS | every route above | CORS preflight (`204`, `Access-Control-Allow-Origin: *`) |
 
 Mapping JSON: `{ id, storeId, configId, configName, configStatus: "draft"|"published"|"archived", scope, externalId, label, createdAt, updatedAt }`
 (timestamps are epoch ms, like the rest of the API). Markup JSON: `{ id, storeId, name, kind, payload, createdAt, updatedAt }`.
@@ -367,7 +369,7 @@ config keeps its mappings (restore brings them back); deleting it removes them.
   `assetBaseUrl`, an asset of another store, a deleted asset) is **not served** (`personalizable:false`, a warning is logged).
 - Caching: `ETag` is the strong SHA-256 of the exact body; `If-None-Match` (strong or weak, lists, `*`) -> `304` with the same headers.
   `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=600` for `personalizable:true`;
-  `public, max-age=10, s-maxage=30, stale-while-revalidate=60` for `personalizable:false`; `Vary: Origin` always;
+  `public, max-age=10, s-maxage=30, stale-while-revalidate=60` for `personalizable:false`;
   errors (4xx, 429) are `no-store`.
 - Not on the global admin CORS allow-list: see CORS below.
 
@@ -378,12 +380,25 @@ to the requesting store become `<request origin>/api/v1/storefront/personalizati
 paths resolve against an absolute `assetBaseUrl`, or — when the template's base is relative/missing (the editor's default `assets/`) — against this environment's `BUNDLED_ASSET_BASE_URL` var (the hosted `.../assets/` of the built element; set it per environment in `wrangler.jsonc`, it is what lets the plugin's hosting path change per deploy without touching stored templates; unset = such templates answer `personalizable:false`); `assetBaseUrl` is then dropped (all references are absolute). The origin is the origin the
 request arrived on (https behind Cloudflare). `GET /assets/:assetId` only serves a `stored` asset whose store's published, non-archived config
 references it (by id or object key); it sets `Cache-Control: public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400`, a strong
-`ETag` (the stored SHA-256), `nosniff` and `Cross-Origin-Resource-Policy: cross-origin`, and applies the owning store's CORS list.
+`ETag` (the stored SHA-256), `nosniff`, `Cross-Origin-Resource-Policy: cross-origin` and `Access-Control-Allow-Origin: *`.
 
-**CORS (per store).** The store's allowed origins are stored in `store_settings.storefront_origins` and managed with
-`PUT /plugins/personalization/settings/storefront` (`{ "storefrontOrigins": ["https://shop.example.com"] }`; bare origins only, normalised,
-max 20). A request `Origin` that is in the list gets `Access-Control-Allow-Origin: <origin>` (and `Access-Control-Expose-Headers: ETag, X-Request-Id`);
-anything else - or an empty list, the default - gets no CORS headers. The global `CORS_ALLOWED_ORIGINS` list does **not** apply to `/storefront/*`.
+**CORS.** Every public storefront response (success and error) and every preflight carries `Access-Control-Allow-Origin: *` and
+`Access-Control-Expose-Headers: ETag, X-Request-Id`; credentials are never allowed and there is no per-store origin list (the former
+`store_settings.storefront_origins` setting and its `/settings/storefront` route were removed from the baseline schema). Public
+routes read nothing from the caller's cookies or headers, so any page may call them, and a browser Origin gives no access an attacker
+could not get with curl. What still protects them: the store key must be known (unknown/disabled/malformed behave as "not found"),
+per-store + IP rate limits, the open-upload cap, `MAX_UPLOAD_BYTES`, magic-byte sniffing and unguessable UUIDs. The global `CORS_ALLOWED_ORIGINS`
+list (merchant routes) does **not** apply to `/storefront/*`.
+
+**Customized image.** Saving a customization returns `customizedImageUrl`: the absolute, public URL of the FIRST `preview` asset in the
+request's `assets` (`null` if none), e.g.
+`https://<worker>/api/v1/storefront/personalization/customization-images/<assetId>?storeId=<store key>`. `GET` it with no headers: it serves
+only an **attached `preview`** image of that store (uploads, print artwork, unattached/released files, other stores' files and non-UUID ids are
+`404`), with the content type the bytes were **sniffed** as at upload (never the declared one), `Cache-Control: public, max-age=86400, immutable`
+(the URL changes with every new preview), an `ETag` of the stored SHA-256 (`If-None-Match` -> `304` without touching storage), `nosniff`,
+`Cross-Origin-Resource-Policy: cross-origin`, `Content-Security-Policy: default-src 'none'; sandbox` and `Access-Control-Allow-Origin: *`. The
+URL carries the preview's asset id, **not** the customization id. Re-saving with a new preview yields a new URL; the replaced preview is released
+and follows the normal grace + cleanup rules, after which its old URL is `404`. Reads are rate limited at 5x the storefront budget.
 
 **Rate limiting.** `src/shared/rate-limit.ts`: a fixed-window counter keyed by store key + `CF-Connecting-IP` (config route) or by IP (assets,
 5x budget; preflight has its own counter). Defaults 120 requests / 60 s, tunable with `STOREFRONT_RATE_LIMIT` and `STOREFRONT_RATE_WINDOW_SECONDS`.
@@ -411,8 +426,10 @@ server-to-server event — is specified for the ZenBasket team in
   `eventId` with a different payload is a 409; a different order/line for an ordered customization is a
   rejected line; a zero-row conditional write triggers a state re-read rather than a blind failure. See
   "Database access" above for how this replaced the single-transaction-with-savepoints design.
-- **Privacy:** the `customizationId` authorizes nothing by itself. Shoppers use a scoped, expiring token;
-  merchants are store-scoped; customer files sit in a private prefix streamed only after an access check.
+- **Privacy:** the shopper API has no tokens: ids are unguessable UUIDs, and the only customer file the public can read is an attached
+  `preview` image through `customizedImageUrl` (see "Customized image"). Originals (uploads, print artwork) stay private and are only streamed
+  to the authenticated, store-scoped merchant routes. `PUT /customizations/:id` is authorized by the customization id alone, so treat that id as
+  a capability: it is returned to the element and carried on the cart line, never put in a public URL.
 - **Optional order and customer details** *(contract v1 section 7, [proposed – optional]; the platform
   dispatcher does not send them yet — only signed test fixtures exercise them)*: `order.number`,
   `placedAt`, `currency`, `totals` (`subtotal` / `shipping` / `tax` / `discount` / `total`), `customer`
@@ -531,8 +548,7 @@ signed URL on the public asset route:
   that asset.
 - A valid signature serves the asset even while it is a draft (`Cache-Control: private`). Without one,
   the route serves only assets referenced by the store's published configuration, as before.
-- The admin origins in `CORS_ALLOWED_ORIGINS` may load these URLs cross-origin, in addition to the
-  store's own storefront origins.
+- Any origin may load these URLs cross-origin (`Access-Control-Allow-Origin: *`, no credentials).
 - Configurations saved earlier with the Bearer-only URL (`/plugins/personalization/assets/<id>/content`)
   are re-pointed at the signed URL whenever they are read, so no data migration is needed.
 - Set the secret per deployed environment: `wrangler secret put ASSET_SIGNING_SECRET --env production`
@@ -581,10 +597,10 @@ the staging checklist: **[docs/direct-uploads.md](docs/direct-uploads.md)**.
    dimensions and SHA-256, copies it to its permanent `assets/<uuid>.<ext>` key and, in one atomic D1 batch,
    creates the `assets` row and marks the upload `stored`. Completion is idempotent and concurrency-safe.
 4. The configuration references the asset's stable delivery URL — never a presigned URL. Presigned reads
-   (`GET /assets/:id/url`, customer-file `…/url`) are generated on demand, last 60 s and are never stored.
+   (the merchant `GET /assets/:id/url` and `…/customizations/:id/assets/:assetId/url`) are generated on demand, last 60 s and are never stored.
 
 Shopper uploads follow the same flow (`POST /storefront/…/uploads/url` → `PUT` → `POST …/uploads/complete`,
-authorized by the upload token) and land in the private `customizations/` prefix. The old proxied routes
+anonymous; the store key must be known and the bytes are sniffed) and land in the private `customizations/` prefix. The old proxied routes
 (`POST /assets`, `POST /storefront/…/uploads`) still work unless `LEGACY_PROXY_UPLOADS=false`.
 
 **Delivery** — a published asset is served by the Worker route (referenced-by-published-config check), or,
@@ -613,7 +629,7 @@ unmapped product and an archived template stay silent.
 
 ```bash
 # 1. the local D1 migrations applied (see "Local development" — `npm run migrate`)
-# 2. a throw-away wrangler config with a local R2 bucket and the test page origin allowed for CORS:
+# 2. a throw-away wrangler config with a local R2 bucket and the test page origin allowed for the merchant CORS list:
 cp wrangler.jsonc wrangler.e2e.jsonc   # then: drop the "env" block, set "STORAGE_DRIVER": "r2",
                                        #   "CORS_ALLOWED_ORIGINS": "http://127.0.0.1:4310",
                                        #   and add "r2_buckets": [{ "binding": "PERSONALIZATION_ASSETS", "bucket_name": "e2e-local" }]
@@ -724,7 +740,6 @@ wrangler r2 bucket create zb-personalization-assets-production
 # 3. Set secrets (never in source):
 wrangler secret put JWT_SIGNING_SECRET --env production
 wrangler secret put INTEGRATION_ENCRYPTION_KEY --env production   # openssl rand -base64 32 — back it up!
-wrangler secret put CUSTOMIZATION_TOKEN_SECRET --env production
 #    (DEV_AUTH_TOKEN / DEV_STORE_ID are NOT set in production.)
 
 # 4. Apply migrations against the production database from CI/bastion:
@@ -750,7 +765,7 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 
 - Store identity from verified token claims only; never from client input.
 - All SQL is parameterized; every query is store-scoped.
-- CORS is a restrictive allowlist (`CORS_ALLOWED_ORIGINS`); disallowed origins get no ACAO.
+- Merchant CORS is a restrictive allowlist (`CORS_ALLOWED_ORIGINS`); disallowed origins get no ACAO. The anonymous storefront routes answer `*` without credentials.
 - File **contents** are validated (magic bytes), not the declared MIME type; size-capped.
 - Object keys are server-generated, sanitized and traversal-free.
 - 5xx responses are opaque; stack traces/causes are logged server-side only.
@@ -758,7 +773,11 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 - Rate limiting: authenticated routes rely on Cloudflare edge rate limiting. The PUBLIC storefront routes have a small
   in-Worker per-isolate limiter (best-effort); also add edge rules for production (see the storefront section).
 - Public storefront routes never take the store from a token and expose only published, non-archived data of a store
-  that is known to the Worker; assets are served only while a published config references them.
+  that is known to the Worker; config assets are served only while a published config references them, and the only
+  customer file served is an attached `preview` image (`customizedImageUrl`). Anonymous callers can: read published
+  configs and their assets; upload size-capped, sniffed PNG/JPEG/WebP images (rate limited, per-store open-upload cap);
+  save and `PUT`-replace customizations they hold the id of; and read any attached preview image whose id they know.
+  They cannot read customization data, uploads or print artwork, and they cannot list anything.
 
 ## Operational notes
 

@@ -24,7 +24,7 @@ beforeEach(async () => {
   resetBucket();
 });
 
-const stores = () => queryDb<any>('SELECT store_id, storefront_origins, created_at FROM store_settings ORDER BY store_id');
+const stores = () => queryDb<any>('SELECT store_id, created_at FROM store_settings ORDER BY store_id');
 
 describe('store registration', () => {
   it('registers a store on its first authenticated request, once', async () => {
@@ -32,7 +32,7 @@ describe('store registration', () => {
 
     expect((await call(`${ADMIN}/configs`)).status).toBe(200);
     const [first] = await stores();
-    expect(first).toMatchObject({ store_id: STORE_A, storefront_origins: [] });
+    expect(first).toMatchObject({ store_id: STORE_A });
 
     expect((await call(`${ADMIN}/configs`)).status).toBe(200);
     const rows = await stores();
@@ -51,21 +51,6 @@ describe('store registration', () => {
     expect((await call(`${ADMIN}/configs`, { token: null })).status).toBe(401);
     expect((await call(`${ADMIN}/configs`, { token: 'not-the-dev-token' })).status).toBe(401);
     expect(await stores()).toEqual([]);
-  });
-
-  it('keeps each store\'s storefront origins separate', async () => {
-    const put = await call(`${ADMIN}/settings/storefront`, {
-      method: 'PUT',
-      storeId: STORE_A,
-      body: { storefrontOrigins: ['https://Shop.example.com', 'https://shop.example.com/'] },
-    });
-    expect(put.status).toBe(200);
-    expect((await json(put)).data.storefrontOrigins).toEqual(['https://shop.example.com']);
-
-    const own = await json(await call(`${ADMIN}/settings/storefront`, { storeId: STORE_A }));
-    const other = await json(await call(`${ADMIN}/settings/storefront`, { storeId: STORE_B }));
-    expect(own.data.storefrontOrigins).toEqual(['https://shop.example.com']);
-    expect(other.data.storefrontOrigins).toEqual([]);
   });
 });
 

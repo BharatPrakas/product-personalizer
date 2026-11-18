@@ -25,6 +25,13 @@ import {
   zbOf,
 } from './storefront.helpers';
 
+/** What `prepareForCart()` resolves: the id plus the public URL of the first preview the fake API stored. */
+const cart = (customizationId: string) => ({
+  ok: true,
+  value: { customizationId, customizedImageUrl: expect.stringMatching(/\/customization-images\/asset-\d+\?storeId=store-1$/) },
+});
+
+
 let env: Environment;
 beforeAll(async () => {
   env = await startEnvironment();
@@ -228,6 +235,7 @@ describe('saving in the modal (the element saves to the API: hide-save)', () => 
     expect(saved).toHaveLength(1);
     expect(saved[0].data).toEqual({
       customizationId: 'cz-1',
+      customizedImageUrl: expect.stringMatching(/\/customization-images\/asset-\d+\?storeId=store-1$/),
       templateId: 'tshirt-personalization',
       templateVersion: 1,
       productId: 'prod-1',
@@ -248,11 +256,11 @@ describe('saving in the modal (the element saves to the API: hide-save)', () => 
 
     // Adding to the cart reuses it: no second customization, no new request.
     const requests = env.api.shopper.requests.length;
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
     expect(env.api.shopper.requests).toHaveLength(requests);
     // One customization per order line: after the host reports the line, the same design saves anew.
     await host.hostEvent(page, 'a', 'cart.line-added', { lineId: 'L1' });
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-2' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-2'));
     expect(creates()).toHaveLength(2);
     await page.close();
   });
@@ -292,7 +300,7 @@ describe('saving in the modal (the element saves to the API: hide-save)', () => 
     await makeValid(page, 'a');
     await clickSave(page, 'a');
     await waitForModal(page, 'a', false);
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
 
     await openModal(page, 'a');
     await page.evaluate(() => {
@@ -303,7 +311,7 @@ describe('saving in the modal (the element saves to the API: hide-save)', () => 
     await page.waitForFunction(() => (window as any).testHost.events('a', 'customizer-change').length > 1, { timeout: 10000 });
     await clickSave(page, 'a');
     await waitForModal(page, 'a', false);
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-2' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-2'));
     expect(creates()).toHaveLength(2);
     await page.close();
   });
@@ -362,7 +370,7 @@ describe('saving in the modal (the element saves to the API: hide-save)', () => 
     await page.waitForFunction(() => document.getElementById('a')!.getAttribute('data-save-state') === 'awaiting-host');
     await clickSave(page, 'a'); // the form is locked: nothing happens
     const [first, second] = await Promise.all([host.prepare(page, 'a'), host.prepare(page, 'a')]);
-    expect(first).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(first).toEqual(cart('cz-1'));
     expect(second).toEqual(first);
     await waitForModal(page, 'a', false);
     expect(creates()).toHaveLength(1);
@@ -401,7 +409,7 @@ describe('saving in the modal (host-acknowledged: no hide-save)', () => {
     expect(await zbOf(page, 'a', 'personalization.saved')).toHaveLength(0); // no customization id exists here
 
     // The saved design is still the shopper's: reopening restores it, and Add to cart can still persist it.
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
     await page.close();
   });
 

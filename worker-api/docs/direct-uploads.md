@@ -142,27 +142,26 @@ create exactly one asset.
 Generated per request, `Cache-Control: no-store`, never stored. The existing Bearer-protected
 `GET /assets/:assetId/content` still streams through the Worker.
 
-### Shopper (public, store-scoped — `?storeId=` + the store's origin allow-list, as for every shopper route)
+### Shopper (public and anonymous — `?storeId=` names a known store, as for every shopper route)
 
-No merchant login. The credential for an upload is the **upload token** returned at initiation.
+No merchant login and no token: the Worker checks the store key, rate limits, the per-store open-upload cap and the file contents. The `uploadId` / `assetId` are unguessable UUIDs only the uploader has seen.
 
 `POST /api/v1/storefront/personalization/uploads/url?storeId=…`
 `{ "kind": "upload|preview|artwork", "contentType": "image/png", "size": 1234, "filename"?, "sha256"?, "uploadId"? }`
-→ `201` `{ uploadId, assetId, uploadUrl, method, headers, expiresIn, uploadToken, uploadTokenExpiresAt }`.
-Images only (PNG/JPEG/WebP). Renewing (`uploadId`) requires `Authorization: Bearer <uploadToken>`.
+→ `201` `{ uploadId, assetId, uploadUrl, method, headers, expiresIn }`.
+Images only (PNG/JPEG/WebP). Passing the `uploadId` of a still-open customer upload renews its URL.
 
-`POST …/uploads/complete?storeId=…` with `Authorization: Bearer <uploadToken>` and `{ "uploadId" }` →
-`200` `{ assetId, kind, contentType, sizeBytes, width, height, uploadToken, uploadTokenExpiresAt }` — the same
-shape the proxied upload returned, so attaching (`POST /customizations`) is unchanged. A missing, expired or
-other-upload token → `401 invalid_upload_token`.
+`POST …/uploads/complete?storeId=…` with `{ "uploadId" }` →
+`200` `{ assetId, kind, contentType, sizeBytes, width, height }` — the same shape the proxied upload returns, so
+attaching (`POST /customizations`, `assets: [{ assetId }]`) is simple. An unknown upload id (or another store's) → `404`.
 
 Only a **verified** upload has a `customization_assets` row (status `uploaded`), so a customization cannot
 claim an unverified file: saving with an unconfirmed `assetId` fails with `409 asset_unavailable` and commits
 nothing (the existing `pending_attach_count` trigger guard is untouched).
 
-`GET …/customizations/:id/assets/:assetId/url?storeId=…` (Bearer = the customization access token) and the
-merchant `GET /customizations/:id/assets/:assetId/url` return a 60 s presigned GET for an *attached* file;
-the existing streaming routes remain.
+The merchant `GET /customizations/:id/assets/:assetId/url` returns a 60 s presigned GET for an *attached* file;
+the merchant streaming route remains. Shoppers have no read route for their files: the one public read is the
+customized image (an attached `preview`) at `…/customization-images/:assetId?storeId=…`, see the README.
 
 ## Upload lifecycle, retries and idempotency
 
@@ -210,8 +209,8 @@ width/height must be > 0 and ≤ 100 megapixels; the SHA-256 is computed server-
   - Residual: that host serves any `assets/` object whose (random UUID) key is known, published or not —
     "unlisted URL" semantics. Use the Worker route if that is unacceptable.
 - **CORS for canvas:** public asset responses already carry `Cross-Origin-Resource-Policy: cross-origin` and
-  per-store `Access-Control-Allow-Origin` on the Worker route; set an equivalent CORS rule on the public host.
-- **Private reads:** `…/url` endpoints return a presigned GET (60 s, `PRIVATE_URL_TTL_SECONDS`, max 900 s)
+  `Access-Control-Allow-Origin: *` on the Worker route; set an equivalent CORS rule on the public host.
+- **Private reads:** the merchant `…/url` endpoints return a presigned GET (60 s, `PRIVATE_URL_TTL_SECONDS`, max 900 s)
   after the same authorization as the streaming route. Presigned GETs are not stored.
 
 ## Cloudflare R2 setup
@@ -294,8 +293,9 @@ the access control in this design:
 - Every browser request to the bucket needs a **presigned URL**, valid for one key, one method and one
   Content-Type for minutes. Without one the bucket answers 403 whatever the origin. The bucket must stay
   private (no `r2.dev` access, no public custom domain, S3 Block Public Access on).
-- URLs are minted only by the Worker, which still enforces authentication (merchant) or the store's origin
-  allow-list + upload token + rate limits (shopper) **at issuance**. A hostile site cannot obtain a URL.
+- URLs are minted only by the Worker, which still enforces authentication (merchant) or a known store key
+  + rate limits + the open-upload cap (shopper) **at issuance**. Shopper issuance is anonymous, so the
+  Worker bounds what it can do rather than who may ask: type/size are signed into the URL and the bytes are sniffed at completion.
 - The client sends `credentials: 'omit'`, so no cookies or ambient credentials are involved.
 - `*` only lets a browser page *read the response* of a request that already carries a valid signature.
 
@@ -356,7 +356,7 @@ files are preserved; `pending_attach_count` is not involved.
 - **Rate limits.** Storefront write routes use the existing per-store+IP limiter (in-memory per isolate).
   Add Cloudflare rate-limiting rules for `POST …/uploads/url`, `…/uploads/complete`, `…/assets/upload-url`
   and `…/assets/complete` (suggestion: 30 requests/min/IP on the storefront paths).
-- **Anonymous shopper uploads** are bounded by the store key, its origin allow-list, rate limits and the
+- **Anonymous shopper uploads** are bounded by the store key, rate limits and the
   open-upload cap; there is no per-shopper identity before the first save (unchanged from the proxied flow).
 - **Verification reads the object into the Worker** (≤ `MAX_UPLOAD_BYTES`, 15 MB) to sniff and hash it —
   server-side, not a proxy of the upload — which costs memory/CPU per completion.
@@ -429,7 +429,7 @@ Nothing here was run against a real account by the author; these are the steps t
    exists under `assets/`, the `pending/` object is gone (or gone after the next cron), `GET …/assets/:id/url`
    downloads the file, and a second `…/complete` returns the same `assetId`.
 6. Negative checks: PUT with a different `Content-Type` → 403; PUT after 5 minutes → 403; upload a text file
-   named `.png` → `422 invalid_content`; shopper `complete` without a token → 401; another store's token → 404.
+   named `.png` → `422 invalid_content`; shopper `complete` for another store's `uploadId` → 404.
 7. Trigger cleanup: `wrangler dev --test-scheduled` locally, or wait for the cron; `SELECT * FROM cleanup_runs
    ORDER BY started_at DESC LIMIT 3;` shows the new counters. Confirm an abandoned upload becomes `expired`.
 8. Add the Cloudflare rate-limiting rules named above.

@@ -510,10 +510,8 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     });
   const initiate = (body: Record<string, unknown> = {}, options: Parameters<typeof call>[1] = {}) =>
     shop('/uploads/url', { method: 'POST', body: { contentType: 'image/png', size: png.length, kind: 'upload', ...body }, ...options });
-  const complete = (uploadId: string, token: string | null, options: Parameters<typeof call>[1] = {}) =>
-    shop('/uploads/complete', {
-      method: 'POST', body: { uploadId }, headers: token ? { Authorization: `Bearer ${token}` } : {}, ...options,
-    });
+  const complete = (uploadId: string, options: Parameters<typeof call>[1] = {}) =>
+    shop('/uploads/complete', { method: 'POST', body: { uploadId }, ...options });
 
   async function stage(body: Record<string, unknown> = {}, bytes: Uint8Array = png) {
     const res = await initiate({ size: bytes.length, ...body });
@@ -523,20 +521,21 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     return init;
   }
 
-  it('uploads straight to private storage and confirms with the upload token — no merchant login', async () => {
+  it('uploads straight to private storage and confirms it — no merchant login and no token', async () => {
     const res = await initiate();
     expect(res.headers.get('cache-control')).toBe('no-store');
     const init = (await json(res)).data;
     expect(init).toMatchObject({ method: 'PUT', expiresIn: 300, headers: { 'Content-Type': 'image/png' } });
-    expect(init.uploadToken).toMatch(/^zbc1\./);
+    expect(init).not.toHaveProperty('uploadToken');
     expect(init).not.toHaveProperty('objectKey');
     await p.browserPut(init, png);
 
-    const done = await complete(init.uploadId, init.uploadToken);
+    const done = await complete(init.uploadId);
     expect(done.status).toBe(200);
     const { data } = await json(done);
     expect(data).toMatchObject({ assetId: init.assetId, kind: 'upload', contentType: 'image/png', width: 1, height: 1 });
-    expect(data.uploadToken).toMatch(/^zbc1\./);
+    expect(data).not.toHaveProperty('uploadToken');
+    expect(Object.keys(data).sort()).toEqual(['assetId', 'contentType', 'height', 'kind', 'sizeBytes', 'width']);
     expect(JSON.stringify(data)).not.toContain('stores/'); // the key never reaches the shopper
     const [row] = await queryDb<any>('SELECT * FROM customization_assets');
     expect(row).toMatchObject({ id: init.assetId, status: 'uploaded', customization_id: null, kind: 'upload' });
@@ -545,62 +544,57 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     expect(p.keys(`stores/${STORE_A}/product-personalization/pending/${init.uploadId}`)).toHaveLength(0);
   });
 
-  it('requires the upload token to confirm; another upload’s token is useless', async () => {
+  it('confirms nothing for an unknown upload id', async () => {
     const a = await stage();
-    const b = await stage();
-    expect((await complete(a.uploadId, null)).status).toBe(401);
-    expect((await complete(a.uploadId, 'garbage')).status).toBe(401);
-    expect((await complete(a.uploadId, b.uploadToken)).status).toBe(401);
+    expect((await complete(crypto.randomUUID())).status).toBe(404);
     expect(await queryDb('SELECT 1 FROM customization_assets')).toHaveLength(0);
-    expect((await complete(a.uploadId, a.uploadToken)).status).toBe(200);
+    expect((await complete(a.uploadId)).status).toBe(200);
   });
 
   it('cannot confirm another store’s upload, and unknown stores get a 404', async () => {
     const a = await stage();
-    expect((await complete(a.uploadId, a.uploadToken, {}) ).status).toBe(200);
+    expect((await complete(a.uploadId)).status).toBe(200);
     const other = await stage();
     expect((await shop('/uploads/complete', {
-      method: 'POST', body: { uploadId: other.uploadId }, headers: { Authorization: `Bearer ${other.uploadToken}` },
+      method: 'POST', body: { uploadId: other.uploadId },
     }, STORE_B)).status).toBe(404);
     expect((await initiate({}, {})).status).toBe(201);
     expect((await shop('/uploads/url', { method: 'POST', body: { contentType: 'image/png', size: 5 } }, 'no_such_store')).status).toBe(404);
   });
 
-  it('validates what it will accept: images only, size limits, store origin allow-list', async () => {
+  it('validates what it will accept: images only and size limits', async () => {
     expect((await initiate({ contentType: 'font/woff2' })).status).toBe(415);
     expect((await initiate({ contentType: 'application/octet-stream' })).status).toBe(415);
     expect((await initiate({ size: 11 }, { env: { MAX_UPLOAD_BYTES: '10' } })).status).toBe(413);
     expect((await initiate({ kind: 'avatar' })).status).toBe(422);
-    expect((await initiate({}, { origin: 'https://evil.example' })).status).toBe(403);
     expect(await queryDb('SELECT 1 FROM uploads')).toHaveLength(0);
   });
 
   it('rejects spoofed content on confirmation', async () => {
     const text = new TextEncoder().encode('GIF89a-not-an-image'.padEnd(png.length, ' '));
     const init = await stage({}, text);
-    const res = await complete(init.uploadId, init.uploadToken);
+    const res = await complete(init.uploadId);
     expect(res.status).toBe(422);
     expect((await json(res)).error.details.reason).toBe('invalid_content');
     expect(await queryDb('SELECT 1 FROM customization_assets')).toHaveLength(0);
   });
 
-  it('is idempotent and renewable with the upload token', async () => {
+  it('is idempotent and renewable', async () => {
     const init = await stage();
-    const first = (await json(await complete(init.uploadId, init.uploadToken))).data;
-    const second = (await json(await complete(init.uploadId, init.uploadToken))).data;
+    const first = (await json(await complete(init.uploadId))).data;
+    const second = (await json(await complete(init.uploadId))).data;
     expect(second.assetId).toBe(first.assetId);
     expect(await queryDb('SELECT 1 FROM customization_assets')).toHaveLength(1);
 
     const open = (await json(await initiate())).data;
-    expect((await initiate({ uploadId: open.uploadId })).status).toBe(401); // no token
-    const renewed = await initiate({ uploadId: open.uploadId }, { headers: { Authorization: `Bearer ${open.uploadToken}` } });
+    const renewed = await initiate({ uploadId: open.uploadId });
     expect(renewed.status).toBe(201);
     expect((await json(renewed)).data.assetId).toBe(open.assetId);
   });
 
   it('attaches only verified uploads when the customization is saved, atomically', async () => {
     const verified = await stage();
-    await complete(verified.uploadId, verified.uploadToken);
+    await complete(verified.uploadId);
     const unverified = (await json(await initiate())).data; // URL issued, never uploaded or confirmed
 
     // A save naming an unverified upload fails and commits NOTHING (no customization, no half-attached files).
@@ -608,8 +602,8 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
       saveCustomization({
         env: p.env,
         assets: [
-          { assetId: verified.assetId, uploadToken: verified.uploadToken },
-          { assetId: unverified.assetId, uploadToken: unverified.uploadToken },
+          { assetId: verified.assetId },
+          { assetId: unverified.assetId },
         ],
       }),
     ).rejects.toThrow(/409/);
@@ -617,7 +611,7 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     expect((await queryDb<any>('SELECT status FROM customization_assets'))[0].status).toBe('uploaded');
     expect((await queryDb<any>('SELECT pending_attach_count FROM customizations')).length).toBe(0);
 
-    const saved = await saveCustomization({ env: p.env, assets: [{ assetId: verified.assetId, uploadToken: verified.uploadToken }] });
+    const saved = await saveCustomization({ env: p.env, assets: [{ assetId: verified.assetId }] });
     expect(saved.customizationId).toBeTruthy();
     expect((await queryDb<any>('SELECT status, customization_id FROM customization_assets'))[0]).toMatchObject({
       status: 'attached', customization_id: saved.customizationId,
@@ -627,8 +621,8 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
   it('stores previews and production artwork the same way, privately', async () => {
     const preview = await stage({ kind: 'preview' });
     const artwork = await stage({ kind: 'artwork' });
-    await complete(preview.uploadId, preview.uploadToken);
-    await complete(artwork.uploadId, artwork.uploadToken);
+    await complete(preview.uploadId);
+    await complete(artwork.uploadId);
     const rows = await queryDb<any>('SELECT kind, object_key FROM customization_assets ORDER BY kind');
     expect(rows.map((r) => r.kind)).toEqual(['artwork', 'preview']);
     for (const row of rows) {
@@ -641,26 +635,23 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     }
   });
 
-  it('serves attached files by authorized presigned GET to the owner, and nobody else', async () => {
+  it('serves attached files by presigned GET to the owning merchant only', async () => {
     const init = await stage();
-    await complete(init.uploadId, init.uploadToken);
-    const saved = await saveCustomization({ env: p.env, assets: [{ assetId: init.assetId, uploadToken: init.uploadToken }] });
-    const mine = { Authorization: `Bearer ${saved.accessToken}` };
+    await complete(init.uploadId);
+    const saved = await saveCustomization({ env: p.env, assets: [{ assetId: init.assetId }] });
 
-    const res = await shop(`/customizations/${saved.customizationId}/assets/${init.assetId}/url`, { headers: mine });
+    // There is no shopper read path any more.
+    const shopperRead = await shop(`/customizations/${saved.customizationId}/assets/${init.assetId}/url`);
+    expect(shopperRead.status).not.toBe(200);
+
+    const merchant = (storeId = STORE_A, token: string | null = 'test-dev-token') =>
+      call(`${ADMIN}/customizations/${saved.customizationId}/assets/${init.assetId}/url`, { storeId, token, env: p.env });
+    const res = await merchant();
     expect(res.status).toBe(200);
     const { data } = await json(res);
     expect(data).toMatchObject({ method: 'GET', expiresIn: 60 });
     const got = await p.browserGet(data.url);
     expect(new Uint8Array(await got.arrayBuffer())).toEqual(png);
-
-    expect((await shop(`/customizations/${saved.customizationId}/assets/${init.assetId}/url`)).status).toBe(401);
-    expect((await shop(`/customizations/${saved.customizationId}/assets/${init.assetId}/url`, { headers: { Authorization: `Bearer ${init.uploadToken}` } })).status).toBe(401);
-
-    // Merchant: only their own store.
-    const merchant = (storeId = STORE_A, token: string | null = 'test-dev-token') =>
-      call(`${ADMIN}/customizations/${saved.customizationId}/assets/${init.assetId}/url`, { storeId, token, env: p.env });
-    expect((await merchant()).status).toBe(200);
     expect((await merchant(STORE_B)).status).toBe(404);
     expect((await merchant(STORE_A, null)).status).toBe(401);
   });

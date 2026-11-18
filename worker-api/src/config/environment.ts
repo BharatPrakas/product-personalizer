@@ -62,8 +62,6 @@ export interface Env {
   ORDER_CALLBACK_TOLERANCE_SECONDS?: string;
   /** Inactivity period after which a saved, unordered customization expires, in days (default 30). */
   CUSTOMIZATION_RETENTION_DAYS?: string;
-  /** Lifetime of a customer access / upload token, in seconds (default 604800 = 7 days). */
-  CUSTOMIZATION_TOKEN_TTL_SECONDS?: string;
   /** Hours an upload may stay unattached before cleanup releases it (default 24). */
   UNATTACHED_UPLOAD_TTL_HOURS?: string;
   /** Hours between releasing a customer asset and deleting its object (default 24). */
@@ -104,11 +102,6 @@ export interface Env {
    * never commit it, and keep it out of `wrangler.jsonc`: `wrangler secret put INTEGRATION_ENCRYPTION_KEY`.
    */
   INTEGRATION_ENCRYPTION_KEY?: string;
-  /**
-   * HMAC key for the scoped, expiring tokens handed to customers (customization access + upload
-   * tokens). Independent of every other secret so rotating one never breaks another.
-   */
-  CUSTOMIZATION_TOKEN_SECRET?: string;
   /** IAM user limited to the S3 bucket. Only needed when STORAGE_DRIVER is `s3`. */
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
@@ -164,12 +157,10 @@ export interface AppConfig {
   orderCallbackRateLimit: number;
   orderCallbackToleranceSeconds: number;
   customizationRetentionDays: number;
-  customizationTokenTtlSeconds: number;
   unattachedUploadTtlHours: number;
   assetDeleteGraceHours: number;
   expiredTombstoneDays: number;
   integrationEncryptionKey: string | null;
-  customizationTokenSecret: string | null;
 }
 
 const DEFAULT_MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -183,7 +174,6 @@ const DEFAULT_STOREFRONT_WRITE_RATE_LIMIT = 30;
 const DEFAULT_ORDER_CALLBACK_RATE_LIMIT = 600;
 const DEFAULT_ORDER_CALLBACK_TOLERANCE_SECONDS = 300;
 const DEFAULT_CUSTOMIZATION_RETENTION_DAYS = 30;
-const DEFAULT_CUSTOMIZATION_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_UNATTACHED_UPLOAD_TTL_HOURS = 24;
 const DEFAULT_ASSET_DELETE_GRACE_HOURS = 24;
 const DEFAULT_EXPIRED_TOMBSTONE_DAYS = 30;
@@ -263,15 +253,10 @@ export function loadConfig(env: Env): AppConfig {
       DEFAULT_ORDER_CALLBACK_TOLERANCE_SECONDS,
     ),
     customizationRetentionDays: positiveInt(env.CUSTOMIZATION_RETENTION_DAYS, DEFAULT_CUSTOMIZATION_RETENTION_DAYS),
-    customizationTokenTtlSeconds: positiveInt(
-      env.CUSTOMIZATION_TOKEN_TTL_SECONDS,
-      DEFAULT_CUSTOMIZATION_TOKEN_TTL_SECONDS,
-    ),
     unattachedUploadTtlHours: positiveInt(env.UNATTACHED_UPLOAD_TTL_HOURS, DEFAULT_UNATTACHED_UPLOAD_TTL_HOURS),
     assetDeleteGraceHours: positiveInt(env.ASSET_DELETE_GRACE_HOURS, DEFAULT_ASSET_DELETE_GRACE_HOURS),
     expiredTombstoneDays: positiveInt(env.EXPIRED_TOMBSTONE_DAYS, DEFAULT_EXPIRED_TOMBSTONE_DAYS),
     integrationEncryptionKey: env.INTEGRATION_ENCRYPTION_KEY?.trim() || null,
-    customizationTokenSecret: env.CUSTOMIZATION_TOKEN_SECRET?.trim() || null,
   };
   cached = { env, config };
   return config;

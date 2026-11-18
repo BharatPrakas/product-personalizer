@@ -58,7 +58,7 @@ const assetRows = () => queryDb<any>('SELECT id, status, object_key, delete_afte
 
 async function savedWithAsset() {
   const asset = await uploadCustomerImage();
-  const saved = await saveCustomization({ assets: [{ assetId: asset.assetId, uploadToken: asset.uploadToken }] });
+  const saved = await saveCustomization({ assets: [{ assetId: asset.assetId }] });
   return { asset, saved };
 }
 
@@ -152,7 +152,7 @@ describe('abandoned customization cleanup', () => {
     const { asset, saved } = await savedWithAsset();
     // The shopper removes the file, then orders within the grace period.
     const res = await call(`${STOREFRONT}/customizations/${saved.customizationId}?storeId=${STORE_A}`, {
-      method: 'PUT', token: null, headers: { Authorization: `Bearer ${saved.accessToken}` }, body: { data: { v: 2 }, assets: [] },
+      method: 'PUT', token: null, body: { data: { v: 2 }, assets: [] },
     });
     expect(res.status).toBe(200);
     expect((await postOrderEvent(credential, orderEvent(saved.customizationId))).status).toBe(200);

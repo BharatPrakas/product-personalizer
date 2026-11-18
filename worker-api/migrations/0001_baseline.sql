@@ -10,7 +10,6 @@
 --    interchangeably. Every timestamp column in this schema uses this exact format — never mixed.
 --  * jsonb -> TEXT, validated with `json_valid()` / `json_type()` (SQLite's JSON1 functions) in place
 --    of `jsonb_typeof()`. The app stores `JSON.stringify(...)`; D1 does not parse it back.
---  * text[] (store_settings.storefront_origins) -> TEXT holding a JSON array string.
 --  * bigint epoch-ms columns -> INTEGER (SQLite integers are 64-bit; no change in practice).
 --  * `FOR UPDATE ... SKIP LOCKED` has no equivalent and needs none: D1 serializes every write to a
 --    single logical writer, so two cleanup runs cannot interleave their claims the way two concurrent
@@ -41,7 +40,6 @@
 
 CREATE TABLE IF NOT EXISTS store_settings (
   store_id            TEXT PRIMARY KEY,
-  storefront_origins  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(storefront_origins) AND json_type(storefront_origins) = 'array'),
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );

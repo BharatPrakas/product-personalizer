@@ -69,7 +69,7 @@ async function makeValid(page: import('puppeteer-core').Page) {
 }
 
 describe('demo product page (generic bridge + personalization element)', () => {
-  it('keeps Add to cart disabled until the shopper has saved a design, then puts only { customizationId } on the cart line', async () => {
+  it('keeps Add to cart disabled until the shopper has saved a design, then puts only { customizationId, customizedImageUrl } on the cart line', async () => {
     env.api.responses.set('prod-1', mapped());
     const page = await openDemo();
     await page.waitForFunction(() => (window as any).testBridge.instances().length > 0, { timeout: 20000 });
@@ -85,14 +85,22 @@ describe('demo product page (generic bridge + personalization element)', () => {
     expect(line).toMatchObject({
       productId: 'prod-1',
       quantity: 1,
-      lineExtensions: [{ extensionId: 'personalization', key: 'customizationId', value: 'cz-1' }],
+      lineExtensions: [
+        { extensionId: 'personalization', key: 'customizationId', value: 'cz-1' },
+        {
+          extensionId: 'personalization',
+          key: 'customizedImageUrl',
+          value: expect.stringMatching(/\/api\/v1\/storefront\/personalization\/customization-images\/asset-\d+\?storeId=store-1$/),
+        },
+      ],
     });
-    // Nothing else from the extension reaches the cart line (no token, no file ids, no design data).
-    expect(JSON.stringify(line)).not.toMatch(/atok|asset-|utok-|front-photo/);
+    // Nothing else from the extension reaches the cart line (no token, no original-file ids, no design data).
+    expect(line.lineExtensions).toHaveLength(2);
+    expect(JSON.stringify(line)).not.toMatch(/token|front-photo/i);
     const preview = JSON.parse(await page.$eval('#event', (e) => e.textContent!));
     expect(preview).toMatchObject({ contract: 1, type: 'order.confirmed', storeId: 'store-1' });
     expect(preview.lines).toEqual([
-      expect.objectContaining({ id: 'L1', productId: 'prod-1', extensions: { customizationId: 'cz-1' } }),
+      expect.objectContaining({ id: 'L1', productId: 'prod-1', extensions: { customizationId: 'cz-1', customizedImageUrl: expect.any(String) } }),
     ]);
 
     // Adding the same design again makes a NEW customization: one customization per cart line.

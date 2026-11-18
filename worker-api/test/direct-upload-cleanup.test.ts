@@ -196,9 +196,9 @@ describe.each<Driver>(['r2', 's3'])('direct-upload cleanup (%s)', (driver) => {
     const init = (await json(res)).data;
     await p.browserPut(init, png);
     await call(`${STOREFRONT}/uploads/complete?storeId=${STORE_A}`, {
-      method: 'POST', token: null, env: p.env, body: { uploadId: init.uploadId }, headers: { Authorization: `Bearer ${init.uploadToken}` },
+      method: 'POST', token: null, env: p.env, body: { uploadId: init.uploadId }
     });
-    await saveCustomization({ env: p.env, assets: [{ assetId: init.assetId, uploadToken: init.uploadToken }] });
+    await saveCustomization({ env: p.env, assets: [{ assetId: init.assetId }] });
     const key = (await queryDb<any>('SELECT object_key FROM customization_assets'))[0].object_key;
 
     const outcome = await cleanup(at(10 * MIN));

@@ -1,14 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryRateLimitStore, RateLimiter } from '../src/shared/rate-limit';
 import { decodeCursor, encodeCursor } from '../src/modules/personalization/pagination';
-import { normalizeOrigin } from '../src/modules/personalization/settings-service';
 import {
   classifyReference,
   collectAssetLocators,
   rewriteAssetReferences,
   type AssetIndex,
 } from '../src/modules/personalization/storefront-assets';
-import { etagMatches, storefrontCorsHeaders } from '../src/modules/personalization/storefront-controller';
+import { etagMatches, publicCorsHeaders } from '../src/modules/personalization/storefront-controller';
 import { validateMarkupPayload } from '../src/modules/personalization/validation';
 import type { ProductConfigLike } from '../src/modules/personalization/types';
 
@@ -261,14 +260,11 @@ describe('helpers', () => {
     expect(etagMatches('"abcd"', etag)).toBe(false);
   });
 
-  it('storefront CORS only reflects an origin on the store list', () => {
-    const store = { storeId: 's', allowedOrigins: ['https://shop.example.com'] };
-    expect(storefrontCorsHeaders('https://shop.example.com', store).get('access-control-allow-origin')).toBe('https://shop.example.com');
-    expect(storefrontCorsHeaders('https://SHOP.example.com', store).get('access-control-allow-origin')).toBe('https://SHOP.example.com');
-    expect(storefrontCorsHeaders('https://evil.example', store).has('access-control-allow-origin')).toBe(false);
-    expect(storefrontCorsHeaders('https://shop.example.com', { storeId: 's', allowedOrigins: [] }).has('access-control-allow-origin')).toBe(false);
-    expect(storefrontCorsHeaders('https://shop.example.com', null).has('access-control-allow-origin')).toBe(false);
-    expect(storefrontCorsHeaders(undefined, store).get('vary')).toBe('Origin');
+  it('public CORS is a credential-free wildcard that never varies by caller', () => {
+    const headers = publicCorsHeaders();
+    expect(headers.get('access-control-allow-origin')).toBe('*');
+    expect(headers.has('access-control-allow-credentials')).toBe(false);
+    expect(headers.has('vary')).toBe(false);
   });
 
   it('cursors round-trip and reject tampering', () => {
@@ -278,14 +274,6 @@ describe('helpers', () => {
     expect(() => decodeCursor('###')).toThrow();
     expect(() => decodeCursor(btoa('1.not-a-uuid'))).toThrow();
     expect(() => decodeCursor(btoa("1.11111111-1111-4111-8111-111111111111'; DROP TABLE x"))).toThrow();
-  });
-
-  it('normalises origins', () => {
-    expect(normalizeOrigin('https://Shop.Example.com/')).toBe('https://shop.example.com');
-    expect(normalizeOrigin('http://localhost:3000')).toBe('http://localhost:3000');
-    expect(normalizeOrigin('https://x.example/path')).toBeNull();
-    expect(normalizeOrigin('https://x.example?q=1')).toBeNull();
-    expect(normalizeOrigin('x.example')).toBeNull();
   });
 
   it('validates markup payloads', () => {

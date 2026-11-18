@@ -201,7 +201,7 @@ describe('storefront caching', () => {
     await mapTo('cfg-etag', 'product', 'prod-etag');
     const res = await pub(cfgUrl('prod-etag', STORE_A));
     expect(res.headers.get('cache-control')).toBe('public, max-age=60, s-maxage=300, stale-while-revalidate=600');
-    expect(res.headers.get('vary')).toContain('Origin');
+    expect(res.headers.get('vary') ?? '').not.toContain('Origin');
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(res.headers.get('x-request-id')).toBeTruthy();
     const etag = res.headers.get('etag') ?? '';
@@ -241,75 +241,11 @@ describe('storefront caching', () => {
     expect(cc).toMatch(/max-age=\d+/);
     const maxAge = Number(/max-age=(\d+)/.exec(cc)?.[1]);
     expect(maxAge).toBeLessThan(60);
-    expect(res.headers.get('vary')).toContain('Origin');
+    expect(res.headers.get('vary') ?? '').not.toContain('Origin');
   });
 });
 
-describe('storefront CORS (per store)', () => {
-  async function seedMapped(store = STORE_A): Promise<void> {
-    await seedPublished('cfg-cors', store);
-    await mapTo('cfg-cors', 'product', 'prod-cors', store);
-  }
-  const allow = (origins: string[], storeId = STORE_A) =>
-    call(`${ADMIN}/settings/storefront`, { method: 'PUT', storeId, body: { storefrontOrigins: origins } });
-
-  it('allows no cross-origin access when the store has no allowed origins', async () => {
-    await seedMapped();
-    // Not even the globally allowed ADMIN origin may use the public route.
-    for (const origin of ['http://localhost:4200', 'https://shop.example.com']) {
-      const res = await pub(cfgUrl('prod-cors', STORE_A), { origin });
-      expect(res.status).toBe(200);
-      expect(res.headers.get('access-control-allow-origin')).toBeNull();
-      expect(res.headers.get('vary')).toContain('Origin');
-    }
-  });
-
-  it('reflects only origins on the store list', async () => {
-    await seedMapped();
-    await allow(['https://shop.example.com']);
-    const ok = await pub(cfgUrl('prod-cors', STORE_A), { origin: 'https://shop.example.com' });
-    expect(ok.headers.get('access-control-allow-origin')).toBe('https://shop.example.com');
-    expect(ok.headers.get('vary')).toContain('Origin');
-    const other = await pub(cfgUrl('prod-cors', STORE_A), { origin: 'https://evil.example' });
-    expect(other.status).toBe(200);
-    expect(other.headers.get('access-control-allow-origin')).toBeNull();
-    const noOrigin = await pub(cfgUrl('prod-cors', STORE_A));
-    expect(noOrigin.headers.get('access-control-allow-origin')).toBeNull();
-
-    // 304 responses keep the CORS headers.
-    const etag = ok.headers.get('etag') ?? '';
-    const cond = await pub(cfgUrl('prod-cors', STORE_A), {
-      origin: 'https://shop.example.com',
-      headers: { 'If-None-Match': etag },
-    });
-    expect(cond.status).toBe(304);
-    expect(cond.headers.get('access-control-allow-origin')).toBe('https://shop.example.com');
-  });
-
-  it('keeps one store origin list from granting access to another store', async () => {
-    await seedMapped(STORE_A);
-    await seedMapped(STORE_B);
-    await allow(['https://shop-a.example'], STORE_A);
-    const forB = await pub(cfgUrl('prod-cors', STORE_B), { origin: 'https://shop-a.example' });
-    expect(forB.headers.get('access-control-allow-origin')).toBeNull();
-    const forA = await pub(cfgUrl('prod-cors', STORE_A), { origin: 'https://shop-a.example' });
-    expect(forA.headers.get('access-control-allow-origin')).toBe('https://shop-a.example');
-  });
-
-  it('answers preflight from the store list and gives unknown stores nothing', async () => {
-    await seedMapped();
-    await allow(['https://shop.example.com']);
-    const ok = await pub(cfgUrl('prod-cors', STORE_A), { method: 'OPTIONS', origin: 'https://shop.example.com' });
-    expect(ok.status).toBe(204);
-    expect(ok.headers.get('access-control-allow-origin')).toBe('https://shop.example.com');
-    expect(ok.headers.get('access-control-allow-methods')).toContain('GET');
-    const bad = await pub(cfgUrl('prod-cors', STORE_A), { method: 'OPTIONS', origin: 'https://evil.example' });
-    expect(bad.status).toBe(204);
-    expect(bad.headers.get('access-control-allow-origin')).toBeNull();
-    const unknown = await pub(cfgUrl('prod-cors', 'store_unknown'), { method: 'OPTIONS', origin: 'https://shop.example.com' });
-    expect(unknown.headers.get('access-control-allow-origin')).toBeNull();
-  });
-
+describe('admin CORS', () => {
   it('leaves the admin CORS allow-list untouched', async () => {
     const res = await call(`${ADMIN}/configs`, { method: 'OPTIONS', token: null, origin: 'http://localhost:4200' });
     expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:4200');
@@ -376,7 +312,6 @@ describe('storefront assets', () => {
     const asset = await upload();
     await seedPublished('cfg-asset', STORE_A, draftWith('cfg-asset', asset.deliveryUrl));
     await mapTo('cfg-asset', 'product', 'prod-asset');
-    await call(`${ADMIN}/settings/storefront`, { method: 'PUT', body: { storefrontOrigins: ['https://shop.example.com'] } });
 
     const d = await data(await pub(cfgUrl('prod-asset', STORE_A)));
     const expected = `http://api.test${STOREFRONT}/assets/${asset.id}`;
@@ -391,7 +326,8 @@ describe('storefront assets', () => {
     expect(img.headers.get('cache-control')).toContain('public');
     expect(img.headers.get('cache-control')).toContain('s-maxage=');
     expect(img.headers.get('x-content-type-options')).toBe('nosniff');
-    expect(img.headers.get('access-control-allow-origin')).toBe('https://shop.example.com');
+    expect(img.headers.get('access-control-allow-origin')).toBe('*');
+    expect(img.headers.has('access-control-allow-credentials')).toBe(false);
     expect(img.headers.get('cross-origin-resource-policy')).toBe('cross-origin');
     expect(new Uint8Array(await img.arrayBuffer())).toEqual(tinyPng());
 
@@ -399,10 +335,10 @@ describe('storefront assets', () => {
     expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
     const cond = await pub(path, { headers: { 'If-None-Match': etag } });
     expect(cond.status).toBe(304);
-    // A foreign origin gets the bytes but no CORS grant.
+    // Any origin gets the bytes and the same wildcard grant.
     const foreign = await pub(path, { origin: 'https://evil.example' });
     expect(foreign.status).toBe(200);
-    expect(foreign.headers.get('access-control-allow-origin')).toBeNull();
+    expect(foreign.headers.get('access-control-allow-origin')).toBe('*');
   });
 
   it('serves assets only while a PUBLISHED, non-archived config references them', async () => {

@@ -44,7 +44,7 @@ async function placeOrder(
     if (options.withPreview) {
       const preview = await uploadCustomerImage(storeId, 'preview');
       const upload = await uploadCustomerImage(storeId, 'upload');
-      assets.push({ assetId: preview.assetId, uploadToken: preview.uploadToken }, { assetId: upload.assetId, uploadToken: upload.uploadToken });
+      assets.push({ assetId: preview.assetId }, { assetId: upload.assetId });
     }
     ids.push((await saveCustomization({ storeId, productId, assets })).customizationId);
   }

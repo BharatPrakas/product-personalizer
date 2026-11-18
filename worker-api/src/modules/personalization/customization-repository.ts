@@ -3,7 +3,7 @@
  * store id; nothing here trusts an id from a request on its own.
  */
 
-import { placeholders, type Database, type Statement } from '../../database/connection';
+import { chunkForParamLimit, placeholders, type Database, type Statement } from '../../database/connection';
 import type { Cursor } from './pagination';
 
 export type CustomizationStatus = 'saved' | 'ordered' | 'expired';
@@ -292,6 +292,20 @@ export class CustomizationRepository {
       [storeId, assetId],
     );
     return rows[0] ?? null;
+  }
+
+  /** The rows of these assets within one store (any status); unknown ids are simply absent. */
+  async assetsByIds(storeId: string, ids: readonly string[]): Promise<CustomerAssetRow[]> {
+    const found: CustomerAssetRow[] = [];
+    for (const chunk of chunkForParamLimit(ids, 1, 1)) {
+      const { rows } = await this.db.query<CustomerAssetRow>(
+        `SELECT ${ASSET_COLS} FROM customization_assets
+          WHERE store_id = $1 AND id IN (${placeholders(2, chunk.length)})`,
+        [storeId, ...chunk],
+      );
+      found.push(...rows);
+    }
+    return found;
   }
 
   /** Assets currently attached to a customization. */

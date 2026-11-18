@@ -17,6 +17,13 @@ import {
 } from './harness';
 import { waitForCrop } from './personalization.helpers';
 
+/** What `prepareForCart()` resolves: the id plus the public URL of the first preview the fake API stored. */
+const cart = (customizationId: string) => ({
+  ok: true,
+  value: { customizationId, customizedImageUrl: expect.stringMatching(/\/customization-images\/asset-\d+\?storeId=store-1$/) },
+});
+
+
 let env: Environment;
 beforeAll(async () => {
   env = await startEnvironment();
@@ -172,7 +179,7 @@ describe('prepareForCart()', () => {
     await makeValid(page, 'a');
 
     const result = await host.prepare(page, 'a');
-    expect(result).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(result).toEqual(cart('cz-1'));
 
     // Order: every file is uploaded before the customization that references them.
     const order = env.api.shopper.requests.map((r) => r.endpoint);
@@ -197,8 +204,9 @@ describe('prepareForCart()', () => {
       configId: 'tshirt-personalization',
       configVersion: 1,
     });
-    // Every upload is attached with the token it was issued.
-    expect(create.json.assets).toEqual(uploads().map((_, i) => ({ assetId: `asset-${i + 1}`, uploadToken: `utok-${i + 1}` })));
+    // Every upload is attached by its id alone: the API is anonymous, no token travels anywhere.
+    expect(create.json.assets).toEqual(uploads().map((_, i) => ({ assetId: `asset-${i + 1}` })));
+    for (const r of env.api.shopper.requests) expect(r.query['storeId']).toBe('store-1');
     // The data says which stored file is which, so a merchant can fulfil the order.
     const files = create.json.data.files;
     expect(files.uploads).toHaveLength(kinds.filter((k) => k === 'upload').length);
@@ -207,14 +215,18 @@ describe('prepareForCart()', () => {
     const refs = [...files.uploads, ...files.artworks, ...files.previews].map((f: any) => f.ref).sort();
     expect(refs).toEqual(create.json.assets.map((a: any) => a.assetId).sort());
     expect(create.json.data.customization.values['front-photo'].assetId).toBe(files.uploads[0].assetId);
-    // The access token is NOT handed to the host (only the id goes onto the cart).
-    expect(JSON.stringify(result)).not.toContain('atok');
+    // The host gets the id and the public image URL (of the first preview saved), nothing else.
+    expect(Object.keys((result as { value: object }).value).sort()).toEqual(['customizationId', 'customizedImageUrl']);
+    expect((result as { value: { customizedImageUrl: string } }).value.customizedImageUrl).toBe(
+      `${env.origin}/api/v1/storefront/personalization/customization-images/asset-${kinds.indexOf('preview') + 1}?storeId=store-1`,
+    );
 
     const saved = (await host.zbEvents(page)).filter((e) => e.type === 'personalization.saved');
     expect(saved).toHaveLength(1);
     // The three original fields are unchanged; productId, variantId, expiresAt and source were added (additively).
     expect(saved[0].data).toEqual({
       customizationId: 'cz-1',
+      customizedImageUrl: expect.stringMatching(/\/customization-images\/asset-\d+\?storeId=store-1$/),
       templateId: 'tshirt-personalization',
       templateVersion: 1,
       productId: 'prod-1',
@@ -222,7 +234,7 @@ describe('prepareForCart()', () => {
       expiresAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       source: 'cart',
     });
-    expect(JSON.stringify(saved[0].data)).not.toMatch(/atok|utok|token/i); // identifiers and metadata only
+    expect(JSON.stringify(saved[0].data)).not.toMatch(/token/i); // identifiers, URLs and metadata only
     await page.close();
   });
 
@@ -235,7 +247,7 @@ describe('prepareForCart()', () => {
     await makeValid(page, 'a');
 
     const [first, second] = await Promise.all([host.prepare(page, 'a'), host.prepare(page, 'a')]);
-    expect(first).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(first).toEqual(cart('cz-1'));
     expect(second).toEqual(first);
     expect(creates()).toHaveLength(1);
 
@@ -252,9 +264,9 @@ describe('prepareForCart()', () => {
     await host.waitStatus(page, 'a', 'ready');
     await makeValid(page, 'a');
 
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
     await host.hostEvent(page, 'a', 'cart.line-added', { lineId: 'L1', quantity: 1 });
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-2' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-2'));
     expect(creates()).toHaveLength(2);
     await page.close();
   });
@@ -265,7 +277,7 @@ describe('prepareForCart()', () => {
     await host.mount(page, 'a', props());
     await host.waitStatus(page, 'a', 'ready');
     await makeValid(page, 'a');
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
 
     // Edit a text field, then add again.
     await typeText(page, 'a', 'input[type="text"]', 'Alex');
@@ -275,7 +287,7 @@ describe('prepareForCart()', () => {
       'a',
     );
     const again = await host.prepare(page, 'a');
-    expect(again).toEqual({ ok: true, value: { customizationId: 'cz-2' } });
+    expect(again).toEqual(cart('cz-2'));
     await page.close();
   });
 
@@ -323,7 +335,7 @@ describe('prepareForCart()', () => {
     expect(Object.keys(errors[0].data).sort()).toEqual(['code', 'recoverable']);
     // A failed save is not remembered: the next attempt tries again.
     env.api.shopper.createAnswer = undefined;
-    expect(await host.prepare(page, 'a')).toEqual({ ok: true, value: { customizationId: 'cz-1' } });
+    expect(await host.prepare(page, 'a')).toEqual(cart('cz-1'));
     await page.close();
   });
 

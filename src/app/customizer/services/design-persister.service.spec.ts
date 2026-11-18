@@ -39,11 +39,11 @@ describe('DesignPersister', () => {
       async upload(_target: unknown, file: { kind: PersistKind; filename?: string }, signal: AbortSignal): Promise<UploadedFile> {
         if (failUpload === uploads.length) throw new Error('upload failed');
         uploads.push({ kind: file.kind, filename: file.filename, signal });
-        return { assetId: `asset-${uploads.length}`, uploadToken: `tok-${uploads.length}` };
+        return { assetId: `asset-${uploads.length}` };
       },
       async create(_target: unknown, request: unknown, signal: AbortSignal) {
         creates.push({ request, signal });
-        return { customizationId: 'cz-9', accessToken: 'secret', expiresAt: '2030-01-01T00:00:00Z' };
+        return { customizationId: 'cz-9', customizedImageUrl: 'https://api.example/img/asset-3', expiresAt: '2030-01-01T00:00:00Z' };
       },
     };
     TestBed.configureTestingModule({ providers: [DesignPersister, { provide: CustomizationPersistence, useValue: fake }] });
@@ -59,6 +59,7 @@ describe('DesignPersister', () => {
     const signal = new AbortController().signal;
     const created = await persister().persist(context, payload(), signal);
     expect(created.customizationId).toBe('cz-9');
+    expect(created.customizedImageUrl).toBe('https://api.example/img/asset-3');
     expect(uploads.map((u) => [u.kind, u.filename])).toEqual([
       ['upload', 'photo-1'],
       ['artwork', 'chest'],
@@ -73,9 +74,9 @@ describe('DesignPersister', () => {
       configId: 'tpl',
       configVersion: 4,
       assets: [
-        { assetId: 'asset-1', uploadToken: 'tok-1' },
-        { assetId: 'asset-2', uploadToken: 'tok-2' },
-        { assetId: 'asset-3', uploadToken: 'tok-3' },
+        { assetId: 'asset-1' },
+        { assetId: 'asset-2' },
+        { assetId: 'asset-3' },
       ],
     });
     // The data says which stored file is which.

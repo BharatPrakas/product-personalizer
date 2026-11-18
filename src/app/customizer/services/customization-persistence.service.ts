@@ -16,7 +16,6 @@ export interface PersistTarget {
 
 export interface UploadedFile {
   assetId: string;
-  uploadToken: string;
 }
 
 export interface CreateRequest {
@@ -32,9 +31,31 @@ export interface CreateRequest {
 
 export interface CreatedCustomization {
   customizationId: string;
-  /** Bearer token for reading / updating THIS customization; kept in memory only. */
-  accessToken: string;
+  /** Public URL of the customized image, when the API returned a usable one (see {@link publicImageUrl}). */
+  customizedImageUrl: string | null;
   expiresAt: string;
+}
+
+/** The longest value the extension contract allows for a line extension value. */
+export const MAX_IMAGE_URL_LENGTH = 2048;
+
+/**
+ * The API's `customizedImageUrl` if it is safe to hand to a host's `<img>`: an absolute https URL of at most
+ * 2048 characters (plain http only for a loopback host, i.e. local development). Anything else is dropped,
+ * so a malformed value can never reach a cart line.
+ */
+export function publicImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_IMAGE_URL_LENGTH) return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return null;
+  if (url.username || url.password) return null;
+  return url.href.length <= MAX_IMAGE_URL_LENGTH ? url.href : null;
 }
 
 const UPLOAD_TIMEOUT_MS = 30_000;
@@ -85,16 +106,14 @@ function api(target: PersistTarget, path: string, query: Record<string, string>)
 
 /**
  * Saves a shopper's design to the personalization API: each image to private storage, then the
- * customization itself. The response gives the element a `customizationId` — an identifier, not a
- * credential — plus a scoped token that never leaves this module's callers (it is not put on the cart).
+ * customization itself. The API is anonymous: no key, secret or token is held or sent. The response gives
+ * the element a `customizationId` and the public URL of the customized image, both plain strings.
  */
 @Service({ autoProvided: false })
 export class CustomizationPersistence {
   /**
    * Uploads one private file. The bytes go straight from the browser to object storage on a presigned URL
-   * (the Worker only authorizes it and later verifies the object); the shopper token that authorizes
-   * confirming — and later attaching — the file travels in the Worker calls, never to the storage host.
-   * Falls back to the proxied route only where the Worker has direct uploads switched off.
+   * (the Worker only authorizes it and later verifies the object). Falls back to the proxied route only where the Worker has direct uploads switched off.
    */
   async upload(
     target: PersistTarget,
@@ -102,8 +121,6 @@ export class CustomizationPersistence {
     signal: AbortSignal,
     options: Omit<UploadOptions, 'signal'> = {},
   ): Promise<UploadedFile> {
-    // The upload token is issued with the first presigned URL and authorizes everything after it.
-    let uploadToken: string | null = null;
     const gateway: UploadGateway<UploadedFile> = {
       initiate: async (renewUploadId) => {
         const body = this.dataOf(
@@ -111,11 +128,7 @@ export class CustomizationPersistence {
             api(target, '/uploads/url', {}),
             {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                // Renewing an open upload proves ownership with the token it was issued.
-                ...(renewUploadId && uploadToken ? { Authorization: `Bearer ${uploadToken}` } : {}),
-              },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 kind: file.kind,
                 contentType: file.blob.type || 'application/octet-stream',
@@ -129,14 +142,9 @@ export class CustomizationPersistence {
             true,
           ),
         );
-        if (
-          typeof body['uploadId'] !== 'string' ||
-          typeof body['uploadUrl'] !== 'string' ||
-          typeof body['uploadToken'] !== 'string'
-        ) {
+        if (typeof body['uploadId'] !== 'string' || typeof body['uploadUrl'] !== 'string') {
           throw new HttpFailure(502, 'bad_response');
         }
-        uploadToken = body['uploadToken'];
         return {
           kind: 'pending',
           put: {
@@ -154,7 +162,7 @@ export class CustomizationPersistence {
             api(target, '/uploads/complete', {}),
             {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${uploadToken ?? ''}` },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ uploadId }),
             },
             CREATE_TIMEOUT_MS,
@@ -162,10 +170,8 @@ export class CustomizationPersistence {
             true,
           ),
         );
-        if (typeof body['assetId'] !== 'string' || typeof body['uploadToken'] !== 'string') {
-          throw new HttpFailure(502, 'bad_response');
-        }
-        return { assetId: body['assetId'], uploadToken: body['uploadToken'] };
+        if (typeof body['assetId'] !== 'string') throw new HttpFailure(502, 'bad_response');
+        return { assetId: body['assetId'] };
       },
     };
 
@@ -211,10 +217,8 @@ export class CustomizationPersistence {
     });
     const body = await this.request(url, { method: 'POST', body: file.blob, headers: { 'Content-Type': file.blob.type || 'application/octet-stream' } }, UPLOAD_TIMEOUT_MS, signal);
     const data = this.dataOf(body);
-    if (typeof data['assetId'] !== 'string' || typeof data['uploadToken'] !== 'string') {
-      throw new CustomizerError('save-failed', MESSAGES.generic, true);
-    }
-    return { assetId: data['assetId'], uploadToken: data['uploadToken'] };
+    if (typeof data['assetId'] !== 'string') throw new CustomizerError('save-failed', MESSAGES.generic, true);
+    return { assetId: data['assetId'] };
   }
 
   async create(target: PersistTarget, request: CreateRequest, signal: AbortSignal): Promise<CreatedCustomization> {
@@ -237,12 +241,10 @@ export class CustomizationPersistence {
       signal,
     );
     const data = this.dataOf(body);
-    if (typeof data['customizationId'] !== 'string' || typeof data['accessToken'] !== 'string') {
-      throw new CustomizerError('save-failed', MESSAGES.generic, true);
-    }
+    if (typeof data['customizationId'] !== 'string') throw new CustomizerError('save-failed', MESSAGES.generic, true);
     return {
       customizationId: data['customizationId'],
-      accessToken: data['accessToken'],
+      customizedImageUrl: publicImageUrl(data['customizedImageUrl']),
       expiresAt: typeof data['expiresAt'] === 'string' ? data['expiresAt'] : '',
     };
   }

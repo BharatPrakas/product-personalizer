@@ -21,7 +21,8 @@
 export const ZB_EVENT = 'zb:event';
 export const ZB_HOST_EVENT = 'zb:host-event';
 const PREPARE_TIMEOUT_MS = 30_000;
-const LIMITS = { maxKeys: 8, maxKeyLength: 40, maxValueLength: 512 };
+/** `maxValueLength` is the default; a manifest key may declare a larger `maxLength`, never above `maxDeclaredValueLength` (contract §6). */
+const LIMITS = { maxKeys: 8, maxKeyLength: 40, maxValueLength: 512, maxDeclaredValueLength: 2048 };
 
 const isString = (v) => typeof v === 'string' && v.length > 0;
 
@@ -113,7 +114,8 @@ export function createExtensionBridge({ root = document, manifests, onChange = (
           if (!manifest.lineExtensionKeys.includes(key) || key.length > LIMITS.maxKeyLength) {
             throw new Error('This add-on returned data it is not allowed to attach.');
           }
-          if (typeof value !== 'string' || value.length > LIMITS.maxValueLength) {
+          const maxLength = Math.min(manifest.lineExtensionMaxLength?.[key] ?? LIMITS.maxValueLength, LIMITS.maxDeclaredValueLength);
+          if (typeof value !== 'string' || value.length > maxLength) {
             throw new Error('This add-on returned data that is too large.');
           }
           lineExtensions.push({ extensionId: state.extensionId, key, value });

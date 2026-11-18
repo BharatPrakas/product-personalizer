@@ -28,6 +28,8 @@ export interface SavedCustomization {
   /** Template, variant and draft values: the same key means the same design. */
   key: string;
   customizationId: string;
+  /** Public URL of the customized image, when the API returned a usable one. */
+  customizedImageUrl: string | null;
   expiresAt: string;
   productId: string;
   variantId: string | null;
@@ -37,6 +39,7 @@ export interface SavedCustomization {
 interface Remembered {
   key: string;
   customizationId: string;
+  customizedImageUrl: string | null;
   /** Epoch ms after which the server-side customization may have expired. */
   validUntil: number;
 }
@@ -81,6 +84,7 @@ export class DesignSaver {
       return Promise.resolve({
         key,
         customizationId: this.remembered.customizationId,
+        customizedImageUrl: this.remembered.customizedImageUrl,
         expiresAt: '',
         productId: context.productId,
         variantId: context.variantId,
@@ -105,10 +109,10 @@ export class DesignSaver {
         controller.signal,
       )
       .then((created) => {
-        // Only the identifier is kept: the access token the API also returns is never needed here.
         const result: SavedCustomization = {
           key,
           customizationId: created.customizationId,
+          customizedImageUrl: created.customizedImageUrl,
           expiresAt: created.expiresAt,
           productId: context.productId,
           variantId: context.variantId,
@@ -148,10 +152,12 @@ export class DesignSaver {
     this.remembered = {
       key: result.key,
       customizationId: result.customizationId,
+      customizedImageUrl: result.customizedImageUrl,
       validUntil: Number.isFinite(expires) ? expires - 60_000 : Date.now() + FALLBACK_REUSE_MS,
     };
     host.saved({
       customizationId: result.customizationId,
+      ...(result.customizedImageUrl ? { customizedImageUrl: result.customizedImageUrl } : {}),
       templateId: design.templateId,
       templateVersion: design.templateVersion,
       productId: result.productId,

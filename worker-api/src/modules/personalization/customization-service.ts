@@ -1,15 +1,17 @@
 /**
  * Customer customizations.
  *
- * Shopper side (public, anonymous): upload private images, save a customization, read / update it with
- * a scoped expiring token. The customization id alone never authorizes anything.
+ * Shopper side (public, anonymous, no credentials): upload images, save / update a customization, and get
+ * back `customizedImageUrl`, the public URL of the rendered customized image. Ids are unguessable UUIDs.
  * Merchant side (authenticated, store-scoped): list and read customizations and download their files.
  *
  * Trust rules:
- *  - the store comes from the resolved storefront key (shopper) or the verified token (merchant);
+ *  - the store comes from the resolved storefront key (shopper) or the verified token (merchant) and must
+ *    be known;
  *  - the configuration is resolved from the mapping for the product — the client only states which
  *    configId / version it rendered, and a mismatch is rejected rather than trusted;
- *  - customer files live under a private prefix and are only streamed after an access check.
+ *  - customer files live under a private prefix. The ONLY file served to the public is an attached
+ *    `preview` image (see `findPublicImage`); uploads and print artwork are never exposed to shoppers.
  */
 
 import type { Database } from '../../database/connection';
@@ -20,11 +22,11 @@ import {
   NotFoundError,
   PayloadTooLargeError,
   ServiceUnavailableError,
-  UnauthorizedError,
   UnsupportedMediaTypeError,
   ValidationError,
 } from '../../shared/errors';
 import type { Logger } from '../../shared/logger';
+import { STOREFRONT_SEGMENT, apiPath } from '../../shared/api-paths';
 import { sniffImage } from '../../shared/image-sniff';
 import {
   type ObjectStorage,
@@ -41,7 +43,6 @@ import {
   type CustomizationListRow,
   type CustomizationRow,
 } from './customization-repository';
-import { issueCustomerToken, verifyCustomerToken } from './customer-token';
 import type { ResolvedStore } from './storefront-service';
 import { StorefrontRepository } from './storefront-repository';
 import type { CursorPageMeta } from './types';
@@ -52,12 +53,13 @@ export interface CustomizationContext {
   storage: () => ObjectStorage;
   config: AppConfig;
   logger: Logger;
+  /** The Worker's public origin as seen by the request (https in production); `customizedImageUrl` is built on it. */
+  publicOrigin: string;
   now?: () => Date;
 }
 
 export interface AssetRefInput {
   assetId: string;
-  uploadToken?: string;
 }
 
 export interface CustomerAssetDto {
@@ -73,28 +75,13 @@ export interface CustomerAssetDto {
 export interface SavedCustomizationDto {
   customizationId: string;
   status: 'saved';
-  /** Bearer token for this customization only; keep it in memory / session storage, not in the cart. */
-  accessToken: string;
-  accessTokenExpiresAt: string;
+  /**
+   * Absolute, public URL of the customized image (the first `preview` asset of the save), safe for
+   * `<img src>`; `null` when the save carried no preview. It changes whenever the saved preview changes.
+   */
+  customizedImageUrl: string | null;
   /** When the customization lapses if the shopper never orders or edits it again. */
   expiresAt: string;
-}
-
-export interface ShopperCustomizationDto {
-  customizationId: string;
-  status: 'saved' | 'ordered';
-  configId: string;
-  configVersion: number;
-  productId: string;
-  variantId: string | null;
-  data: Record<string, unknown>;
-  assets: CustomerAssetDto[];
-  expiresAt: string | null;
-}
-
-export interface UploadedAssetDto extends CustomerAssetDto {
-  uploadToken: string;
-  uploadTokenExpiresAt: string;
 }
 
 /** Response to a shopper's upload-initiation request. */
@@ -106,9 +93,6 @@ export interface CustomerUploadInitiationDto {
   /** Headers the browser must send with the PUT, exactly as given (they are part of the signature). */
   headers: Record<string, string>;
   expiresIn: number;
-  /** Authorizes confirming (and later attaching) THIS upload; send it as `Authorization: Bearer`. */
-  uploadToken: string;
-  uploadTokenExpiresAt: string;
 }
 
 export interface MerchantCustomizationDto {
@@ -130,6 +114,9 @@ export interface MerchantCustomizationDto {
   orderedAt: string | null;
   expiredAt: string | null;
 }
+
+/** The only types a public image may have: what `sniffImage` can produce, never the declared type. */
+const PUBLIC_IMAGE_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 const iso = (v: Date | string | null): string | null => (v === null ? null : new Date(v).toISOString());
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -178,33 +165,8 @@ export class CustomizationService {
     this.now = ctx.now ?? (() => new Date());
   }
 
-  private tokenSecret(): string {
-    const secret = this.ctx.config.customizationTokenSecret;
-    if (!secret) {
-      throw new ServiceUnavailableError('customizations_not_configured', 'Saving customizations is not configured on this environment.');
-    }
-    return secret;
-  }
-
   private expiryFrom(now: Date): Date {
     return new Date(now.getTime() + this.ctx.config.customizationRetentionDays * DAY_MS);
-  }
-
-  private issueAccessToken(storeId: string, customizationId: string, now: Date) {
-    return issueCustomerToken(
-      this.tokenSecret(),
-      { scope: 'customization', storeId, subject: customizationId },
-      this.ctx.config.customizationTokenTtlSeconds,
-      now,
-    );
-  }
-
-  /** Verifies the shopper's bearer token for ONE customization. All failures look the same. */
-  private authorizeShopper(storeId: string, customizationId: string, token: string | null): void {
-    const verdict = token
-      ? verifyCustomerToken(this.tokenSecret(), token, { scope: 'customization', storeId, subject: customizationId }, this.now())
-      : 'malformed';
-    if (verdict !== 'ok') throw new UnauthorizedError('A valid access token for this customization is required.');
   }
 
   // ---- shopper: uploads ----
@@ -212,8 +174,7 @@ export class CustomizationService {
   async uploadAsset(
     store: ResolvedStore,
     input: { bytes: ArrayBuffer; kind: CustomerAssetKind; filename?: string },
-  ): Promise<UploadedAssetDto> {
-    const secret = this.tokenSecret();
+  ): Promise<CustomerAssetDto> {
     const size = input.bytes.byteLength;
     if (size === 0) throw new UnsupportedMediaTypeError('The uploaded file is empty.');
     if (size > this.ctx.config.maxUploadBytes) {
@@ -248,32 +209,16 @@ export class CustomizationService {
       await storage.delete(objectKey).catch(() => undefined);
       throw error;
     }
-    const token = issueCustomerToken(
-      secret,
-      { scope: 'upload', storeId: store.storeId, subject: row.id },
-      this.ctx.config.customizationTokenTtlSeconds,
-      this.now(),
-    );
-    return { ...toAssetDto(row), uploadToken: token.token, uploadTokenExpiresAt: token.expiresAt.toISOString() };
+    return toAssetDto(row);
   }
 
   // ---- shopper: direct uploads (presigned PUT -> verify) ----
 
-  /** Verifies a shopper's upload token for ONE upload's asset. All failures look the same. */
-  private authorizeUpload(storeId: string, assetId: string, token: string | null): void {
-    const verdict = token
-      ? verifyCustomerToken(this.tokenSecret(), token, { scope: 'upload', storeId, subject: assetId }, this.now())
-      : 'malformed';
-    if (verdict !== 'ok') {
-      throw new ApiError(401, 'invalid_upload_token', 'A valid upload token for this upload is required.');
-    }
-  }
-
   /**
-   * Step 1: the shopper declares the file and gets a presigned PUT for one PRIVATE staging object plus
-   * the upload token that later confirms and attaches it. Same trust model as the proxied upload: the
-   * store key + its origin allow-list + rate limits; nothing here grants access to anyone else's files.
-   * Passing `uploadId` (with its token) renews the URL of an upload that is still open.
+   * Step 1: the shopper declares the file and gets a presigned PUT for one PRIVATE staging object. Same
+   * trust model as the proxied upload: a known store key + rate limits + the per-store open-upload cap;
+   * the bytes are sniffed before anything is stored. Passing `uploadId` renews the URL of a customer
+   * upload that is still open (the id is an unguessable UUID only the uploader has seen).
    */
   async initiateUpload(
     store: ResolvedStore,
@@ -285,13 +230,10 @@ export class CustomizationService {
       sha256?: string;
       uploadId?: string;
     },
-    token: string | null,
   ): Promise<CustomerUploadInitiationDto> {
-    const secret = this.tokenSecret();
     if (input.uploadId) {
       const existing = await this.direct.uploads.get(store.storeId, input.uploadId.toLowerCase());
       if (!existing || existing.scope !== 'customer') throw new NotFoundError('That upload was not found.');
-      this.authorizeUpload(store.storeId, existing.asset_id, token);
     }
     const { upload, request } = await this.direct.initiate({
       scope: 'customer',
@@ -303,12 +245,6 @@ export class CustomizationService {
       sha256: input.sha256,
       renewUploadId: input.uploadId,
     });
-    const issued = issueCustomerToken(
-      secret,
-      { scope: 'upload', storeId: store.storeId, subject: upload.asset_id },
-      this.ctx.config.customizationTokenTtlSeconds,
-      this.now(),
-    );
     return {
       uploadId: upload.id,
       assetId: upload.asset_id,
@@ -316,48 +252,24 @@ export class CustomizationService {
       method: 'PUT',
       headers: request.headers,
       expiresIn: request.expiresIn,
-      uploadToken: issued.token,
-      uploadTokenExpiresAt: issued.expiresAt.toISOString(),
     };
   }
 
   /**
-   * Step 3: verify the uploaded object and create the (unattached) customer asset. The shopper's upload
-   * token is the credential; the response has the same shape as the proxied upload, so everything after
-   * this point (attach, save) is unchanged. Idempotent.
+   * Step 3: verify the uploaded object and create the (unattached) customer asset. The response has the same
+   * shape as the proxied upload, so everything after this point (attach, save) is unchanged. Idempotent.
    */
-  async completeUpload(store: ResolvedStore, uploadId: string, token: string | null): Promise<UploadedAssetDto> {
-    const secret = this.tokenSecret();
+  async completeUpload(store: ResolvedStore, uploadId: string): Promise<CustomerAssetDto> {
     const upload = await this.direct.uploads.get(store.storeId, uploadId.toLowerCase());
     if (!upload || upload.scope !== 'customer') throw new NotFoundError('That upload was not found.');
-    this.authorizeUpload(store.storeId, upload.asset_id, token);
 
     const { assetId } = await this.direct.complete(store.storeId, upload.id, 'customer');
     const row = await this.repo.getAsset(store.storeId, assetId);
     if (!row) throw new NotFoundError('That upload was not found.');
-    const issued = issueCustomerToken(
-      secret,
-      { scope: 'upload', storeId: store.storeId, subject: row.id },
-      this.ctx.config.customizationTokenTtlSeconds,
-      this.now(),
-    );
-    return { ...toAssetDto(row), uploadToken: issued.token, uploadTokenExpiresAt: issued.expiresAt.toISOString() };
+    return toAssetDto(row);
   }
 
-  /** Each NEW attachment must present the upload token issued with that upload. */
-  private assertUploadTokens(storeId: string, refs: readonly AssetRefInput[], now: Date): void {
-    const secret = this.tokenSecret();
-    for (const ref of refs) {
-      const verdict = ref.uploadToken
-        ? verifyCustomerToken(secret, ref.uploadToken, { scope: 'upload', storeId, subject: ref.assetId }, now)
-        : 'malformed';
-      if (verdict !== 'ok') {
-        throw new ApiError(401, 'invalid_upload_token', `The upload token for asset ${ref.assetId} is missing, invalid or expired.`);
-      }
-    }
-  }
-
-  // ---- shopper: save / read / update ----
+  // ---- shopper: save / update ----
 
   async create(
     store: ResolvedStore,
@@ -371,7 +283,6 @@ export class CustomizationService {
       assets: readonly AssetRefInput[];
     },
   ): Promise<SavedCustomizationDto> {
-    this.tokenSecret();
     const refs = uniqueAssetRefs(input.assets);
     const now = this.now();
 
@@ -390,8 +301,6 @@ export class CustomizationService {
     if (!(await this.repo.configVersionExists(match.config_uuid, store.storeId, input.configVersion))) {
       throw new ValidationError([{ path: 'configVersion', code: 'unknown_version', message: 'That configuration version does not exist.' }]);
     }
-    this.assertUploadTokens(store.storeId, refs, now);
-
     const expiresAt = this.expiryFrom(now);
     const customizationId = await this.repo.insertWithAttach({
       storeId: store.storeId,
@@ -412,42 +321,19 @@ export class CustomizationService {
       throw new ConflictError('One or more uploads are unavailable. Upload them again.', { reason: 'asset_unavailable' });
     }
 
-    const access = this.issueAccessToken(store.storeId, customizationId, now);
     return {
       customizationId,
       status: 'saved',
-      accessToken: access.token,
-      accessTokenExpiresAt: access.expiresAt.toISOString(),
+      customizedImageUrl: await this.customizedImageUrl(store.storeId, refs),
       expiresAt: expiresAt.toISOString(),
-    };
-  }
-
-  async getForShopper(store: ResolvedStore, customizationId: string, token: string | null): Promise<ShopperCustomizationDto> {
-    this.authorizeShopper(store.storeId, customizationId, token);
-    const row = await this.repo.getById(store.storeId, customizationId);
-    if (!row) throw new NotFoundError('That customization was not found.');
-    if (row.status === 'expired') throw new ApiError(410, 'customization_expired', 'That customization has expired.');
-    const assets = await this.repo.attachedAssets(store.storeId, row.id);
-    return {
-      customizationId: row.id,
-      status: row.status,
-      configId: row.client_config_id,
-      configVersion: row.config_version,
-      productId: row.product_external_id,
-      variantId: row.variant_external_id,
-      data: row.data,
-      assets: assets.map(toAssetDto),
-      expiresAt: iso(row.expires_at),
     };
   }
 
   async update(
     store: ResolvedStore,
     customizationId: string,
-    token: string | null,
     input: { data: Record<string, unknown>; assets: readonly AssetRefInput[] },
   ): Promise<SavedCustomizationDto> {
-    this.authorizeShopper(store.storeId, customizationId, token);
     const refs = uniqueAssetRefs(input.assets);
     const now = this.now();
     const expiresAt = this.expiryFrom(now);
@@ -467,7 +353,6 @@ export class CustomizationService {
     const toAttach = refs.filter((r) => !currentIds.has(r.assetId));
     const toRelease = [...currentIds].filter((id) => !wanted.has(id));
 
-    this.assertUploadTokens(store.storeId, toAttach, now);
     // One atomic batch: nothing commits (including the release and the data write) if the claim comes
     // up short, and the data write itself re-checks `status = 'saved'` — see applyUpdate.
     const outcome = await this.repo.applyUpdate({
@@ -487,43 +372,45 @@ export class CustomizationService {
       throw new ConflictError('This customization changed while saving. Try again.', { reason: 'state_changed' });
     }
 
-    const access = this.issueAccessToken(store.storeId, customizationId, now);
     return {
       customizationId,
       status: 'saved',
-      accessToken: access.token,
-      accessTokenExpiresAt: access.expiresAt.toISOString(),
+      customizedImageUrl: await this.customizedImageUrl(store.storeId, refs),
       expiresAt: expiresAt.toISOString(),
     };
   }
 
-  async getAssetForShopper(
-    store: ResolvedStore,
-    customizationId: string,
-    assetId: string,
-    token: string | null,
-  ) {
-    this.authorizeShopper(store.storeId, customizationId, token);
-    const asset = await this.repo.getAsset(store.storeId, assetId);
-    if (!asset || asset.customization_id !== customizationId || asset.status !== 'attached') {
-      throw new NotFoundError('That file was not found.');
-    }
-    return this.openAsset(asset);
+  /** The first preview among `refs` (request order) is the customized image; its URL changes with the asset. */
+  private async customizedImageUrl(storeId: string, refs: readonly AssetRefInput[]): Promise<string | null> {
+    if (refs.length === 0) return null;
+    const kinds = new Map((await this.repo.assetsByIds(storeId, refs.map((r) => r.assetId))).map((a) => [a.id, a.kind]));
+    const preview = refs.find((r) => kinds.get(r.assetId) === 'preview');
+    if (!preview) return null;
+    const base = `${this.ctx.publicOrigin}${apiPath(this.ctx.config.apiVersion, STOREFRONT_SEGMENT)}`;
+    return `${base}/customization-images/${preview.assetId}?storeId=${encodeURIComponent(storeId)}`;
   }
 
-  /** Short-lived presigned GET for a customer file the shopper has already been authorized to read. */
-  async getAssetUrlForShopper(
-    store: ResolvedStore,
-    customizationId: string,
-    assetId: string,
-    token: string | null,
-  ) {
-    this.authorizeShopper(store.storeId, customizationId, token);
+  /**
+   * The one customer file the public may read: an ATTACHED `preview` image of this store. Uploads, print
+   * artwork, unattached or released files, other stores' files and anything whose stored type is not a
+   * sniffed raster image are all "not found".
+   */
+  async findPublicImage(store: ResolvedStore, assetId: string): Promise<CustomerAssetRow> {
     const asset = await this.repo.getAsset(store.storeId, assetId);
-    if (!asset || asset.customization_id !== customizationId || asset.status !== 'attached') {
-      throw new NotFoundError('That file was not found.');
+    if (
+      !asset ||
+      asset.kind !== 'preview' ||
+      asset.status !== 'attached' ||
+      asset.customization_id === null ||
+      !PUBLIC_IMAGE_TYPES.has(asset.content_type)
+    ) {
+      throw new NotFoundError('That image was not found.');
     }
-    return this.presignedGet(asset);
+    return asset;
+  }
+
+  openPublicImage(asset: CustomerAssetRow) {
+    return this.openAsset(asset);
   }
 
   private async presignedGet(asset: CustomerAssetRow) {

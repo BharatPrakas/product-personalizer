@@ -89,20 +89,20 @@ describe.each<Driver>(['r2', 's3'])('direct upload end to end (%s)', (driver) =>
     expect((await shop(`/assets/${init.uploadId}`)).status).toBe(404);
 
     // 7-8. Shopper uploads a photo directly, then a preview and the production artwork; saves the customization.
-    const files: Record<string, { uploadId: string; assetId: string; token: string }> = {};
+    const files: Record<string, { uploadId: string; assetId: string }> = {};
     for (const kind of ['upload', 'preview', 'artwork'] as const) {
       const start = (await json(await shop('/uploads/url', { method: 'POST', body: { kind, contentType: 'image/png', size: png.length } }))).data;
       expect((await p.browserPut(start, png)).status).toBe(200);
-      const done = await shop('/uploads/complete', { method: 'POST', body: { uploadId: start.uploadId }, headers: { Authorization: `Bearer ${start.uploadToken}` } });
+      const done = await shop('/uploads/complete', { method: 'POST', body: { uploadId: start.uploadId } });
       expect(done.status).toBe(200);
       const { data } = await json(done);
-      files[kind] = { uploadId: start.uploadId, assetId: data.assetId, token: data.uploadToken };
+      files[kind] = { uploadId: start.uploadId, assetId: data.assetId };
     }
     const created = await shop('/customizations', {
       method: 'POST',
       body: {
         productId: 'prod-e2e', configId: config.configId, configVersion: config.version, data: { fields: { name: 'Ada' } },
-        assets: Object.values(files).map((f) => ({ assetId: f.assetId, uploadToken: f.token })),
+        assets: Object.values(files).map((f) => ({ assetId: f.assetId })),
       },
     });
     expect(created.status).toBe(201);
@@ -116,20 +116,17 @@ describe.each<Driver>(['r2', 's3'])('direct upload end to end (%s)', (driver) =>
       expect(p.has(row.object_key)).toBe(true);
     }
 
-    // 10. Authorized retrieval succeeds — shopper (access token) and merchant — by presigned GET and by stream.
-    const mine = { Authorization: `Bearer ${customization.accessToken}` };
+    // 10. Authorized retrieval succeeds for the merchant — by presigned GET and by stream. Shoppers have no read path.
     const art = files['artwork'].assetId;
-    const viaUrl = (await json(await shop(`/customizations/${customization.customizationId}/assets/${art}/url`, { headers: mine }))).data;
-    expect(new Uint8Array(await (await p.browserGet(viaUrl.url)).arrayBuffer())).toEqual(png);
-    expect((await shop(`/customizations/${customization.customizationId}/assets/${art}`, { headers: mine })).status).toBe(200);
     const merchantUrl = await admin(`/customizations/${customization.customizationId}/assets/${art}/url`);
     expect(merchantUrl.status).toBe(200);
     expect((await admin(`/customizations/${customization.customizationId}/assets/${art}/content`)).status).toBe(200);
 
     // 11. Unauthorized retrieval fails.
-    const denied = async (res: Response) => expect([401, 404]).toContain(res.status);
+    const denied = async (res: Response) => expect([401, 404, 405]).toContain(res.status);
     await denied(await shop(`/customizations/${customization.customizationId}/assets/${art}/url`));
-    await denied(await shop(`/customizations/${customization.customizationId}/assets/${art}/url`, { headers: { Authorization: 'Bearer nope' } }));
+    await denied(await shop(`/customizations/${customization.customizationId}/assets/${art}`));
+    await denied(await shop(`/customizations/${customization.customizationId}`));
     await denied(await admin(`/customizations/${customization.customizationId}/assets/${art}/url`, { token: null }));
     await denied(await admin(`/customizations/${customization.customizationId}/assets/${art}/url`, { storeId: STORE_B }));
     await denied(await shop(`/assets/${art}`)); // private files never go through the public route
