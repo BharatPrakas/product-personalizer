@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy --env dev",
     "deploy:staging": "wrangler deploy --env staging",
     "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
@@ -15,6 +16,8 @@
     "migrate:status": "wrangler d1 migrations list zb-product-personalizer-db --local",
     "test": "vitest run",
     "test:watch": "vitest",
+    "dev:token": "node scripts/zb-dev-sign.mjs jwt",
+    "dev:event": "node scripts/zb-dev-sign.mjs event",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {

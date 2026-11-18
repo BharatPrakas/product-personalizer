@@ -1,70 +1,67 @@
 import { describe, expect, it } from 'vitest';
-import { createHmac } from 'node:crypto';
+import { createHmac, hkdfSync } from 'node:crypto';
 import {
-  CredentialCryptoError,
-  decryptSecret,
-  encryptSecret,
-  generateSecret,
-  parseMasterKey,
-} from '../src/modules/integration-credentials/crypto';
-import { checkTimestamp, signBody, signatureMatches } from '../src/modules/integration-credentials/signature';
+  MIN_PLUGIN_SECRET_LENGTH,
+  WEBHOOK_KEY_INFO,
+  deriveWebhookKey,
+  normalizePluginSecret,
+} from '../src/modules/zenbasket-auth/plugin-secret';
+import { checkTimestamp, signBody, signatureMatches } from '../src/modules/zenbasket-auth/webhook-signature';
 import { customizationKeyPrefix, assetKeyPrefix, generateCustomizationObjectKey } from '../src/storage/object-storage';
-import { TEST_ENCRYPTION_KEY } from './helpers';
+import { OTHER_PLUGIN_SECRET, TEST_PLUGIN_SECRET } from './helpers';
 
-const key = parseMasterKey(TEST_ENCRYPTION_KEY);
+const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
 
-describe('integration secret encryption', () => {
-  it('round-trips and never stores the plaintext', () => {
-    const secret = generateSecret();
-    const stored = encryptSecret(key, 'store_a', 'cred-1', secret);
-    expect(stored.startsWith('v1.')).toBe(true);
-    expect(stored).not.toContain(secret);
-    expect(decryptSecret(key, 'store_a', 'cred-1', stored)).toBe(secret);
+describe('plugin secret handling', () => {
+  it('trims a configured secret and refuses one that is missing, blank or too short to be ZenBasket’s', () => {
+    expect(normalizePluginSecret(`  ${TEST_PLUGIN_SECRET}\n`)).toBe(TEST_PLUGIN_SECRET);
+    expect(normalizePluginSecret(undefined)).toBeNull();
+    expect(normalizePluginSecret('')).toBeNull();
+    expect(normalizePluginSecret('   ')).toBeNull();
+    expect(normalizePluginSecret('x'.repeat(MIN_PLUGIN_SECRET_LENGTH - 1))).toBeNull();
+    expect(normalizePluginSecret('x'.repeat(MIN_PLUGIN_SECRET_LENGTH))).not.toBeNull();
+  });
+});
+
+describe('order-webhook key derivation (HKDF-SHA256)', () => {
+  it('matches an independent implementation (Node hkdfSync, what the ZenBasket signer uses)', async () => {
+    const expected = Buffer.from(hkdfSync('sha256', Buffer.from(TEST_PLUGIN_SECRET, 'utf8'), Buffer.alloc(0), WEBHOOK_KEY_INFO, 32));
+    expect(hex(await deriveWebhookKey(TEST_PLUGIN_SECRET))).toBe(expected.toString('hex'));
   });
 
-  it('uses a fresh IV per encryption', () => {
-    expect(encryptSecret(key, 's', 'c', 'x')).not.toBe(encryptSecret(key, 's', 'c', 'x'));
+  it('is pinned by a known answer, so the info string can never change silently (breaking the sender)', async () => {
+    expect(WEBHOOK_KEY_INFO).toBe('zb-plugin:v1:order-webhook');
+    expect(hex(await deriveWebhookKey(TEST_PLUGIN_SECRET))).toBe(
+      '67bf6aafeb509fdb25be8538101e719bead8c81927071a53635edde67dacbec9',
+    );
   });
 
-  it('refuses a ciphertext moved to another store or credential (AAD binding)', () => {
-    const stored = encryptSecret(key, 'store_a', 'cred-1', 'secret');
-    expect(() => decryptSecret(key, 'store_b', 'cred-1', stored)).toThrow(CredentialCryptoError);
-    expect(() => decryptSecret(key, 'store_a', 'cred-2', stored)).toThrow(CredentialCryptoError);
-  });
-
-  it('refuses the wrong master key and tampered data', () => {
-    const stored = encryptSecret(key, 's', 'c', 'secret');
-    expect(() => decryptSecret(Buffer.alloc(32, 9), 's', 'c', stored)).toThrow(CredentialCryptoError);
-    const parts = stored.split('.');
-    parts[3] = Buffer.from('tampered').toString('base64url');
-    expect(() => decryptSecret(key, 's', 'c', parts.join('.'))).toThrow(CredentialCryptoError);
-    expect(() => decryptSecret(key, 's', 'c', 'garbage')).toThrow(CredentialCryptoError);
-  });
-
-  it('rejects a master key of the wrong length without echoing it', () => {
-    expect(() => parseMasterKey('c2hvcnQ=')).toThrow(/32 bytes/);
-    try {
-      parseMasterKey('c2hvcnQ=');
-    } catch (error) {
-      expect(String(error)).not.toContain('c2hvcnQ=');
-    }
+  it('is deterministic, 32 bytes, separated by secret, and is not the root secret itself', async () => {
+    const a = await deriveWebhookKey(TEST_PLUGIN_SECRET);
+    expect(a).toHaveLength(32);
+    expect(hex(await deriveWebhookKey(TEST_PLUGIN_SECRET))).toBe(hex(a));
+    expect(hex(await deriveWebhookKey(OTHER_PLUGIN_SECRET))).not.toBe(hex(a));
+    expect(hex(a)).not.toBe(Buffer.from(TEST_PLUGIN_SECRET).toString('hex'));
   });
 });
 
 describe('request signing', () => {
+  const key = Buffer.alloc(32, 7);
+  const other = Buffer.alloc(32, 8);
+
   it('signs "<timestamp>.<raw body>" with HMAC-SHA256 (v1=<hex>)', () => {
-    const expected = `v1=${createHmac('sha256', 's3cret').update('1700000000.{"a":1}').digest('hex')}`;
-    expect(signBody('s3cret', 1700000000, '{"a":1}')).toBe(expected);
+    const expected = `v1=${createHmac('sha256', key).update('1700000000.{"a":1}').digest('hex')}`;
+    expect(signBody(key, 1700000000, '{"a":1}')).toBe(expected);
   });
 
-  it('matches only the exact body, timestamp and secret', () => {
-    const sig = signBody('s3cret', 1700000000, '{"a":1}');
-    expect(signatureMatches('s3cret', '1700000000', '{"a":1}', sig)).toBe(true);
-    expect(signatureMatches('s3cret', '1700000000', '{"a":2}', sig)).toBe(false);
-    expect(signatureMatches('s3cret', '1700000001', '{"a":1}', sig)).toBe(false);
-    expect(signatureMatches('other', '1700000000', '{"a":1}', sig)).toBe(false);
-    expect(signatureMatches('s3cret', '1700000000', '{"a":1}', 'v1=short')).toBe(false);
-    expect(signatureMatches('s3cret', '1700000000', '{"a":1}', '')).toBe(false);
+  it('matches only the exact body, timestamp and key', () => {
+    const sig = signBody(key, 1700000000, '{"a":1}');
+    expect(signatureMatches(key, '1700000000', '{"a":1}', sig)).toBe(true);
+    expect(signatureMatches(key, '1700000000', '{"a":2}', sig)).toBe(false);
+    expect(signatureMatches(key, '1700000001', '{"a":1}', sig)).toBe(false);
+    expect(signatureMatches(other, '1700000000', '{"a":1}', sig)).toBe(false);
+    expect(signatureMatches(key, '1700000000', '{"a":1}', 'v1=short')).toBe(false);
+    expect(signatureMatches(key, '1700000000', '{"a":1}', '')).toBe(false);
   });
 
   it('accepts timestamps only inside the window', () => {

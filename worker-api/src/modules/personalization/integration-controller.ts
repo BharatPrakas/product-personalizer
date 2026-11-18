@@ -1,13 +1,13 @@
 /**
- * Server-to-server integration endpoints.
- *
- *  - `POST /events` (integration routes)   signed order events from ZenBasket (contract v1).
- *  - `/integration/credentials` (merchant routes)   merchant-authenticated credential management
- *    (create / list / rotate / revoke the per-store signing secrets).
+ * Server-to-server integration endpoint: `POST /events` (integration routes) receives the signed
+ * `order.confirmed` events from ZenBasket (contract v1).
  *
  * The callback is unauthenticated by Bearer token on purpose: its authentication IS the HMAC signature
- * over the exact request body. The store is taken from the credential that signed it, never from the
- * body (the body's `storeId` is only cross-checked).
+ * over the exact request body, keyed by the order-webhook key derived from the plugin-level secret
+ * (`ZB_PLUGIN_SECRET`, see modules/zenbasket-auth). One secret serves every store, so the signature proves
+ * "ZenBasket sent this" and NOTHING about which store: the store id in the body is untrusted until the
+ * signature has verified, and is then checked against the stores this Worker knows before anything is
+ * linked. A merchant JWT is never accepted here.
  */
 
 import type { Context } from 'hono';
@@ -15,33 +15,17 @@ import type { AppEnv } from '../../shared/context';
 import {
   ApiError,
   BadRequestError,
-  ForbiddenError,
   PayloadTooLargeError,
   RateLimitError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../shared/errors';
-import { created, noContent, ok } from '../../shared/responses';
 import type { RateLimiter } from '../../shared/rate-limit';
-import {
-  DEFAULT_ROTATION_GRACE_SECONDS,
-  IntegrationCredentialsService,
-} from '../integration-credentials/service';
-import { checkTimestamp, signatureMatches } from '../integration-credentials/signature';
-import { recordAudit } from '../audit/audit';
+import { StoreSettingsRepository } from '../store-settings/repository';
+import { deriveWebhookKey } from '../zenbasket-auth/plugin-secret';
+import { checkTimestamp, signatureMatches } from '../zenbasket-auth/webhook-signature';
 import { OrderCallbackService, type OrderEvent } from './order-callback-service';
-import {
-  MAX_CALLBACK_BODY_BYTES,
-  ORDER_EVENT_TYPE_CONFIRMED,
-  credentialCreateSchema,
-  credentialRotateSchema,
-  orderEventSchema,
-} from './validation';
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function credentialsFor(c: Context<AppEnv>): IntegrationCredentialsService {
-  return new IntegrationCredentialsService(c.get('db'), c.get('config').integrationEncryptionKey);
-}
+import { MAX_CALLBACK_BODY_BYTES, ORDER_EVENT_TYPE_CONFIRMED, orderEventSchema } from './validation';
 
 /** Object entries sorted by key, absent values dropped; `null` when nothing is left. */
 function sortedEntries(value: object | undefined): Array<[string, unknown]> | null {
@@ -95,29 +79,33 @@ export function orderEvents(limiter: RateLimiter) {
     const decision = await limiter.check(`cb:${ip}`, config.orderCallbackRateLimit, config.storefrontRateWindowSeconds);
     if (!decision.allowed) throw new RateLimitError(decision.retryAfterSeconds);
 
+    // Fail closed: with no usable plugin secret nothing can be verified. 503 (not 401) so the sender
+    // treats it as retryable once the operator has fixed the environment.
+    if (!config.zbPluginSecret) {
+      c.get('logger').error('order callbacks are not configured', { missing: 'ZB_PLUGIN_SECRET' });
+      throw new ServiceUnavailableError('integrations_not_configured', 'Order callbacks are not configured on this environment.');
+    }
+
     // Read the EXACT bytes that were signed, bounded before and after reading.
     const declared = Number(c.req.header('content-length'));
     if (Number.isFinite(declared) && declared > MAX_CALLBACK_BODY_BYTES) throw new PayloadTooLargeError();
     const raw = await c.req.text();
     if (new TextEncoder().encode(raw).length > MAX_CALLBACK_BODY_BYTES) throw new PayloadTooLargeError();
 
-    const keyId = c.req.header('x-zb-key-id')?.trim() ?? '';
+    // `X-ZB-Key-Id` belonged to the per-store scheme and is ignored: there is one secret, nothing to look up.
     const timestamp = c.req.header('x-zb-timestamp')?.trim();
     const signature = c.req.header('x-zb-signature')?.trim() ?? '';
-    if (!UUID.test(keyId) || !timestamp || !signature) {
-      throw new UnauthorizedError('X-ZB-Key-Id, X-ZB-Timestamp and X-ZB-Signature are required.');
+    if (!timestamp || !signature) {
+      throw new UnauthorizedError('X-ZB-Timestamp and X-ZB-Signature are required.');
     }
     if (!checkTimestamp(timestamp, Date.now(), config.orderCallbackToleranceSeconds).ok) {
       throw new ApiError(401, 'invalid_timestamp', 'The request timestamp is missing or outside the accepted window.');
     }
 
-    const credentials = credentialsFor(c);
-    const credential = await credentials.resolveForVerification(keyId.toLowerCase());
-    // Unknown, revoked, expired and wrongly-signed look identical to the caller.
-    if (!credential || !signatureMatches(credential.secret, timestamp, raw, signature)) {
+    const key = await deriveWebhookKey(config.zbPluginSecret);
+    if (!signatureMatches(key, timestamp, raw, signature)) {
       throw new UnauthorizedError('The signature is not valid.');
     }
-    await credentials.markUsed(credential.id).catch(() => undefined);
 
     // Only now is the body trusted enough to parse.
     let parsed: unknown;
@@ -128,11 +116,16 @@ export function orderEvents(limiter: RateLimiter) {
     }
     const event = orderEventSchema.parse(parsed);
 
-    if (event.storeId !== credential.storeId) {
-      throw new ForbiddenError('The credential does not belong to the store in the event.');
-    }
     if (event.type !== ORDER_EVENT_TYPE_CONFIRMED) {
       throw new ApiError(422, 'unsupported_event_type', `Only "${ORDER_EVENT_TYPE_CONFIRMED}" events are accepted.`);
+    }
+
+    // The signature authenticates ZenBasket, not the store. A signed event for a store this Worker has
+    // never served (or that the platform has since told it about, once lifecycle events exist) must not
+    // create order links. The Worker keeps no install state of its own, so "known" is the only
+    // distinction it can honestly make; see docs/zenbasket-integration.md (store authorization).
+    if (!(await new StoreSettingsRepository(c.get('db')).exists(event.storeId))) {
+      throw new ApiError(403, 'store_not_authorized', 'The store in the event is not registered for this plugin.');
     }
 
     const result = await new OrderCallbackService({
@@ -140,101 +133,11 @@ export function orderEvents(limiter: RateLimiter) {
       logger: c.get('logger'),
       requestId: c.get('requestId'),
     }).confirm({
-      storeId: credential.storeId,
-      credentialId: credential.id,
+      storeId: event.storeId,
       event,
       payloadSha256: await canonicalHash(event),
     });
     // The receiver response is part of the platform contract (section 7), so it is not wrapped in `data`.
     return c.json({ contract: 1, eventId: result.eventId, duplicate: result.duplicate, results: result.results, requestId: c.get('requestId') });
   };
-}
-
-// ---- credential management (merchant-authenticated) ----
-
-/**
- * Managing signing secrets needs the explicit `integrations:manage` scope. A wildcard scope does not
- * count, and the editor's ordinary session never carries it, so the admin UI cannot read or mint them.
- * (The static development token is exempt so the stack can be exercised locally.)
- */
-function requireIntegrationAdmin(c: Context<AppEnv>): void {
-  const auth = c.get('auth');
-  if (auth.tokenType === 'dev' || auth.scopes.includes('integrations:manage')) return;
-  throw new ForbiddenError('Missing required scope "integrations:manage".');
-}
-
-async function audit(c: Context<AppEnv>, action: string, credentialId: string): Promise<void> {
-  const auth = c.get('auth');
-  try {
-    await recordAudit(c.get('db'), {
-      requestId: c.get('requestId'),
-      storeId: c.get('tenant').storeId,
-      actor: auth.subject ?? auth.tokenType,
-      action,
-      resourceType: 'integration_credential',
-      resourceId: credentialId,
-    });
-  } catch (error) {
-    c.get('logger').warn('audit write failed', { action, error: String(error) });
-  }
-}
-
-/** Responses that carry a secret must never be cached. */
-function noStore(res: Response): Response {
-  res.headers.set('Cache-Control', 'no-store');
-  return res;
-}
-
-function credentialId(c: Context<AppEnv>): string {
-  const id = c.req.param('id');
-  if (!id || !UUID.test(id)) throw new ApiError(404, 'not_found', 'That credential was not found.');
-  return id.toLowerCase();
-}
-
-/** The JSON body, or undefined when there is none. Reads the body rather than trusting Content-Length. */
-async function optionalJson(c: Context<AppEnv>): Promise<unknown> {
-  const text = await c.req.text();
-  if (text.trim().length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new BadRequestError('The request body must be valid JSON.');
-  }
-}
-
-export async function listCredentials(c: Context<AppEnv>): Promise<Response> {
-  requireIntegrationAdmin(c);
-  return ok(c, await credentialsFor(c).list(c.get('tenant').storeId));
-}
-
-export async function createCredential(c: Context<AppEnv>): Promise<Response> {
-  requireIntegrationAdmin(c);
-  const body = credentialCreateSchema.parse((await optionalJson(c)) ?? {});
-  const auth = c.get('auth');
-  const issued = await credentialsFor(c).create(c.get('tenant').storeId, body.label, auth.subject ?? auth.tokenType);
-  await audit(c, 'integration_credential.create', issued.id);
-  return noStore(created(c, issued));
-}
-
-export async function rotateCredential(c: Context<AppEnv>): Promise<Response> {
-  requireIntegrationAdmin(c);
-  const body = credentialRotateSchema.parse((await optionalJson(c)) ?? {});
-  const auth = c.get('auth');
-  const grace = body.gracePeriodSeconds ?? DEFAULT_ROTATION_GRACE_SECONDS;
-  const { credential, previous } = await credentialsFor(c).rotate(
-    c.get('tenant').storeId,
-    credentialId(c),
-    grace,
-    auth.subject ?? auth.tokenType,
-  );
-  await audit(c, 'integration_credential.rotate', previous.id);
-  return noStore(ok(c, { credential, previous }, 201));
-}
-
-export async function revokeCredential(c: Context<AppEnv>): Promise<Response> {
-  requireIntegrationAdmin(c);
-  const id = credentialId(c);
-  await credentialsFor(c).revoke(c.get('tenant').storeId, id);
-  await audit(c, 'integration_credential.revoke', id);
-  return noContent(c);
 }

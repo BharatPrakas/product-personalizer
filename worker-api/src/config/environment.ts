@@ -3,9 +3,11 @@
  *
  * `Env` is the raw set of bindings/vars Cloudflare injects (declared in wrangler.jsonc). `AppConfig`
  * is the parsed, validated view the rest of the app consumes, so no handler reads `env.*` strings
- * directly. Secrets (the DB password inside the Hyperdrive connection string, the JWT signing key)
- * are provided through `wrangler secret` / `.dev.vars` and are never committed.
+ * directly. Secrets (the ZenBasket plugin secret, the asset-signing key, storage keys) are provided
+ * through `wrangler secret` / `.dev.vars` and are never committed.
  */
+
+import { normalizePluginSecret } from '../modules/zenbasket-auth/plugin-secret';
 
 export interface Env {
   /** D1 database binding, created with `wrangler d1 create`. */
@@ -69,39 +71,29 @@ export interface Env {
   /** Days an expired customization row is kept (cleared of data) before it is purged (default 30). */
   EXPIRED_TOMBSTONE_DAYS?: string;
 
+  /**
+   * The ZenBasket plugin id this Worker serves, assigned when the plugin is registered with the Plugin
+   * Platform. A merchant token's `pluginId` claim must equal it, so a token minted for another plugin is
+   * refused. Not a secret. Merchant authentication fails closed while it is unset.
+   */
+  ZB_PLUGIN_ID?: string;
+
   // ---- secrets (wrangler secret put / .dev.vars) ----
   /**
-   * HMAC key used to verify the HS256 session tokens the hosting platform (ZenBasket) issues. The
-   * Worker never mints tokens; it only verifies them. Required in staging/production.
+   * The plugin-level shared secret ZenBasket generates when the plugin is registered (>= 32 chars). It
+   * verifies merchant JWTs directly and, through an HKDF-derived key, order callbacks (see
+   * modules/zenbasket-auth). The Worker never generates, stores or returns it. Missing or too short = both
+   * flows fail closed. There is no fallback secret and no previous-secret overlap. Set per environment with
+   * `wrangler secret put ZB_PLUGIN_SECRET --env <env>`; never in wrangler.jsonc.
    */
-  JWT_SIGNING_SECRET?: string;
+  ZB_PLUGIN_SECRET?: string;
   /**
-   * Key for signed asset URLs (see modules/personalization/asset-signature.ts). Falls back to
-   * JWT_SIGNING_SECRET when unset; set it separately so rotating one does not break the other.
+   * Key for signed asset URLs (see modules/personalization/asset-signature.ts). Required wherever configs
+   * are edited: without it asset URLs are unsigned and draft assets cannot be loaded by the editor.
+   * Independent of ZB_PLUGIN_SECRET on purpose: rotating the plugin secret must not invalidate asset URLs
+   * already stored in configurations. There is no fallback to any other secret.
    */
   ASSET_SIGNING_SECRET?: string;
-  /**
-   * Development-only static bearer token. When set AND ENVIRONMENT !== 'production', a request with
-   * `Authorization: Bearer <DEV_AUTH_TOKEN>` is treated as the dev store identified by DEV_STORE_ID.
-   * Never set this in production.
-   */
-  DEV_AUTH_TOKEN?: string;
-  DEV_STORE_ID?: string;
-  /**
-   * TEMPORARY escape hatch (plugin authorization design is not finalized yet — see
-   * docs/zenbasket-integration.md). When `"true"` AND `ENVIRONMENT !== 'production'`, `authenticate`
-   * skips credential verification entirely and treats every request as DEV_STORE_ID, no Authorization
-   * header required. Remove this flag (and the branch in middleware/authentication.ts) once a real
-   * token flow from ZenBasket is agreed and wired up. Never set in staging/production — gated the same
-   * way DEV_AUTH_TOKEN is, so there is no way to enable it there even by mistake.
-   */
-  DEV_AUTH_BYPASS?: string;
-  /**
-   * 32-byte key (base64 or base64url) that encrypts per-store integration secrets at rest in
-   * Postgres (AES-256-GCM). Required to create credentials or verify signed callbacks. Never log it,
-   * never commit it, and keep it out of `wrangler.jsonc`: `wrangler secret put INTEGRATION_ENCRYPTION_KEY`.
-   */
-  INTEGRATION_ENCRYPTION_KEY?: string;
   /** IAM user limited to the S3 bucket. Only needed when STORAGE_DRIVER is `s3`. */
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;
@@ -133,12 +125,10 @@ export interface AppConfig {
   bundledAssetBaseUrl: string | null;
   maxUploadBytes: number;
   logLevel: LogLevel;
-  jwtSigningSecret: string | null;
+  /** `ZB_PLUGIN_SECRET`, or null when missing / shorter than the minimum (authentication fails closed). */
+  zbPluginSecret: string | null;
+  zbPluginId: string | null;
   assetSigningSecret: string | null;
-  devAuthToken: string | null;
-  devStoreId: string | null;
-  /** TEMPORARY — see the `DEV_AUTH_BYPASS` doc comment on `Env`. */
-  devAuthBypass: boolean;
   storageDriver: StorageDriver;
   s3Bucket: string | null;
   s3Region: string | null;
@@ -160,7 +150,6 @@ export interface AppConfig {
   unattachedUploadTtlHours: number;
   assetDeleteGraceHours: number;
   expiredTombstoneDays: number;
-  integrationEncryptionKey: string | null;
 }
 
 const DEFAULT_MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -224,11 +213,9 @@ export function loadConfig(env: Env): AppConfig {
     bundledAssetBaseUrl: env.BUNDLED_ASSET_BASE_URL?.trim() || null,
     maxUploadBytes: Number.isFinite(maxUpload) && maxUpload > 0 ? maxUpload : DEFAULT_MAX_UPLOAD_BYTES,
     logLevel: parseLogLevel(env.LOG_LEVEL),
-    jwtSigningSecret: env.JWT_SIGNING_SECRET?.trim() || null,
-    assetSigningSecret: env.ASSET_SIGNING_SECRET?.trim() || env.JWT_SIGNING_SECRET?.trim() || null,
-    devAuthToken: env.DEV_AUTH_TOKEN?.trim() || null,
-    devStoreId: env.DEV_STORE_ID?.trim() || null,
-    devAuthBypass: env.DEV_AUTH_BYPASS?.trim() === 'true',
+    zbPluginSecret: normalizePluginSecret(env.ZB_PLUGIN_SECRET),
+    zbPluginId: env.ZB_PLUGIN_ID?.trim() || null,
+    assetSigningSecret: env.ASSET_SIGNING_SECRET?.trim() || null,
     storageDriver: parseStorageDriver(env.STORAGE_DRIVER),
     s3Bucket: env.S3_BUCKET?.trim() || null,
     s3Region: env.S3_REGION?.trim() || null,
@@ -256,7 +243,6 @@ export function loadConfig(env: Env): AppConfig {
     unattachedUploadTtlHours: positiveInt(env.UNATTACHED_UPLOAD_TTL_HOURS, DEFAULT_UNATTACHED_UPLOAD_TTL_HOURS),
     assetDeleteGraceHours: positiveInt(env.ASSET_DELETE_GRACE_HOURS, DEFAULT_ASSET_DELETE_GRACE_HOURS),
     expiredTombstoneDays: positiveInt(env.EXPIRED_TOMBSTONE_DAYS, DEFAULT_EXPIRED_TOMBSTONE_DAYS),
-    integrationEncryptionKey: env.INTEGRATION_ENCRYPTION_KEY?.trim() || null,
   };
   cached = { env, config };
   return config;

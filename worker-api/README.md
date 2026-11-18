@@ -38,6 +38,9 @@ Angular app ──HTTPS/JSON──▶ Cloudflare Worker (Hono) ──▶ D1 (SQL
 - [Migrations](#database-migrations)
 - [Testing](#testing)
 - [Deploying to staging / production](#deploying-to-staging--production)
+- [Environment variables](#environment-variable-inventory)
+- [**Beginner's guide: database, configuration & deployment**](docs/beginner-deployment-guide.md)
+- [Fresh development environment (reset runbook)](docs/fresh-dev-environment.md)
 - [Security notes](#security-notes)
 - [Operational notes](#operational-notes)
 - [Limitations, assumptions & risks](#limitations-assumptions--risks)
@@ -64,7 +67,7 @@ worker-api/
 │   ├── middleware/              # request-id, cors, database, auth, tenant (registers the store), errors
 │   ├── modules/
 │   │   ├── personalization/     # configs, assets, mappings, markups, storefront, customizations, order events, cleanup
-│   │   ├── integration-credentials/  # per-store encrypted HMAC secrets + signature checks
+│   │   ├── zenbasket-auth/      # plugin-level secret: HKDF purpose keys + order-webhook signature checks
 │   │   ├── store-settings/      # known stores; a row makes a store "known" to the public routes
 │   │   ├── audit/               # append-only audit log
 │   │   └── health/              # GET /health
@@ -72,9 +75,11 @@ worker-api/
 │   │                            #   D1 has no interactive transactions, only atomic batch()
 │   ├── storage/                 # object storage (R2 or S3) + safe key generation
 │   └── shared/                  # api-paths (URL contract), errors, responses, logger, jwt, image-sniff, rate-limit, Hono context types
-├── migrations/                  # version-controlled SQLite DDL (one baseline so far), applied with
+├── migrations/                  # version-controlled SQLite DDL (ONE consolidated baseline), applied with
 │                                 #   `wrangler d1 migrations apply`
-├── docs/zenbasket-integration.md # API contract for the ZenBasket backend team
+├── docs/zenbasket-integration.md # API + authentication contract for the ZenBasket backend team
+├── docs/fresh-dev-environment.md # runbook: recreate the dev D1/secrets/Worker from scratch (commands to review)
+├── scripts/zb-dev-sign.mjs      # local stand-in for ZenBasket's signer: real JWTs + signed callbacks
 ├── test/                        # vitest: unit + full HTTP integration (Miniflare-backed D1 + in-memory R2)
 ├── wrangler.jsonc               # Worker config, bindings, environments
 └── package.json
@@ -106,18 +111,27 @@ npm run migrate            # wrangler d1 migrations apply <db> --local (idempote
 npm run migrate:status     # wrangler d1 migrations list <db> --local
 ```
 
-This applies `migrations/*.sql` to the **local** D1 database `wrangler dev` uses — never a deployed
-one. Migrations are tracked by wrangler's own `d1_migrations` table, not a custom ledger.
+This applies `migrations/0001_baseline.sql` (the only migration) to the **local** D1 database `wrangler dev`
+uses — never a deployed one. Migrations are tracked by wrangler's own `d1_migrations` table.
 
 ### 4. Local dev secrets
 
 ```bash
-cp .dev.vars.example .dev.vars   # already gitignored
+cp .dev.vars.example .dev.vars   # gitignored
 ```
 
-`.dev.vars` provides a static `DEV_AUTH_TOKEN` (mapped to `DEV_STORE_ID`) so you can call the API
-locally without an identity provider, plus a `JWT_SIGNING_SECRET` for verifying real tokens. The dev
-token is only honoured when `ENVIRONMENT != production`.
+Set `ZB_PLUGIN_SECRET` (any value of at least 32 characters), `ZB_PLUGIN_ID` (e.g. `160`) and
+`ASSET_SIGNING_SECRET`, plus your storage keys. **There is no development token and no auth bypass**: locally
+you authenticate the way ZenBasket does, with real signatures made from that same secret by the bundled
+signer (it reads `.dev.vars`, uses only `node:crypto` and never prints the secret):
+
+```bash
+npm run dev:token -- --store 766                                          # a merchant JWT (1 h; --ttl, --plugin, --sub)
+npm run dev:event -- --store 766 --customization <uuid> --product <id>    # a signed order.confirmed, POSTed to --url (default :8787)
+npm run dev:event -- --file event.json --dry-run                          # or print url + headers + body without sending
+```
+
+(`.dev.vars.example` is matched by the `.dev.vars.*` gitignore pattern, so it is a local template and is not committed.)
 
 ### 5. Run the Worker
 
@@ -131,8 +145,8 @@ Smoke test:
 curl http://localhost:8787/api/v1/health
 # {"data":{"status":"ok","checks":{"database":"ok"}, ...}}
 
-curl -H "Authorization: Bearer local-dev-token" \
-  -H "Content-Type: application/json" \
+TOKEN=$(npm run -s dev:token -- --store 766)
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -X POST http://localhost:8787/api/v1/plugins/personalization/configs \
   -d '{"clientConfigId":"cfg-demo","draft":{"schemaVersion":2,"id":"cfg-demo","version":1,"status":"draft","product":{"id":"p1","name":"Demo"},"variants":[],"mockups":[],"printableAreas":[],"artworks":[],"fonts":[],"fields":[]}}'
 ```
@@ -146,7 +160,7 @@ app bootstraps:
 <script>
   window.__ZB_PERSONALIZER__ = {
     apiBaseUrl: 'http://localhost:8787',
-    authToken: 'local-dev-token',   // host-issued session token in real deployments
+    authToken: '<merchant JWT>',   // issued by ZenBasket; locally: paste the output of `npm run dev:token -- --store <id>` (expires, default 1 h)
     persistence: 'cloud',
   };
 </script>
@@ -164,13 +178,12 @@ with SQLite's `json_valid()`/`json_type()` rather than Postgres's `jsonb_typeof(
 `TEXT` ISO-8601 strings (`strftime('%Y-%m-%dT%H:%M:%fZ','now')` as the default), not a native
 `timestamptz` type — SQLite has none.
 
-### Stores, audit and credentials
+### Stores and audit
 
 | Table | Purpose |
 |---|---|
 | `store_settings` | One row per store (tenant). `store_id` is the **external** ZenBasket id — there is no local users/stores table. The row is created on the store's first authenticated request, and the public routes treat a store without one as unknown. It has no other columns of its own. |
 | `audit_logs` | Append-only log of privileged operations (identifiers + small metadata only; never secrets or payloads). |
-| `integration_credentials` | Per-store HMAC signing secrets, **encrypted at rest** (AES-256-GCM, `secret_encrypted`; the key is the Worker secret `INTEGRATION_ENCRYPTION_KEY`, the ciphertext is bound to `(store_id, id)`). Several can be live at once for rotation (`expires_at` on the outgoing one); `status` active/revoked. |
 
 ### Configurations and assets
 
@@ -414,9 +427,11 @@ server-to-server event — is specified for the ZenBasket team in
 **[docs/zenbasket-integration.md](docs/zenbasket-integration.md)**, which implements the platform-wide
 **[Extension Platform Contract v1](../docs/extension-platform-contract-v1.md)**. Summary of the guarantees:
 
-- **Event auth:** HMAC-SHA256 over `"<timestamp>.<exact body>"`, per-store encrypted secrets, a
-  configurable timestamp window, constant-time comparison, and rotation with an overlap period. The store
-  comes from the credential, never the body.
+- **Event auth:** HMAC-SHA256 over `"<timestamp>.<exact body>"`, keyed by a webhook key derived (HKDF) from
+  the **one plugin-level secret** ZenBasket generates at registration (`ZB_PLUGIN_SECRET`; no per-store
+  secrets, nothing stored in D1), a configurable timestamp window and constant-time comparison. The body's
+  `storeId` is untrusted until the signature verifies, then must be a store the Worker knows (`403
+  store_not_authorized` otherwise).
 - **Generic envelope, per-line outcome:** `POST /api/v1/integrations/personalization/events` takes the
   contract-v1 envelope (`order`, `lines[].extensions`). Event-id dedup is one row with a `processing`/
   `completed` status; each line then commits independently as its own small atomic batch (product/
@@ -490,17 +505,30 @@ customer files (tests use an in-memory bucket).
 ## Authentication & tenancy
 
 The store/tenant identity is derived **only** from a verified credential — never from a client header,
-query param or body field.
+query param or body field. Everything ZenBasket proves to the Worker rests on **one plugin-level secret**,
+`ZB_PLUGIN_SECRET`: ZenBasket generates it when the plugin is registered, keeps it in its own credential
+store, and it is configured here as a Cloudflare secret per environment. The Worker never generates,
+stores, logs or returns it. The full contract (claims, key derivation, signing, rotation, the Node signer
+example) is [docs/zenbasket-integration.md](docs/zenbasket-integration.md) §3–§4.
 
-- **Production/staging:** the hosting platform (ZenBasket) issues an HS256 session token signed with a
-  shared secret (`JWT_SIGNING_SECRET`), carrying the store id as a claim (`store_id`/`storeId`). The
-  Worker verifies the signature and expiry (`src/shared/jwt.ts`) and trusts only the claim.
-- **Development:** a static `DEV_AUTH_TOKEN` maps to `DEV_STORE_ID`. Never honoured in production.
+There are exactly two ways in, and they are separate verification flows:
 
-> **There is no production identity provider in this repository.** This is the documented integration
-> boundary. Until `JWT_SIGNING_SECRET` is configured, protected routes reject every request, so no
-> data operation is ever unauthenticated. To integrate a real IdP, issue tokens signed with
-> `JWT_SIGNING_SECRET`, or replace `verifyJwtHs256` with the provider's verifier.
+- **Merchant routes** (`middleware/authentication.ts`, `shared/jwt.ts`): an HS256 token ZenBasket signs with the
+  plugin secret. The Worker requires a valid signature, `iat` and `exp` (a token with no expiry is refused),
+  a `pluginId` equal to `ZB_PLUGIN_ID` (a token minted for another plugin is refused) and a `storeId`; the store
+  comes only from that claim.
+- **Order callbacks** (`integration-controller.ts`): `POST /integrations/personalization/events` accepts only an
+  HMAC-SHA256 signature over `<timestamp>.<raw body>` (`v1=<hex>`), keyed by a key derived with HKDF-SHA256 from
+  the plugin secret (`info = zb-plugin:v1:order-webhook`). The body's `storeId` is untrusted until the signature
+  verifies, then must be a store the Worker knows.
+
+A merchant token is not accepted as a callback, and a callback signature is not accepted on merchant routes.
+
+**Fail closed, no shortcuts:** with `ZB_PLUGIN_SECRET` missing, blank or shorter than 32 characters, merchant routes
+answer `401` and the callback answers `503 integrations_not_configured`; with `ZB_PLUGIN_ID` unset, merchant routes
+answer `401`. There is no development token, no bypass flag, no second or previous secret, no key-mode switch and
+no credential-management endpoint, and no environment can enable one. Use `npm run dev:token` / `npm run dev:event`
+locally. `ASSET_SIGNING_SECRET` (signed asset URLs) is independent and has no fallback.
 
 A store becomes known to the Worker on its first authenticated request (the tenant middleware registers it in
 `store_settings`); which stores receive tokens at all is the hosting platform's decision, and there is no
@@ -543,8 +571,8 @@ signed URL on the public asset route:
 <origin>/api/v1/storefront/personalization/assets/<uuid>?sig=<signature>
 ```
 
-- `sig` is an HMAC-SHA256 over the store id and asset id, keyed by `ASSET_SIGNING_SECRET` (falls back to
-  `JWT_SIGNING_SECRET`). It never expires, so it can live in the configuration, and it only works for
+- `sig` is an HMAC-SHA256 over the store id and asset id, keyed by `ASSET_SIGNING_SECRET` — **only** that: there is no
+  fallback to any other secret, and rotating the plugin secret cannot invalidate these URLs. It never expires, so it can live in the configuration, and it only works for
   that asset.
 - A valid signature serves the asset even while it is a draft (`Cache-Control: private`). Without one,
   the route serves only assets referenced by the store's published configuration, as before.
@@ -635,9 +663,10 @@ cp wrangler.jsonc wrangler.e2e.jsonc   # then: drop the "env" block, set "STORAG
                                        #   and add "r2_buckets": [{ "binding": "PERSONALIZATION_ASSETS", "bucket_name": "e2e-local" }]
 npx wrangler dev -c wrangler.e2e.jsonc --port 8787 --persist-to /tmp/wrangler-e2e-state
 
-# 3. from the repository root (values come from worker-api/.dev.vars)
+# 3. from the repository root: a real signed token for the store the test uses (the signer reads worker-api/.dev.vars)
 npm run build:element
-ZB_E2E_API_URL=http://localhost:8787 ZB_E2E_TOKEN=<DEV_AUTH_TOKEN> ZB_E2E_STORE_ID=<DEV_STORE_ID> ZB_E2E_PORT=4310 \
+ZB_E2E_TOKEN=$(cd worker-api && npm run -s dev:token -- --store 766) \
+ZB_E2E_API_URL=http://localhost:8787 ZB_E2E_STORE_ID=766 ZB_E2E_PORT=4310 \
   npx vitest run --config tests/browser/vitest.config.mts tests/browser/cloud-e2e.spec.ts
 ```
 
@@ -673,28 +702,29 @@ inspection/recovery.
 
 ## Database migrations
 
-- One baseline migration, `migrations/0001_baseline.sql`, holds the whole schema (including the order
-  line details and `order_details`, folded in while only a dev environment existed). Once real data
-  exists, append `0002_…` and so on instead of editing it.
-- Applied with `wrangler d1 migrations apply`/`list` (the `migrate`/`migrate:status` npm scripts), not
-  a custom runner — wrangler tracks applied migrations itself in a `d1_migrations` table, so there is
-  no hand-rolled checksum ledger to maintain.
-- **Append-only:** wrangler refuses to re-apply an edited already-applied file (add a new migration
-  instead).
+- **One migration: `migrations/0001_baseline.sql`.** It holds the complete final schema (14 tables, 35 indexes,
+  2 triggers): configurations, versions, assets, mappings, markups, customizations and their files, order links and
+  details, direct uploads, event deduplication, cleanup bookkeeping, audit log. There are **no authentication
+  structures in the database** (no credential table, no stored secrets): authentication lives in Cloudflare
+  secrets. A fresh database applies this one file and ends with exactly the final schema; the schema tests build it
+  from an empty D1 to prove that.
+- It was consolidated on 2026-11-18, when the development database was recreated from scratch, so it is editable
+  *only* until a database that must be kept exists. From then on it is frozen and every schema change is a new
+  forward file (`0002_…`): wrangler refuses to re-apply an edited, already-applied migration and would leave an
+  existing database silently out of step.
+- Applied with `wrangler d1 migrations apply`/`list` (the `migrate`/`migrate:status` npm scripts); wrangler tracks
+  applied migrations itself in a `d1_migrations` table.
 - Idempotent objects (`IF NOT EXISTS`, `ON CONFLICT`) so re-runs are safe.
 
 ```bash
-npm run migrate                                              # local (wrangler dev's D1)
-npx wrangler d1 migrations apply zb-product-personalizer-db           # staging/production
-npx wrangler d1 migrations apply zb-product-personalizer-db --env staging
+npm run migrate                                                          # local (wrangler dev's D1)
+npx wrangler d1 migrations apply <database_name> --env dev --remote      # a remote D1 — only when intended
 ```
 
-Run against staging/production from CI or a trusted bastion. **Never** run destructive schema changes
-during normal API requests (the Worker never does). Forward-recovery is preferred: to undo, write a
-new migration that reverses the change.
-
-The Postgres-era migration file and its custom runner (`scripts/migrate.mjs`) have been removed —
-`migrations/` now holds only the D1 SQLite schema, applied with wrangler's own migration tooling.
+Run against remote databases from CI or a trusted bastion, and only deliberately: **never** as a side effect of a
+code check. The Worker never changes its schema at request time. Forward-recovery is preferred: to undo, write a new
+migration that reverses the change. To recreate the development database from scratch, follow
+[docs/fresh-dev-environment.md](docs/fresh-dev-environment.md).
 
 ## Testing
 
@@ -711,14 +741,22 @@ optimistic-concurrency conflicts, idempotent create, structured 422s, duplicate/
 publish + version history, **tenant isolation**, the full R2 upload/delivery/ownership/reference-
 protected-delete flow, invalid-file rejection, resumable-upload idempotency, and CORS.
 
+Authentication has its own coverage: `test/api.test.ts` (merchant tokens: signature, `iat`/`exp`, plugin binding,
+store claim, fail-closed, no fallback secret, no dev token or bypass in any environment),
+`test/order-callback.test.ts` (callback HMAC, timestamp window, derived key, unknown/other store, replay,
+idempotency, concurrency, interrupted processing), `test/integration-unit.test.ts` (HKDF known answers and
+interop with Node's `hkdfSync`) and `test/dev-sign.test.ts` (the local signer produces credentials the Worker accepts).
+Every merchant call in the suite goes out with a real signed JWT — the harness has no dev token either.
+
 Mappings, markups, settings and the public storefront (precedence, draft/archived/unpublished handling, re-publish,
 cross-tenant isolation, unknown keys, rate limiting with an injected store/clock, CORS, ETag/304, asset rewriting and serving)
 are covered in `test/mappings.test.ts`, `test/markups.test.ts`, `test/storefront.test.ts` and `test/storefront-unit.test.ts`.
 
 Store registration (a store becomes known on its first authenticated request; the public routes and shopper
 uploads/saves refuse a store that never has) is covered in `test/store-settings.test.ts`, and
-`test/schema.test.ts` asserts the final schema (the exact table set via `sqlite_master`, no `plugin_id`
-anywhere, the `artwork` file kind and the per-line event `results`/`status` columns).
+`test/schema.test.ts` builds the single baseline in a brand-new empty D1 and asserts the final schema (the exact
+tables, indexes and triggers, no `plugin_id`, no credential structures, the `artwork` file kind, the per-line event
+`results`/`status` columns, foreign keys and integrity) and that `0001_baseline.sql` is the only migration file.
 
 Each test file gets its own fresh, disposable Miniflare D1 instance (no connection string or
 pre-existing database to point at, unlike the retired Postgres setup) — see `getTestD1()` in
@@ -726,40 +764,72 @@ pre-existing database to point at, unlike the retired Postgres setup) — see `g
 
 ## Deploying to staging / production
 
-One-time Cloudflare setup per environment (replace names/ids; **ids are environment-specific, not
-secrets, but update `wrangler.jsonc` with the real ones**):
+### Worker environments (what `wrangler.jsonc` defines)
+
+Each `--env` is a **separate Worker** (its name is `zb-product-personalizer-api-<env>`) with its own D1 database, bindings,
+vars and secrets. Wrangler does **not** inherit `vars`, secrets or bindings from the top level into an environment, so
+every environment block must carry everything it needs — and a resource named "staging" is a real resource of its own,
+not a scratch copy.
+
+| `--env` | Worker | D1 database (binding `DB`) | R2 bucket (binding `PERSONALIZATION_ASSETS`) | `STORAGE_DRIVER` |
+|---|---|---|---|---|
+| *(none)* — `npm run dev`, local only | `zb-product-personalizer-api` | `zb-product-personalizer-db` (placeholder id; only ever a local SQLite file) | – | `s3` |
+| `dev` | `zb-product-personalizer-api-dev` | `zb-product-personalizer-db-dev` | `zb-personalization-assets-dev` | `r2` |
+| `staging` | `zb-product-personalizer-api-staging` | `zb-product-personalizer-db-staging` | – (S3 bucket `zb-plugins`) | `s3` |
+| `production` | `zb-product-personalizer-api-production` | `zb-product-personalizer-db-production` (not created yet: placeholder id) | `zb-personalization-assets-production` (not created yet) | `r2` |
+
+Secrets, routes and the `workers.dev` URL belong to a Worker **name**: a secret set for `--env dev` is invisible to
+`--env staging`. Never point one environment at another's D1 database or bucket.
+
+### Environment variable inventory
+
+**Secrets** — `wrangler secret put <NAME> --env <env>` (prompts; never on the command line) or `.dev.vars` locally:
+
+| Name | Required | Purpose |
+|---|---|---|
+| `ZB_PLUGIN_SECRET` | **always** | ZenBasket's plugin-level secret (≥ 32 chars): verifies merchant JWTs and, through the derived key, order callbacks. One value per environment. Missing/short = fail closed. |
+| `ASSET_SIGNING_SECRET` | wherever configs are edited | Signs asset URLs stored in configurations. Independent of the plugin secret; **no fallback**. |
+| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | `STORAGE_DRIVER=r2` + direct uploads | R2 API token scoped to the bucket; presigns browser upload/download URLs only. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (`AWS_SESSION_TOKEN` for temporary keys) | `STORAGE_DRIVER=s3` | IAM user scoped to the bucket. |
+
+**Vars** — `wrangler.jsonc` `vars` per environment (non-secret):
+
+| Name | Purpose |
+|---|---|
+| `ZB_PLUGIN_ID` | **Required.** ZenBasket's id for this plugin; a merchant token's `pluginId` must equal it. Unset = merchant auth fails closed. |
+| `ENVIRONMENT`, `API_VERSION`, `LOG_LEVEL` | Labels (`development`/`staging`/`production`), URL version (`v1`), log verbosity. |
+| `CORS_ALLOWED_ORIGINS` | Merchant CORS allowlist (the storefront routes answer `*`). |
+| `STORAGE_DRIVER`, `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_S3_ENDPOINT` | Object storage. |
+| `ASSET_PUBLIC_BASE_URL`, `BUNDLED_ASSET_BASE_URL`, `MAX_UPLOAD_BYTES`, `LEGACY_PROXY_UPLOADS` | Asset delivery and upload limits. |
+| `UPLOAD_URL_TTL_SECONDS`, `PRIVATE_URL_TTL_SECONDS`, `PENDING_UPLOAD_GRACE_MINUTES`, `MAX_OPEN_UPLOADS_PER_STORE` | Presigned URL lifetimes and direct-upload limits. |
+| `STOREFRONT_RATE_LIMIT`, `STOREFRONT_RATE_WINDOW_SECONDS`, `STOREFRONT_WRITE_RATE_LIMIT`, `ORDER_CALLBACK_RATE_LIMIT`, `ORDER_CALLBACK_TOLERANCE_SECONDS` | Rate limits and the callback timestamp window (default ±300 s). |
+| `CUSTOMIZATION_RETENTION_DAYS`, `UNATTACHED_UPLOAD_TTL_HOURS`, `ASSET_DELETE_GRACE_HOURS`, `EXPIRED_TOMBSTONE_DAYS` | Cleanup timings. |
+
+**Does not exist (and must not be set — it is read by nothing):** `JWT_SIGNING_SECRET`, `ZB_PLUGIN_SECRET_PREVIOUS`,
+`ZB_JWT_KEY_MODE`, `INTEGRATION_ENCRYPTION_KEY`, `DEV_AUTH_TOKEN`, `DEV_STORE_ID`, `DEV_AUTH_BYPASS`,
+`CUSTOMIZATION_TOKEN_SECRET`. A leftover copy in an environment is harmless but dead; delete it
+(`wrangler secret delete <NAME> --env <env>`).
+
+### Deploying
 
 ```bash
-# 1. Create the D1 database for that environment.
-wrangler d1 create zb-product-personalizer-db-production
-#    → copy the printed database_id into wrangler.jsonc env.production.d1_databases[0].database_id
+# One-time per environment (names/ids are environment-specific; the database_id is not a secret).
+npx wrangler d1 create <database-name>                  # copy the printed id into wrangler.jsonc env.<env>.d1_databases[0]
+npx wrangler d1 migrations apply <database-name> --env <env> --remote
+npx wrangler secret put ZB_PLUGIN_SECRET   --env <env>  # ZenBasket's value for THIS environment
+npx wrangler secret put ASSET_SIGNING_SECRET --env <env>
+# ...plus the storage secrets of the driver in use, and ZB_PLUGIN_ID under vars in wrangler.jsonc
 
-# 2. Create the R2 bucket.
-wrangler r2 bucket create zb-personalization-assets-production
-
-# 3. Set secrets (never in source):
-wrangler secret put JWT_SIGNING_SECRET --env production
-wrangler secret put INTEGRATION_ENCRYPTION_KEY --env production   # openssl rand -base64 32 — back it up!
-#    (DEV_AUTH_TOKEN / DEV_STORE_ID are NOT set in production.)
-
-# 4. Apply migrations against the production database from CI/bastion:
-npx wrangler d1 migrations apply zb-product-personalizer-db-production --env production
-
-# 5. Deploy:
-npm run deploy:production     # wrangler deploy --env production
+npm run deploy:<env>                                    # wrangler deploy --env <env>
 ```
 
-Staging mirrors the above with `--env staging` and its own D1 database, bucket, secret, CORS
-allowlist and API URL. Keep staging and production fully separated; never point local/staging at
-production resources — a D1 `database_id` is still a real, environment-specific resource even though
-it is not a secret like the old Hyperdrive connection string was.
+Apply the migration **before** the deploy that needs it; `wrangler deploy` never migrates. Validate
+`GET /api/v1/health` after any deploy or rollback. **Rollback:** `wrangler rollback --env <env>` reverts the Worker;
+schema changes roll forward via a new migration.
 
-Secrets, routes and the `workers.dev` URL belong to a Worker **name**. This Worker is
-`zb-product-personalizer-api`; if a Worker with the earlier name (`zb-plugin-platform`) was ever deployed,
-it is a different Worker: set every secret again for the new name and remove the old one yourself.
-
-**Rollback:** `wrangler rollback [--env <env>]` reverts the Worker to the previous deployment. Schema
-changes roll forward via a new migration. Validate `GET /api/v1/health` after any deploy or rollback.
+To recreate the **development** environment from scratch (new D1, fresh secrets), use the reviewed runbook in
+[docs/fresh-dev-environment.md](docs/fresh-dev-environment.md). Nothing in this repository runs remote delete, reset
+or deploy commands for you.
 
 ## Security notes
 
@@ -796,30 +866,29 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
 
 ## Limitations, assumptions & risks
 
-- **No production identity provider** is included. `JWT_SIGNING_SECRET` + the token contract are the
-  integration boundary; wire ZenBasket's token issuance to complete auth.
+- **ZenBasket's side of the plugin-secret model is not in this repository.** The Worker verifies tokens and
+  callbacks per docs/zenbasket-integration.md, but the issuer signing with the plugin secret (and carrying
+  `storeId`, `pluginId`, `iat`, `exp`), the webhook dispatcher using the derived key, and plugin registration
+  (secret + id generation) are ZenBasket's. Until they exist, only locally signed credentials
+  (`npm run dev:token` / `dev:event`) can authenticate (the Worker fails closed otherwise).
+- **Secret rotation is a coordinated cut-over, not an overlap.** There is one secret; anything signed with the old
+  one after the swap is refused, and a refused callback (`401`) is not retried by ZenBasket. Pause delivery first
+  (docs/zenbasket-integration.md §3.6).
+- **One shared secret means one blast radius.** Whoever holds `ZB_PLUGIN_SECRET` can sign an order event for any
+  store the Worker knows (it can then only link existing `saved` customizations, by unguessable id). Rotate on suspicion.
 - **No per-store enable/disable switch.** A store is known once its merchant has used the API, and whether a
   store has the extension installed is decided by the hosting platform (which issues the tokens). The
   install / uninstall lifecycle events of contract v1 (section 10) are not implemented; when they are, a
   status column on `store_settings` is the place for them.
-- **Staging D1 created and validated (2026-11-06); the Worker itself has not been deployed anywhere.**
-  `zb-product-personalizer-db-staging` exists, the baseline migration is applied, and `wrangler dev
-  --remote --env staging` (real remote D1, not Miniflare) confirmed: schema integrity
-  (`PRAGMA foreign_key_check`/`quick_check`, all 13 tables + both triggers present), configs/publish,
-  mappings (including a 130-item bulk create to exercise the 100-bound-parameter chunking), markups
-  (including the long-search-term LIKE-limit fix), customizations save/update, integration credentials
-  (create/rotate/revoke), and order-callback concurrency (a real concurrent-duplicate-delivery race
-  against production D1, not just Miniflare — exactly one of the racing deliveries applies, the rest
-  see `duplicate:true`). The `pending_attach_count` attach-count guard was additionally
-  probed with raw multi-statement SQL directly against the remote database: a short claim rolled back
-  *the entire multi-statement unit* (confirmed by querying afterward — nothing committed), and a full
-  claim committed cleanly. **Not exercised: anything touching object storage** — R2 is not enabled on
-  this Cloudflare account (bucket creation fails with error 10042), and the `.dev.vars` AWS S3 temporary
-  credentials used for the `s3` storage driver have expired (`ExpiredToken`) — a pre-existing rotation
-  issue, unrelated to this migration — so customer file uploads, the merchant asset endpoint, and
-  cleanup's actual R2/S3 object deletion were not re-verified against a real backing store. No
-  `wrangler deploy` was run against staging or production; only `wrangler dev --remote` (which never
-  makes the Worker reachable at a public URL).
+- **Remote state is only partly verified.** The staging D1 (`zb-product-personalizer-db-staging`, created
+  2026-11-06) was exercised with `wrangler dev --remote --env staging` (real remote D1: integrity checks,
+  configs/publish, 130-item bulk mappings against the 100-bound-parameter limit, markups, customizations,
+  order-callback concurrency, the attach-count triggers via raw SQL) — against the schema of **that date**. The
+  baseline has since gained tables and columns and was consolidated on 2026-11-18, so that database has **not**
+  been verified against the current baseline; do not use it without recreating it or catching it up. The
+  `-dev` Worker is deployed (its D1 is the disposable development database); the `-staging` and `-production`
+  Workers have never been deployed, and no production D1 or bucket exists. Object-storage paths (uploads,
+  asset endpoint, cleanup deletion) were not re-verified against a real bucket after R2 was enabled.
 - **Angular ↔ cloud path** is implemented and type-checked (production build passes) but **not verified
   against a live deployment**. Point a local app at `wrangler dev` to validate before release.
 - **In-Worker rate limiting is best-effort only**: the public storefront limiter is per isolate and in memory (not a global limit).
@@ -855,8 +924,9 @@ changes roll forward via a new migration. Validate `GET /api/v1/health` after an
   per-store quota on pending customizations or stored bytes yet.
 - **`customization.data` is validated structurally only** (object, ≤256 KB, bounded depth). It is not
   checked against the config's fields/limits server-side.
-- **`INTEGRATION_ENCRYPTION_KEY` rotation** (re-encrypting stored secrets under a new master key) has no
-  tooling yet; the recovery path is to issue new credentials.
+- **No installation state.** The Worker only knows whether a store is *known* (`store_settings`); it cannot tell
+  installed from disabled/uninstalled, because that is the Plugin Manager's state and the lifecycle events are not
+  implemented (contract §10). A signed event for a known store that was since uninstalled is still processed.
 - **Callback scope:** only `order.confirmed` is supported. Order cancellation/refund events do not change a
   customization's state.
 - Server-side config validation is structural + limits + minimal publish-readiness; the authoritative

@@ -3,8 +3,9 @@
  * PostgreSQL), driving the real cloud repositories over HTTP. Skipped unless these are set:
  *
  *   ZB_E2E_API_URL    e.g. http://localhost:8787
- *   ZB_E2E_TOKEN      the Worker's DEV_AUTH_TOKEN (.dev.vars)
- *   ZB_E2E_STORE_ID   the Worker's DEV_STORE_ID
+ *   ZB_E2E_TOKEN      a merchant JWT signed with the Worker's ZB_PLUGIN_SECRET and carrying its ZB_PLUGIN_ID:
+ *                     `npm run dev:token -- --store <ZB_E2E_STORE_ID>` in worker-api/ (valid for an hour)
+ *   ZB_E2E_STORE_ID   the store id inside that token
  *   ZB_E2E_PORT       a fixed port for the test page server, and that origin
  *                     (http://127.0.0.1:<port>) in the Worker's CORS_ALLOWED_ORIGINS
  *

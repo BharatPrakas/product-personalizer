@@ -494,14 +494,6 @@ export const orderEventSchema = z
 
 export type ParsedOrderEvent = z.infer<typeof orderEventSchema>;
 
-export const credentialCreateSchema = z.object({
-  label: z.string().trim().max(120).default(''),
-});
-
-export const credentialRotateSchema = z
-  .object({ gracePeriodSeconds: z.number().int().min(0).max(7 * 24 * 60 * 60).optional() })
-  .default({});
-
 export const customizationListQuerySchema = z.object({
   status: z.enum(['saved', 'ordered', 'expired']).optional(),
   orderId: externalIdSchema.optional(),

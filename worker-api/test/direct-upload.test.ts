@@ -644,7 +644,7 @@ describe.each<Driver>(['r2', 's3'])('direct uploads — shopper (%s)', (driver) 
     const shopperRead = await shop(`/customizations/${saved.customizationId}/assets/${init.assetId}/url`);
     expect(shopperRead.status).not.toBe(200);
 
-    const merchant = (storeId = STORE_A, token: string | null = 'test-dev-token') =>
+    const merchant = (storeId = STORE_A, token?: string | null) =>
       call(`${ADMIN}/customizations/${saved.customizationId}/assets/${init.assetId}/url`, { storeId, token, env: p.env });
     const res = await merchant();
     expect(res.status).toBe(200);

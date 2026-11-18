@@ -13,16 +13,20 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Miniflare } from 'miniflare';
 import { createApp } from '../src/app';
-import { signBody } from '../src/modules/integration-credentials/signature';
+import { deriveWebhookKey } from '../src/modules/zenbasket-auth/plugin-secret';
+import { signBody } from '../src/modules/zenbasket-auth/webhook-signature';
 import { toSqliteSql } from '../src/database/connection';
 import type { Env } from '../src/config/environment';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(HERE, '..', 'migrations');
 
-export const DEV_TOKEN = 'test-dev-token';
-/** 32 bytes, base64 — the test master key for integration secrets. */
-export const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
+/** Test fixtures only — not a real secret. >= 32 characters, as a ZenBasket-generated secret would be. */
+export const TEST_PLUGIN_SECRET = 'test-plugin-secret-0123456789abcdef0123456789';
+/** A different plugin's secret, to prove the Worker rejects what it did not issue. */
+export const OTHER_PLUGIN_SECRET = 'some-other-plugins-secret-9876543210fedcba9876';
+/** ZenBasket's id for this plugin (the `pluginId` claim of merchant tokens), as in the issued-token fixture. */
+export const TEST_PLUGIN_ID = '160';
 export const STORE_A = 'store_alpha';
 export const STORE_B = 'store_beta';
 
@@ -130,7 +134,7 @@ export async function getTestD1(): Promise<D1Database> {
  * strips `--` comments first (prose in them may itself contain semicolons) and then tracks BEGIN/END
  * nesting, only splitting at a `;` outside of one.
  */
-function splitStatements(sql: string): string[] {
+export function splitStatements(sql: string): string[] {
   const withoutComments = sql
     .split('\n')
     .map((line) => line.replace(/--.*$/, ''))
@@ -165,10 +169,9 @@ export function makeEnv(bucket: InMemoryR2 = new InMemoryR2()): Env & { bucket: 
     ASSET_PUBLIC_BASE_URL: '',
     MAX_UPLOAD_BYTES: String(15 * 1024 * 1024),
     LOG_LEVEL: 'error',
-    DEV_AUTH_TOKEN: DEV_TOKEN,
-    DEV_STORE_ID: STORE_A,
     ASSET_SIGNING_SECRET: 'test-asset-signing-secret',
-    INTEGRATION_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
+    ZB_PLUGIN_SECRET: TEST_PLUGIN_SECRET,
+    ZB_PLUGIN_ID: TEST_PLUGIN_ID,
     STOREFRONT_WRITE_RATE_LIMIT: '100000',
     ORDER_CALLBACK_RATE_LIMIT: '100000',
     bucket,
@@ -190,7 +193,9 @@ export const app = createApp();
 
 export interface CallOptions {
   method?: string;
+  /** A merchant token. Omitted: a real signed JWT for `storeId`. `null`: no Authorization header at all. */
   token?: string | null;
+  /** The store the default merchant token is issued for (default STORE_A). */
   storeId?: string;
   body?: unknown;
   rawBody?: ArrayBuffer | Uint8Array;
@@ -203,14 +208,14 @@ export interface CallOptions {
 }
 
 /**
- * Call the app. A dev token is used by default; pass `storeId` to switch tenants (the env's dev
- * store id is overridden per call so cross-tenant tests are possible with one app instance).
+ * Call the app. Merchant routes are called with a REAL signed ZenBasket-style JWT (HS256, signed with the
+ * test plugin secret) for `storeId`, so cross-tenant tests just pass another `storeId`. There is no
+ * development token: pass `token: null` for an anonymous call or `token: '<jwt>'` to send your own.
  */
 export async function call(path: string, options: CallOptions = {}): Promise<Response> {
   const env = { ...makeEnv(sharedBucket), DB: await getTestD1(), ...options.env };
-  if (options.storeId) env.DEV_STORE_ID = options.storeId;
   const headers = new Headers(options.headers);
-  const token = options.token === undefined ? DEV_TOKEN : options.token;
+  const token = options.token === undefined ? await signJwt({ storeId: options.storeId ?? STORE_A }) : options.token;
   if (token) headers.set('Authorization', `Bearer ${token}`);
   if (options.origin) headers.set('Origin', options.origin);
 
@@ -270,7 +275,6 @@ const TABLES_CHILD_FIRST = [
   'configs',
   'assets',
   'markups',
-  'integration_credentials',
   'store_settings',
   'audit_logs',
   'integration_events',
@@ -500,10 +504,24 @@ export async function fetchCustomizationImage(
   return call(`${STOREFRONT}/customization-images/${assetId}${query}`, { token: null, ...options });
 }
 
-export async function createCredential(storeId: string = STORE_A): Promise<{ id: string; secret: string }> {
-  const res = await call(`${ADMIN}/integration/credentials`, { method: 'POST', storeId, body: { label: 'test' } });
-  if (res.status !== 201) throw new Error(`createCredential failed: ${res.status} ${await res.text()}`);
-  return (await json(res)).data;
+/**
+ * A merchant session JWT the way ZenBasket issues it: HS256, `{ storeId, pluginId, iat, exp }`. `key` is
+ * the plugin secret (root mode, the default) or a derived key; claims override the defaults.
+ */
+export async function signJwt(
+  claims: Record<string, unknown> = {},
+  key: string | Uint8Array = TEST_PLUGIN_SECRET,
+): Promise<string> {
+  const iat = Math.floor(Date.now() / 1000);
+  const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const head = enc({ alg: 'HS256', typ: 'JWT' });
+  const body = enc({ storeId: 766, pluginId: Number(TEST_PLUGIN_ID), iat, exp: iat + 3600, ...claims });
+  const hmac = await crypto.subtle.importKey(
+    'raw', typeof key === 'string' ? new TextEncoder().encode(key) : key,
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', hmac, new TextEncoder().encode(`${head}.${body}`));
+  return `${head}.${body}.${Buffer.from(new Uint8Array(sig)).toString('base64url')}`;
 }
 
 export interface OrderEventLineBody {
@@ -593,15 +611,27 @@ export function orderEvent(
   );
 }
 
-/** POST a signed order callback (signed exactly as the integration contract documents). */
+/**
+ * POST an order callback signed exactly as the integration contract documents: HMAC-SHA256 over
+ * `<timestamp>.<raw body>` with the order-webhook key derived (HKDF) from the plugin secret.
+ *
+ * `secret` signs with another plugin's secret; `key` with an explicit key (e.g. a key derived for another
+ * purpose); `signature` replaces the whole header value.
+ */
 export async function postOrderEvent(
-  credential: { id: string; secret: string },
   event: OrderEventBody | string,
-  options: { timestamp?: number; signWith?: string; env?: Partial<Env>; headers?: Record<string, string> } = {},
+  options: {
+    timestamp?: number;
+    secret?: string;
+    key?: Uint8Array;
+    signature?: string;
+    env?: Partial<Env>;
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<Response> {
   const body = typeof event === 'string' ? event : JSON.stringify(event);
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000);
-  const signature = signBody(options.signWith ?? credential.secret, timestamp, body);
+  const key = options.key ?? (await deriveWebhookKey(options.secret ?? TEST_PLUGIN_SECRET));
   return call(`${INTEGRATIONS}/events`, {
     method: 'POST',
     token: null,
@@ -609,9 +639,8 @@ export async function postOrderEvent(
     env: options.env,
     headers: {
       'Content-Type': 'application/json',
-      'X-ZB-Key-Id': credential.id,
       'X-ZB-Timestamp': String(timestamp),
-      'X-ZB-Signature': signature,
+      'X-ZB-Signature': options.signature ?? signBody(key, timestamp, body),
       ...options.headers,
     },
   });

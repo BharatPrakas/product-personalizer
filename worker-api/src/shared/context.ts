@@ -13,8 +13,7 @@ export interface AuthPrincipal {
   storeId: string;
   /** Subject/user id when the token carries one. */
   subject: string | null;
-  scopes: readonly string[];
-  tokenType: 'jwt' | 'dev';
+  tokenType: 'jwt';
 }
 
 export interface TenantContext {

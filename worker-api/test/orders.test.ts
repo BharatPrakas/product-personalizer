@@ -6,7 +6,6 @@ import {
   STORE_B,
   applyMigrations,
   call,
-  createCredential,
   json,
   orderEventWith,
   orderLine,
@@ -28,11 +27,8 @@ beforeEach(async () => {
   resetBucket();
 });
 
-type Credential = { id: string; secret: string };
-
 /** Save one customization per line and confirm them all as one order. */
 async function placeOrder(
-  credential: Credential,
   orderId: string,
   options: { lines?: number; productId?: string; order?: Record<string, unknown>; storeId?: string; withPreview?: boolean } = {},
 ): Promise<string[]> {
@@ -49,7 +45,6 @@ async function placeOrder(
     ids.push((await saveCustomization({ storeId, productId, assets })).customizationId);
   }
   const res = await postOrderEvent(
-    credential,
     orderEventWith(
       ids.map((id, i) => orderLine(id, { id: `${orderId}-L${i + 1}`, productId, title: `Item ${i + 1}` })),
       { storeId, order: { id: orderId, ...options.order } },
@@ -78,9 +73,8 @@ describe('merchant orders API', () => {
 
   it('lists orders newest first, grouped, with line count, thumbnails and placed/linked time', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
-    const [c1] = await placeOrder(credential, 'ORD-A', { withPreview: true, order: { number: '#100', placedAt: '2026-11-01T10:00:00Z', customer: { name: 'Ann', email: 'ann@example.test' } } });
-    await placeOrder(credential, 'ORD-B', { lines: 3 });
+    const [c1] = await placeOrder('ORD-A', { withPreview: true, order: { number: '#100', placedAt: '2026-11-01T10:00:00Z', customer: { name: 'Ann', email: 'ann@example.test' } } });
+    await placeOrder('ORD-B', { lines: 3 });
     await setLinkedAt('ORD-A', '2026-11-01T10:05:00.000Z');
     await setLinkedAt('ORD-B', '2026-11-02T10:05:00.000Z');
 
@@ -99,9 +93,8 @@ describe('merchant orders API', () => {
 
   it('pages with a keyset cursor and rejects a tampered cursor', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
     for (let i = 1; i <= 5; i++) {
-      await placeOrder(credential, `ORD-${i}`);
+      await placeOrder(`ORD-${i}`);
       await setLinkedAt(`ORD-${i}`, `2026-11-0${i}T00:00:00.000Z`);
     }
     // Two orders linked at the same instant are still ordered deterministically (by id).
@@ -124,10 +117,9 @@ describe('merchant orders API', () => {
   it('filters by order id / number (exact or prefix), product and date range', async () => {
     await seedPersonalizableProduct();
     await seedPersonalizableProduct(STORE_A, 'zb-prod-2', 'cfg-cz2');
-    const credential = await createCredential();
-    await placeOrder(credential, 'ORD-111', { order: { number: 'NO-5001', placedAt: '2026-10-01T12:00:00Z' } });
-    await placeOrder(credential, 'ORD-222', { productId: 'zb-prod-2', order: { number: 'NO-6001', placedAt: '2026-10-15T12:00:00Z' } });
-    await placeOrder(credential, 'ORD-333'); // no placedAt: dated by its link time
+    await placeOrder('ORD-111', { order: { number: 'NO-5001', placedAt: '2026-10-01T12:00:00Z' } });
+    await placeOrder('ORD-222', { productId: 'zb-prod-2', order: { number: 'NO-6001', placedAt: '2026-10-15T12:00:00Z' } });
+    await placeOrder('ORD-333'); // no placedAt: dated by its link time
     await setLinkedAt('ORD-333', '2026-11-01T00:00:00.000Z');
 
     const ids = async (q: string) => (await list(q)).body.data.map((o: any) => o.orderId).sort();
@@ -147,8 +139,7 @@ describe('merchant orders API', () => {
 
   it('returns one order with several lines, their customization summary and files', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
-    const ids = await placeOrder(credential, 'ORD-MULTI', { lines: 2, withPreview: true });
+    const ids = await placeOrder('ORD-MULTI', { lines: 2, withPreview: true });
     const res = await call(`${ADMIN}/orders/ORD-MULTI`);
     expect(res.status).toBe(200);
     const order = (await json(res)).data;
@@ -169,8 +160,7 @@ describe('merchant orders API', () => {
 
   it('handles order ids that need URL encoding', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
-    await placeOrder(credential, 'ORD #7/β');
+    await placeOrder('ORD #7/β');
     const res = await call(`${ADMIN}/orders/${encodeURIComponent('ORD #7/β')}`);
     expect(res.status).toBe(200);
     expect((await json(res)).data.orderId).toBe('ORD #7/β');
@@ -185,10 +175,8 @@ describe('merchant orders API', () => {
   it('isolates tenants: store B neither lists nor reads store A’s orders or their files', async () => {
     await seedPersonalizableProduct();
     await seedPersonalizableProduct(STORE_B, 'p-b', 'cfg-b');
-    const credentialA = await createCredential(STORE_A);
-    const credentialB = await createCredential(STORE_B);
-    await placeOrder(credentialA, 'ORD-SHARED-ID', { withPreview: true, order: { customer: { name: 'Alice A' } } });
-    await placeOrder(credentialB, 'ORD-B-ONLY', { storeId: STORE_B, productId: 'p-b' });
+    await placeOrder('ORD-SHARED-ID', { withPreview: true, order: { customer: { name: 'Alice A' } } });
+    await placeOrder('ORD-B-ONLY', { storeId: STORE_B, productId: 'p-b' });
 
     expect((await list('', STORE_B)).body.data.map((o: any) => o.orderId)).toEqual(['ORD-B-ONLY']);
     expect((await call(`${ADMIN}/orders/ORD-SHARED-ID`, { storeId: STORE_B })).status).toBe(404);
@@ -200,7 +188,7 @@ describe('merchant orders API', () => {
     expect(fileFromB.status).toBe(404);
 
     // The same external order id in two stores stays two separate orders.
-    await placeOrder(credentialB, 'ORD-SHARED-ID', { storeId: STORE_B, productId: 'p-b', order: { customer: { name: 'Bob B' } } });
+    await placeOrder('ORD-SHARED-ID', { storeId: STORE_B, productId: 'p-b', order: { customer: { name: 'Bob B' } } });
     const fromB = (await json(await call(`${ADMIN}/orders/ORD-SHARED-ID`, { storeId: STORE_B }))).data;
     expect(fromB.customer.name).toBe('Bob B');
     expect(fromB.lines).toHaveLength(1);

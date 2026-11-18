@@ -51,5 +51,5 @@ one that exists; put the real Worker URL there when publishing to S3.
 1. `npm run build:element` → `dist/product-personalization/`
 2. Copy it to the served folder next to your manifest: `dist/personalizedproduct/` (keep `manifest.json`).
 3. `node scripts/serve-static.mjs dist 4600 --cors`
-4. Worker: deployed dev Worker, or `wrangler dev --var DEV_AUTH_TOKEN:zb-local-dev-token` (CORS must allow the Store Admin origin).
+4. Worker: the deployed dev Worker, or a local `wrangler dev` configured with your own `ZB_PLUGIN_SECRET` / `ZB_PLUGIN_ID` (see `worker-api/README.md`, "Local development"). The Worker has no dev token: the `authToken` the host hands the element must be a real JWT signed with that same secret (`npm run dev:token -- --store <id>` in `worker-api/`). CORS must allow the Store Admin origin.
 5. Store Admin route `/app/customplugin/<pluginCode>`; for `app: 'local'` the `local` assets are used, otherwise `build` under `awsFileUrl + <pluginCode>/`.

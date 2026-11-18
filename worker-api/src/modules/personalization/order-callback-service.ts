@@ -26,8 +26,9 @@
  *   4. record           once every line has been attempted, the results are stored on the event row
  *                       and `status` flips to 'completed', so a replay answers identically.
  *
- * Which store, order line and customization are involved is decided from the authenticated credential
- * and our own rows — the payload's `storeId` is only cross-checked against the credential by the controller.
+ * Which store, order line and customization are involved is decided from the signed payload's `storeId`,
+ * which the controller has already checked is a store this Worker knows, and from our own rows: every
+ * customization is looked up WITHIN that store, so one store's event can never touch another's data.
  *
  * Optional order details (contract v1 section 7, [proposed – optional]): the line's title / SKU / price /
  * quantity / variant go on its `order_links` row; the order's number, date, currency, totals, customer
@@ -234,15 +235,17 @@ function reasonOf(error: ApiError): string {
   return error.code;
 }
 
+/** The audit actor of every link made by a verified ZenBasket callback (there is one sender, not one per store). */
+export const ORDER_CALLBACK_ACTOR = 'integration:zenbasket';
+
 export class OrderCallbackService {
   constructor(
     private readonly ctx: { db: Database; logger: Logger; requestId: string; now?: () => Date },
   ) {}
 
   async confirm(args: {
-    /** From the verified credential — the only source of truth for which store is calling. */
+    /** From the signed, known-store-checked payload — the store whose customizations may be linked. */
     storeId: string;
-    credentialId: string;
     event: OrderEvent;
     payloadSha256: string;
   }): Promise<OrderEventResult> {
@@ -253,7 +256,7 @@ export class OrderCallbackService {
           await recordAudit(this.ctx.db, {
             requestId: this.ctx.requestId,
             storeId: args.storeId,
-            actor: `integration:${args.credentialId}`,
+            actor: ORDER_CALLBACK_ACTOR,
             action: 'order.link',
             resourceType: 'customization',
             resourceId: line.customizationId,
@@ -269,7 +272,7 @@ export class OrderCallbackService {
   }
 
   private async apply(
-    args: { storeId: string; credentialId: string; event: OrderEvent; payloadSha256: string },
+    args: { storeId: string; event: OrderEvent; payloadSha256: string },
   ): Promise<OrderEventResult> {
     const { db } = this.ctx;
     const { storeId, event } = args;
@@ -278,11 +281,11 @@ export class OrderCallbackService {
     const inserted = await db.query(
       `INSERT INTO integration_events
          (store_id, event_id, event_type, payload_sha256, external_order_id, line_count,
-          credential_id, occurred_at, request_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'processing')
+          occurred_at, request_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing')
        ON CONFLICT (store_id, event_id) DO NOTHING`,
       [storeId, event.eventId, event.type, args.payloadSha256, event.order.id, event.lines.length,
-       args.credentialId, event.occurredAt, this.ctx.requestId],
+       event.occurredAt, this.ctx.requestId],
     );
     if (inserted.rowCount === 0) {
       type EventRow = { payload_sha256: string; status: 'processing' | 'completed'; results: LineResult[] | string | null };

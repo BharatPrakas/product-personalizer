@@ -28,13 +28,18 @@
 -- D1 enables foreign-key enforcement by default; this migration relies on that (composite FKs below
 -- require the referenced composite UNIQUE indexes, created alongside each table, same as Postgres).
 --
--- `order_links` line details and `order_details` (optional order/customer details of `order.confirmed`)
--- and the direct-upload `uploads` table (+ the upload counters on `cleanup_runs`) were folded in here
--- from short-lived 0002 files while only the dev environment existed. Once real data exists, stop
--- editing this file and append 0002, 0003, ... instead.
+-- This is the ONE consolidated baseline of the development database. It was rebuilt (2026-11-18, when the
+-- development database was recreated from scratch) so it holds the final schema directly:
+--  * the `order_links` line details, `order_details` (optional order/customer details of
+--    `order.confirmed`), the direct-upload `uploads` table and the upload counters on `cleanup_runs`;
+--  * NO per-store webhook credentials: order callbacks are authenticated with the plugin-level secret held
+--    in the Worker's Cloudflare secrets (`ZB_PLUGIN_SECRET`), so there is no `integration_credentials`
+--    table and `integration_events` has no `credential_id`. Nothing about authentication lives in D1.
 --
--- Applied via `wrangler d1 migrations apply` (see migrations_dir in wrangler.jsonc), not the
--- Postgres-specific scripts/migrate.mjs runner.
+-- Once a database that must be kept exists (staging/production with real data), stop editing this file and
+-- append `0002_...`, `0003_...` instead; wrangler will not re-apply an edited, already-applied migration.
+--
+-- Applied via `wrangler d1 migrations apply` (see the `migrate` scripts in package.json).
 
 -- ---- stores ---------------------------------------------------------------------------------------
 
@@ -57,22 +62,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS audit_logs_store_idx ON audit_logs (store_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS integration_credentials (
-  id                TEXT PRIMARY KEY,
-  store_id          TEXT NOT NULL,
-  label             TEXT NOT NULL DEFAULT '' CHECK (length(label) <= 120),
-  secret_encrypted  TEXT NOT NULL,
-  status            TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
-  expires_at        TEXT,
-  revoked_at        TEXT,
-  last_used_at      TEXT,
-  created_by        TEXT,
-  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE INDEX IF NOT EXISTS integration_credentials_store_idx
-  ON integration_credentials (store_id, status);
 
 -- ---- configurations ------------------------------------------------------------------------------
 
@@ -352,7 +341,6 @@ CREATE TABLE IF NOT EXISTS integration_events (
   line_count         INTEGER,
   status             TEXT NOT NULL DEFAULT 'processing' CHECK (status IN ('processing', 'completed')),
   results            TEXT CHECK (results IS NULL OR json_valid(results)),
-  credential_id      TEXT,
   occurred_at        TEXT NOT NULL,
   received_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   request_id         TEXT,

@@ -5,16 +5,22 @@ import {
   STORE_A,
   STORE_B,
   applyMigrations,
+  OTHER_PLUGIN_SECRET,
+  TEST_PLUGIN_SECRET,
   call,
   json,
+  makeEnv,
   publishableDraft,
   resetBucket,
   sampleDraft,
   sharedBucket,
+  signJwt,
   tinyFont,
   tinyPng,
   truncateAll,
 } from './helpers';
+import { deriveWebhookKey } from '../src/modules/zenbasket-auth/plugin-secret';
+import type { Env } from '../src/config/environment';
 
 beforeAll(async () => {
   await applyMigrations();
@@ -43,6 +49,9 @@ describe('health', () => {
   });
 });
 
+/** Variables the Worker no longer reads. Passing them must change nothing; typed loosely on purpose. */
+const removedVars = (vars: Record<string, string | undefined>) => vars as unknown as Partial<Env>;
+
 describe('authentication & authorization', () => {
   it('rejects an unauthenticated request to a protected route', async () => {
     const res = await call(`${ADMIN}/configs`, { token: null });
@@ -52,79 +61,189 @@ describe('authentication & authorization', () => {
     expect(body.error.requestId).toBeTruthy();
   });
 
-  describe('ZenBasket plugin token (HS256, numeric storeId)', () => {
-    const SECRET = 'plugin-secret';
-    async function zbToken(payload: Record<string, unknown>, secret = SECRET): Promise<string> {
-      const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
-      const head = enc({ alg: 'HS256', typ: 'JWT' });
-      const body = enc(payload);
-      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-      const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${head}.${body}`));
-      return `${head}.${body}.${Buffer.from(new Uint8Array(sig)).toString('base64url')}`;
-    }
-    const iat = Math.floor(Date.now() / 1000);
-    const env = { JWT_SIGNING_SECRET: SECRET, DEV_AUTH_TOKEN: undefined, DEV_AUTH_BYPASS: undefined } as const;
+  describe('merchant token (HS256, signed with the plugin secret; { storeId, pluginId, iat, exp })', () => {
+    const zbToken = signJwt;
+    const get = (token: string, env: Partial<Env> = {}) => call(`${ADMIN}/configs`, { token, env });
 
     it('accepts the token shape the backend issues ({ storeId: <number>, pluginId, iat, exp })', async () => {
-      const token = await zbToken({ storeId: 766, pluginId: 160, iat, exp: iat + 3600 });
-      expect((await call(`${ADMIN}/configs`, { token, env })).status).toBe(200);
+      const token = await zbToken({ storeId: 766, pluginId: 160 });
+      expect((await get(token)).status).toBe(200);
     });
 
     it('treats the numeric claim and the same id as a string as one store', async () => {
-      const numeric = await zbToken({ storeId: 766, iat, exp: iat + 3600 });
-      const text = await zbToken({ storeId: '766', iat, exp: iat + 3600 });
+      const numeric = await zbToken({ storeId: 766 });
+      const text = await zbToken({ storeId: '766' });
       const create = await call(`${ADMIN}/configs`, {
-        method: 'POST', token: numeric, env,
+        method: 'POST', token: numeric,
         body: { clientConfigId: 'cfg-numeric-claim', draft: sampleDraft({ id: 'cfg-numeric-claim' }) },
       });
       expect(create.status).toBe(201);
-      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: text, env })).status).toBe(200);
-      const other = await zbToken({ storeId: 767, iat, exp: iat + 3600 });
-      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: other, env })).status).toBe(404);
+      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: text })).status).toBe(200);
+      // A token for another store never reaches this store's data.
+      const other = await zbToken({ storeId: 767 });
+      expect((await call(`${ADMIN}/configs/cfg-numeric-claim`, { token: other })).status).toBe(404);
     });
 
-    it.each([[0], [-1], [1.5], [null]])('rejects a token whose storeId claim is %s', async (storeId) => {
-      const token = await zbToken({ storeId, iat, exp: iat + 3600 });
-      expect((await call(`${ADMIN}/configs`, { token, env })).status).toBe(401);
+    it('takes the store ONLY from the signed claim, never from a header, query string or body', async () => {
+      await call(`${ADMIN}/configs`, {
+        method: 'POST', storeId: STORE_B,
+        body: { clientConfigId: 'cfg-of-b', draft: sampleDraft({ id: 'cfg-of-b' }) },
+      });
+      const asA = await zbToken({ storeId: STORE_A });
+      const res = await call(`${ADMIN}/configs/cfg-of-b?storeId=${STORE_B}&store_id=${STORE_B}`, {
+        token: asA, headers: { 'X-Store-Id': STORE_B, 'X-ZB-Store-Id': STORE_B },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it.each([[0], [-1], [1.5], [null], [''], [{ id: 1 }]])('rejects a token whose storeId claim is %j', async (storeId) => {
+      expect((await get(await zbToken({ storeId }))).status).toBe(401);
+    });
+
+    it('does not read the legacy `store_id` claim: a token that only carries it names no store', async () => {
+      const token = await zbToken({ storeId: undefined, store_id: 'store_legacy' });
+      const res = await get(token);
+      expect(res.status).toBe(401);
+      expect((await json(res)).error.message).toMatch(/does not identify a store/);
     });
 
     it('rejects a token signed with another secret and an expired one', async () => {
-      const wrong = await zbToken({ storeId: 766, iat, exp: iat + 3600 }, 'not-the-secret');
-      expect((await call(`${ADMIN}/configs`, { token: wrong, env })).status).toBe(401);
-      const expired = await zbToken({ storeId: 766, iat: iat - 7200, exp: iat - 3600 });
-      expect((await call(`${ADMIN}/configs`, { token: expired, env })).status).toBe(401);
+      expect((await get(await zbToken({}, OTHER_PLUGIN_SECRET))).status).toBe(401);
+      const iat = Math.floor(Date.now() / 1000);
+      expect((await get(await zbToken({ iat: iat - 7200, exp: iat - 3600 }))).status).toBe(401);
+    });
+
+    it.each([
+      ['exp', /no expiry/],
+      ['iat', /no issue time/],
+    ])('rejects a validly signed token with no %s claim', async (missing, message) => {
+      const iat = Math.floor(Date.now() / 1000);
+      const claims: Record<string, unknown> = { storeId: 766, pluginId: 160, iat, exp: iat + 600 };
+      delete claims[missing];
+      const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      const head = enc({ alg: 'HS256', typ: 'JWT' });
+      const body = enc(claims);
+      const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(TEST_PLUGIN_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = Buffer.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${head}.${body}`)))).toString('base64url');
+      const res = await get(`${head}.${body}.${sig}`);
+      expect(res.status).toBe(401);
+      expect((await json(res)).error.message).toMatch(message);
+    });
+
+    describe('plugin binding: a token must be issued for THIS plugin', () => {
+      it('accepts the plugin id as a number or as the same id in a string', async () => {
+        expect((await get(await zbToken({ pluginId: 160 }))).status).toBe(200);
+        expect((await get(await zbToken({ pluginId: '160' }))).status).toBe(200);
+      });
+
+      it.each([[161], ['161'], [0], [-160], [160.5], [null], [{ id: 160 }], ['']])(
+        'rejects a token issued for plugin %j',
+        async (pluginId) => {
+          const res = await get(await zbToken({ pluginId }));
+          expect(res.status).toBe(401);
+          expect((await json(res)).error.message).toMatch(/not issued for this plugin/);
+        },
+      );
+
+      it('rejects a validly signed token with no pluginId claim at all', async () => {
+        expect((await get(await zbToken({ pluginId: undefined }))).status).toBe(401);
+      });
+
+      it('fails closed while ZB_PLUGIN_ID is not configured', async () => {
+        const token = await zbToken({});
+        expect((await get(token, { ZB_PLUGIN_ID: undefined })).status).toBe(401);
+        expect((await get(token, { ZB_PLUGIN_ID: '   ' })).status).toBe(401);
+      });
+    });
+
+    describe('fails closed when the plugin secret is missing or invalid', () => {
+      it.each([
+        ['missing', undefined],
+        ['empty', ''],
+        ['shorter than 32 characters', 'too-short-to-be-real'],
+      ])('401s every token when ZB_PLUGIN_SECRET is %s — even one signed with that very value', async (_label, secret) => {
+        const token = await zbToken({}, secret || 'x');
+        const res = await get(token, { ZB_PLUGIN_SECRET: secret });
+        expect(res.status).toBe(401);
+        expect((await json(res)).error.message).toMatch(/not configured/);
+      });
+    });
+
+    describe('there is exactly one verification key: no fallback, no overlap, no second secret', () => {
+      const legacy = 'legacy-shared-jwt-secret-0123456789abcdef0123';
+
+      it('ignores the legacy JWT_SIGNING_SECRET entirely, with or without the plugin secret', async () => {
+        const token = await zbToken({}, legacy);
+        expect((await get(token, removedVars({ JWT_SIGNING_SECRET: legacy }))).status).toBe(401);
+        expect((await get(token, { ...removedVars({ JWT_SIGNING_SECRET: legacy }), ZB_PLUGIN_SECRET: undefined })).status).toBe(401);
+      });
+
+      it('ignores ZB_PLUGIN_SECRET_PREVIOUS: a token signed with an "old" secret is simply a bad signature', async () => {
+        const old = await zbToken({}, OTHER_PLUGIN_SECRET);
+        expect((await get(old, removedVars({ ZB_PLUGIN_SECRET_PREVIOUS: OTHER_PLUGIN_SECRET }))).status).toBe(401);
+      });
+
+      it('ignores ZB_JWT_KEY_MODE: only the plugin secret itself verifies, never a derived key', async () => {
+        const withDerivedKey = await zbToken({}, await deriveWebhookKey(TEST_PLUGIN_SECRET));
+        for (const mode of [undefined, 'root', 'derived']) {
+          const env = removedVars({ ZB_JWT_KEY_MODE: mode });
+          expect((await get(await zbToken({}), env)).status, String(mode)).toBe(200);
+          expect((await get(withDerivedKey, env)).status, String(mode)).toBe(401);
+        }
+      });
+    });
+
+    describe('a webhook credential is not a merchant credential', () => {
+      it('a token signed with the order-webhook key is rejected', async () => {
+        expect((await get(await zbToken({}, await deriveWebhookKey(TEST_PLUGIN_SECRET)))).status).toBe(401);
+      });
+
+      it('a webhook-style signature presented as a Bearer token is rejected', async () => {
+        expect((await get('v1=67bf6aafeb509fdb25be8538101e719bead8c81927071a53635edde67dacbec9')).status).toBe(401);
+      });
+    });
+
+    it('accepts only alg HS256 even with a matching MAC', async () => {
+      const iat = Math.floor(Date.now() / 1000);
+      const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+      const head = enc({ alg: 'HS512', typ: 'JWT' });
+      const body = enc({ storeId: 766, pluginId: 160, iat, exp: iat + 600 });
+      const { createHmac } = await import('node:crypto');
+      const sig = createHmac('sha512', TEST_PLUGIN_SECRET).update(`${head}.${body}`).digest('base64url');
+      expect((await get(`${head}.${body}.${sig}`)).status).toBe(401);
     });
   });
 
-  // TEMPORARY: DEV_AUTH_BYPASS (config/environment.ts). Remove this describe block along with the
-  // flag once a real ZenBasket token flow is wired up.
-  describe('DEV_AUTH_BYPASS (temporary escape hatch)', () => {
-    it('is off by default: no Authorization header still 401s even in development', async () => {
-      const res = await call(`${ADMIN}/configs`, { token: null });
-      expect(res.status).toBe(401);
-    });
+  describe('there is no development authentication', () => {
+    const devToken = 'zb-local-dev-token';
 
-    it('lets a request with no Authorization header through as DEV_STORE_ID when enabled', async () => {
-      const res = await call(`${ADMIN}/configs`, { token: null, env: { DEV_AUTH_BYPASS: 'true' } });
-      expect(res.status).toBe(200);
-    });
+    it.each(['development', 'staging', 'production'])(
+      'a static DEV_AUTH_TOKEN + DEV_STORE_ID is not a credential (ENVIRONMENT=%s)',
+      async (environment) => {
+        const res = await call(`${ADMIN}/configs`, {
+          token: devToken,
+          env: { ENVIRONMENT: environment, ...removedVars({ DEV_AUTH_TOKEN: devToken, DEV_STORE_ID: STORE_A }) },
+        });
+        expect(res.status).toBe(401);
+      },
+    );
 
-    it('ignores whatever bearer token is sent (garbage, expired, someone else’s) while enabled', async () => {
-      const res = await call(`${ADMIN}/configs`, { token: 'not-a-real-token-at-all', env: { DEV_AUTH_BYPASS: 'true' } });
-      expect(res.status).toBe(200);
-    });
+    it.each(['development', 'staging', 'production'])(
+      'DEV_AUTH_BYPASS=true does not let an unauthenticated request through (ENVIRONMENT=%s)',
+      async (environment) => {
+        const env = { ENVIRONMENT: environment, ...removedVars({ DEV_AUTH_BYPASS: 'true', DEV_STORE_ID: STORE_A }) };
+        expect((await call(`${ADMIN}/configs`, { token: null, env })).status).toBe(401);
+        expect((await call(`${ADMIN}/configs`, { token: 'not-a-real-token-at-all', env })).status).toBe(401);
+      },
+    );
 
-    it('CANNOT be enabled in production — the environment gate is checked at request time, not only when parsed', async () => {
-      const res = await call(`${ADMIN}/configs`, {
-        token: null,
-        env: { DEV_AUTH_BYPASS: 'true', ENVIRONMENT: 'production', JWT_SIGNING_SECRET: undefined, DEV_AUTH_TOKEN: undefined },
-      });
-      expect(res.status).toBe(401);
-    });
-
-    it('404s before reaching the gate if someone copies the flag with any other value (e.g. DEV_AUTH_BYPASS=1)', async () => {
-      const res = await call(`${ADMIN}/configs`, { token: null, env: { DEV_AUTH_BYPASS: '1' } });
-      expect(res.status).toBe(401);
+    it('the Worker has no code path that reads the dev variables', async () => {
+      const { loadConfig } = await import('../src/config/environment');
+      const config = loadConfig({
+        ...makeEnv(),
+        ...removedVars({ DEV_AUTH_TOKEN: 'x', DEV_STORE_ID: 'y', DEV_AUTH_BYPASS: 'true' }),
+      } as Env);
+      expect(Object.keys(config).filter((k) => /dev/i.test(k))).toEqual([]);
     });
   });
 });

@@ -3,7 +3,8 @@
  * groups of the API (their URL prefixes live in shared/api-paths.ts):
  *
  *  - storefront     public, no credentials; `Access-Control-Allow-Origin: *` and rate limits
- *  - integrations   signed server-to-server calls; every handler authenticates the caller itself
+ *  - integrations   signed server-to-server calls (HMAC with the plugin-level secret); every handler
+ *                   authenticates the caller itself
  *  - merchant       Bearer token + tenant resolution
  */
 
@@ -86,12 +87,6 @@ function merchantRoutes(): Hono<AppEnv> {
   // Orders with personalized lines (files and full design data stay on the customization routes above)
   router.get('/orders', orders.listOrders);
   router.get('/orders/:orderId', orders.getOrder);
-
-  // Per-store signing secrets for the order callback (needs the `integrations:manage` scope)
-  router.get('/integration/credentials', integration.listCredentials);
-  router.post('/integration/credentials', integration.createCredential);
-  router.post('/integration/credentials/:id/rotate', integration.rotateCredential);
-  router.delete('/integration/credentials/:id', integration.revokeCredential);
   return router;
 }
 

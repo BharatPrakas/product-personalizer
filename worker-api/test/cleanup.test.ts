@@ -5,7 +5,6 @@ import {
   STORE_A,
   applyMigrations,
   call,
-  createCredential,
   getTestD1,
   json,
   makeEnv,
@@ -119,9 +118,8 @@ describe('abandoned customization cleanup', () => {
 
   it('NEVER touches ordered customizations or their files, however old', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
     const { asset, saved } = await savedWithAsset();
-    expect((await postOrderEvent(credential, orderEvent(saved.customizationId))).status).toBe(200);
+    expect((await postOrderEvent(orderEvent(saved.customizationId))).status).toBe(200);
 
     const outcome = await cleanup(at(5 * 365 * DAY));
     expect(outcome).toMatchObject({ customizationsExpired: 0, assetsDeleted: 0, tombstonesPurged: 0, errors: [] });
@@ -148,14 +146,13 @@ describe('abandoned customization cleanup', () => {
 
   it('does not delete a released file whose customization turns out to be ordered', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
     const { asset, saved } = await savedWithAsset();
     // The shopper removes the file, then orders within the grace period.
     const res = await call(`${STOREFRONT}/customizations/${saved.customizationId}?storeId=${STORE_A}`, {
       method: 'PUT', token: null, body: { data: { v: 2 }, assets: [] },
     });
     expect(res.status).toBe(200);
-    expect((await postOrderEvent(credential, orderEvent(saved.customizationId))).status).toBe(200);
+    expect((await postOrderEvent(orderEvent(saved.customizationId))).status).toBe(200);
     const outcome = await cleanup(at(10 * DAY));
     expect(outcome.assetsDeleted).toBe(0);
     const [row] = await assetRows();
@@ -174,10 +171,9 @@ describe('abandoned customization cleanup', () => {
 
   it('answers an event for an already-expired customization with a clear per-line rejection', async () => {
     await seedPersonalizableProduct();
-    const credential = await createCredential();
     const { saved } = await savedWithAsset();
     await cleanup(at(31 * DAY));
-    const res = await postOrderEvent(credential, orderEvent(saved.customizationId));
+    const res = await postOrderEvent(orderEvent(saved.customizationId));
     expect(res.status).toBe(200);
     expect((await json(res)).results).toEqual([expect.objectContaining({ status: 'rejected', reason: 'customization_expired' })]);
   });
