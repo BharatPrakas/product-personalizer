@@ -3,7 +3,7 @@
   // Dedicated Worker for Product Personalization: configurations, mappings, the public storefront
   // routes, customizations and signed order events. It owns its own D1 database (the binding below)
   // and its own object-storage bucket.
-  "name": "zb-product-personalizer-api",
+  "name": "zb-product-personalizer",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   // `nodejs_compat` is REQUIRED for aws4fetch and the Buffer/crypto shims used by the S3 storage driver,
