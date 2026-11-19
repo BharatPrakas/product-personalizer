@@ -13,13 +13,15 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Accepts the host's `zbService` only when it has the shape of `ZenBasketSdk` v1+ (a version number
- * and `auth.getAccessToken`). Anything else — no host SDK, a different host, an older SDK — is
- * ignored and the element falls back to the plain properties (`authToken`, `productCatalog` ...).
+ * Accepts the host's `zbService` when it has the shape of the SDK: `auth.getAccessToken` is a function
+ * and, if the host reports a `version`, it is at least `MIN_HOST_SDK_VERSION`. A host that reports no
+ * version is taken as v1. Anything else — no host SDK, a different host, an older SDK — is ignored and
+ * the element falls back to the plain properties (`authToken`, `productCatalog` ...).
  */
 export function asZenBasketSdk(value: unknown): ZenBasketSdk | null {
   if (!isObject(value)) return null;
-  if (typeof value['version'] !== 'number' || value['version'] < MIN_HOST_SDK_VERSION) return null;
+  const version = value['version'];
+  if (version !== undefined && (typeof version !== 'number' || version < MIN_HOST_SDK_VERSION)) return null;
   const auth = value['auth'];
   if (!isObject(auth) || typeof auth['getAccessToken'] !== 'function') return null;
   return value as unknown as ZenBasketSdk;
@@ -44,7 +46,7 @@ export class ZenBasketBridge {
     const sdk = asZenBasketSdk(candidate);
     if (candidate !== undefined && candidate !== null && !sdk) {
       console.warn(
-        `<zb-personalization-admin>: ignoring "${SDK_PROPERTY}"; it is not a ZenBasket SDK v${MIN_HOST_SDK_VERSION}+ object.`,
+        `<zb-personalization-admin>: ignoring "${SDK_PROPERTY}"; it is not a usable ZenBasket SDK (needs auth.getAccessToken, version >= ${MIN_HOST_SDK_VERSION} when given).`,
       );
     }
     this.element = element;

@@ -26,13 +26,20 @@ describe('asZenBasketSdk', () => {
   it.each([
     ['null', null],
     ['a string', 'x'],
-    ['no version', { auth: { getAccessToken() {} } }],
+    ['a non-numeric version', { version: 'x', auth: { getAccessToken() {} } }],
     ['version 0', { version: 0, auth: { getAccessToken() {} } }],
     ['no auth', { version: 1 }],
     ['auth without getAccessToken', { version: 1, auth: {} }],
     ['the old empty facade', {}],
   ])('rejects %s', (_name, value) => {
     expect(asZenBasketSdk(value)).toBeNull();
+  });
+});
+
+describe('asZenBasketSdk without a version', () => {
+  it('takes a host that reports no version as v1 (the Store Admin host omits it)', () => {
+    const value = { auth: { getAccessToken: () => Promise.resolve({ token: 't' }) }, products: {}, core: {} };
+    expect(asZenBasketSdk(value)).toBe(value);
   });
 });
 
