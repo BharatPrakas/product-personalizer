@@ -1,6 +1,6 @@
 /**
  * Runs after `ng run product-personalizer:build-element`. Turns the raw Angular output into the
- * deployable `dist/product-personalization/` folder:
+ * deployable `dist/PRODUCT_PERSONALIZATION/` folder:
  *
  *  - storefront.js / store-admin.js  stable, un-hashed module entries (one per custom element)
  *  - main*.js, chunk-*.js            content-hashed bundles; Angular's runtime and shared code live
@@ -37,7 +37,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const out = join(root, 'dist', 'product-personalization');
+const out = join(root, 'dist', 'PRODUCT_PERSONALIZATION');
 const legacyOut = join(root, 'dist', 'element');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
@@ -58,12 +58,12 @@ const ALL_ENTRIES = [
 
 if (!existsSync(out))
   throw new Error(
-    'dist/product-personalization not found; run the Angular build-element target first',
+    'dist/PRODUCT_PERSONALIZATION not found; run the Angular build-element target first',
   );
 
 // 1. Stable entries -> hashed façade bundle.
 const main = readdirSync(out).find((f) => /^main(-[A-Za-z0-9]+)?\.js$/.test(f));
-if (!main) throw new Error('main bundle not found in dist/product-personalization');
+if (!main) throw new Error('main bundle not found in dist/PRODUCT_PERSONALIZATION');
 const facade = readFileSync(join(out, main), 'utf8');
 const ENTRIES = ALL_ENTRIES;
 for (const entry of ENTRIES) {
@@ -95,9 +95,9 @@ rmSync(legacyOut, { recursive: true, force: true });
 mkdirSync(legacyOut, { recursive: true });
 writeFileSync(
   join(legacyOut, 'product-customizer.js'),
-  '// Compatibility shim. The element now ships from ../product-personalization/ (storefront.js).\n' +
+  '// Compatibility shim. The element now ships from ../PRODUCT_PERSONALIZATION/ (storefront.js).\n' +
     '// Deploy the whole product-personalization folder and point your page at storefront.js instead.\n' +
-    "import '../product-personalization/storefront.js';\n",
+    "import '../PRODUCT_PERSONALIZATION/storefront.js';\n",
 );
 
 // 5. Download graph per entry + budgets.
@@ -231,7 +231,7 @@ writeFileSync(
       version: pkg.version,
       elements: ENTRIES.map((e) => ({ tag: e.tag, entry: e.file })),
       compatibility: {
-        note: 'dist/element/product-customizer.js is a shim that imports ../product-personalization/storefront.js. Deploy the whole product-personalization folder; the shim is optional.',
+        note: 'dist/element/product-customizer.js is a shim that imports ../PRODUCT_PERSONALIZATION/storefront.js. Deploy the whole product-personalization folder; the shim is optional.',
       },
       note: 'Deploy every file with role "entry" and "runtime" next to each other, plus the "license" file (third-party notices). "contract" files are for developers; "demo-*" files are samples and can be replaced by your own configuration and assets.',
       entries,

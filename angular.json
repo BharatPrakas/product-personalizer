@@ -65,7 +65,7 @@
             "inlineStyleLanguage": "scss",
             "index": false,
             "outputPath": {
-              "base": "dist/product-personalization",
+              "base": "dist/PRODUCT_PERSONALIZATION",
               "browser": ""
             },
             "assets": [
