@@ -3,6 +3,7 @@ import { ConfigIssue } from '../../customizer/models/config.models';
 import {
   AreaPlacement,
   ArtworkLayer,
+  PlacementMask,
   PrintableArea,
   ProductConfig,
   ProductMockup,
@@ -12,7 +13,11 @@ import { AssetStore } from '../../customizer/services/asset-store.service';
 import { ExportService } from '../../customizer/services/export.service';
 import { FontService } from '../../customizer/services/font.service';
 import { ImageService } from '../../customizer/services/image.service';
-import { PreviewComposite, RenderService } from '../../customizer/services/render.service';
+import {
+  PreviewComposite,
+  RenderService,
+  compositeAreas,
+} from '../../customizer/services/render.service';
 import { DraftValues, defaultValues } from '../../customizer/util/draft-utils';
 import { ResolvedProduct, resolveProduct } from '../../customizer/util/resolve';
 import { Evaluation, LocalAsset, evaluateProduct } from '../../customizer/util/scene';
@@ -32,6 +37,8 @@ import { validateConfiguration } from '../../workspace/validation';
 import * as edit from '../util/config-edit';
 import { downloadBlob, safeFilename } from '../util/download';
 import { assetBaseUrl } from '../../workspace/asset-base';
+import { AnchorRef } from '../util/bezier-edit';
+import { BrushMode } from '../util/mask-painter';
 
 export type StageView = 'mockup' | 'artwork';
 
@@ -43,8 +50,27 @@ export type Selection =
   | { kind: 'artwork'; id: string }
   | { kind: 'layer'; id: string };
 
-/** `draw` creates a printable area of the given shape by dragging on the mockup. */
-export type Tool = { kind: 'select' } | { kind: 'pan' } | { kind: 'draw'; shape: ShapeSpec };
+/**
+ * - `draw`: create a printable area of the given shape by dragging on the mockup (optionally curved).
+ * - `pen`: Pen / Bezier. `new-area` and `new-contour` build a closed contour by clicking; `edit`
+ *   reshapes the boundary of `areaId`.
+ * - `brush`: paint the raster boundary of `areaId` (`null`: a new area is created by the first stroke).
+ * - `mesh`: drag the control points of the mesh of `areaId`.
+ */
+export type Tool =
+  | { kind: 'select' }
+  | { kind: 'pan' }
+  | { kind: 'draw'; shape: ShapeSpec; curved?: boolean }
+  | { kind: 'pen'; mode: 'new-area' | 'new-contour' | 'edit'; areaId: string | null }
+  | { kind: 'brush'; areaId: string | null }
+  | { kind: 'mesh'; areaId: string };
+
+export interface BrushSettings {
+  mode: BrushMode;
+  /** Diameter in photo pixels. */
+  size: number;
+  hardness: number;
+}
 
 export type SidebarTab = 'mockups' | 'areas' | 'artworks' | 'layers' | 'markups' | 'fonts';
 
@@ -149,6 +175,18 @@ export class EditorStore {
   private readonly areaIdState = signal('');
   readonly selection = signal<Selection>({ kind: 'product' });
   readonly tool = signal<Tool>({ kind: 'select' });
+  /** Brush Mask settings; the diameter is in photo pixels so it means the same at every zoom. */
+  readonly brush = signal<BrushSettings>({ mode: 'add', size: 60, hardness: 0.8 });
+  /** The anchor of the selected area's outline picked in the Pen tool (for numeric editing). */
+  readonly penAnchor = signal<AnchorRef | null>(null);
+  /** The mesh control point picked in the Edit Mesh tool (index into the mesh's points). */
+  readonly meshPoint = signal<number | null>(null);
+  /** Inspector -> Brush tool: act on the painted mask (the painter lives on the stage). */
+  readonly brushCommand = signal<{ kind: 'clear' | 'fit'; n: number } | null>(null);
+  /** A short message from the active tool (e.g. a refused mesh move), announced on the stage. */
+  readonly toolNotice = signal<string | null>(null);
+  /** True while a handle or brush is being dragged: the warp is drawn at draft quality. */
+  readonly interacting = signal(false);
   readonly sidebarTab = signal<SidebarTab>('mockups');
   /** Opens the "Add printable area" dialog (the sidebar and the empty states both offer it). */
   readonly addAreaDialogOpen = signal(false);
@@ -509,9 +547,10 @@ export class EditorStore {
     shape: ShapeSpec,
     box: { x: number; y: number; width: number; height: number },
     mockupSize: { w: number; h: number },
-  ): void {
+    extras: Partial<Pick<AreaPlacement, 'mask' | 'surface' | 'mesh'>> = {},
+  ): string {
     const mockup = this.mockup();
-    if (!mockup) return;
+    if (!mockup) return '';
     const aspect = (box.width * mockupSize.w) / (box.height * mockupSize.h);
     const long = 2000;
     const canvasWidth = aspect >= 1 ? long : Math.max(200, Math.round(long * aspect));
@@ -525,16 +564,47 @@ export class EditorStore {
         canvasWidth,
         canvasHeight,
         mockupId: mockup.id,
-        placement: { type: 'rect', ...box },
+        placement: { type: 'rect', ...box, ...extras },
       });
       created = r.areaId;
       return r.config;
     });
     // Stay on the product photo so the new placement can be adjusted in context.
     if (created) this.select({ kind: 'area', id: created });
+    return created;
   }
 
-  addAreaDefault(shape: ShapeSpec): void {
+  /** Patch the geometry (boundary, surface, mesh, ...) of an area's placement on the shown mockup. */
+  patchPlacement(areaId: string, patch: Partial<AreaPlacement>, coalesce?: string): void {
+    const mockupId = this.mockup()?.id;
+    if (!mockupId) return;
+    this.edit((c) => edit.updatePlacement(c, mockupId, areaId, patch), coalesce);
+  }
+
+  /** The printable boundary of an area on the shown mockup, as stored (sources not yet resolved). */
+  maskFor(areaId: string): PlacementMask | null {
+    return this.placementFor(areaId)?.mask ?? null;
+  }
+
+  /**
+   * Make a freshly painted mask image available to the renderer at once. The configuration then
+   * refers to it by `src`, but decoding it from storage would take a moment during which the area
+   * would be hidden (an unloadable boundary never shows unclipped artwork); handing the renderer the
+   * canvas content directly avoids that flicker.
+   */
+  adoptStaticBitmap(src: string, bitmap: ImageBitmap): void {
+    this.assets.staticImages.update((map) => {
+      const next = new Map(map);
+      next.get(src)?.close();
+      next.set(src, bitmap);
+      return next;
+    });
+  }
+
+  addAreaDefault(
+    shape: ShapeSpec,
+    extras: Partial<Pick<AreaPlacement, 'mask' | 'surface' | 'mesh'>> = {},
+  ): void {
     const mockup = this.mockup();
     const size = mockup ? this.mockupSize(mockup.id) : null;
     if (!mockup || !size) return;
@@ -544,6 +614,7 @@ export class EditorStore {
       shape,
       { x: 0.35, y: Math.max(0.05, 0.5 - h / 2), width: w, height: Math.min(h, 0.8) },
       size,
+      extras,
     );
   }
 
@@ -572,9 +643,7 @@ export class EditorStore {
       mockup,
       bitmap,
       background: c.preview?.background,
-      areas: mockup.placements
-        .filter((p) => scenes.has(p.printableAreaId))
-        .map((placement) => ({ placement, scene: scenes.get(placement.printableAreaId)! })),
+      areas: compositeAreas(mockup, scenes, images),
       overlays: (mockup.overlays ?? [])
         .map((overlay) => ({ overlay, bitmap: images.get(overlay.src) }))
         .filter((e): e is { overlay: typeof e.overlay; bitmap: ImageBitmap } => !!e.bitmap),

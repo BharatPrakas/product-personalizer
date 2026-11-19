@@ -11,9 +11,17 @@ import {
   viewChild,
 } from '@angular/core';
 import { AreaPlacement, BoundarySpec, ShapeSpec } from '../../customizer/models/product.models';
+import { DEFAULT_CYLINDER } from '../../customizer/util/surface';
+import { svgData } from '../util/bezier-edit';
+import { drawMaskRing } from '../util/mask-overlay';
+import { BrushTool } from '../tools/brush-tool';
+import { MeshTool } from '../tools/mesh-tool';
+import { PenTool } from '../tools/pen-tool';
+import { ToolHost, ViewTransform } from '../tools/tool-host';
 import { drawAreaScene } from '../../customizer/util/draw';
 import { AreaCanvasCache, RenderService } from '../../customizer/services/render.service';
 import { I18n } from '../../admin/i18n/i18n.service';
+import type { MessageKey } from '../../admin/i18n/messages.en';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
 import {
@@ -60,12 +68,6 @@ interface Outline {
   selected: boolean;
 }
 
-interface ViewTransform {
-  scale: number;
-  tx: number;
-  ty: number;
-}
-
 type Drag =
   | { kind: 'pan'; x: number; y: number; tx: number; ty: number }
   | {
@@ -76,7 +78,8 @@ type Drag =
       handle?: HandleId;
     }
   | { kind: 'corner'; item: StageItem; index: number; quad: Pt[] }
-  | { kind: 'draw'; shape: ShapeSpec; from: Pt; to: Pt };
+  | { kind: 'draw'; shape: ShapeSpec; curved: boolean; from: Pt; to: Pt }
+  | { kind: 'tool' };
 
 const PAD = 28;
 const HANDLE_PX = 9;
@@ -115,6 +118,7 @@ export class StageComponent {
   private readonly cache = new AreaCanvasCache();
 
   private readonly canvasRef = viewChild.required<ElementRef<HTMLCanvasElement>>('canvas');
+  private readonly maskRef = viewChild.required<ElementRef<HTMLCanvasElement>>('maskCanvas');
   private readonly overlayRef = viewChild.required<ElementRef<SVGSVGElement>>('overlay');
   private readonly hostRef = viewChild.required<ElementRef<HTMLElement>>('host');
 
@@ -124,6 +128,17 @@ export class StageComponent {
   private userZoomed = false;
   private drag: Drag | null = null;
   private spaceDown = false;
+
+  private readonly toolHost: ToolHost = {
+    store: this.store,
+    content: () => this.content(),
+    transform: () => this.transform(),
+  };
+  /** Pen / Bezier, Brush Mask and Edit Mesh: interactive tools with their own state and overlays. */
+  protected readonly pen = new PenTool(this.toolHost);
+  protected readonly brush = new BrushTool(this.toolHost);
+  protected readonly meshTool = new MeshTool(this.toolHost);
+  protected readonly toolKind = computed(() => this.store.tool().kind);
 
   protected readonly guides = signal<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
   private readonly drawing = signal<{ shape: ShapeSpec; from: Pt; to: Pt } | null>(null);
@@ -140,6 +155,12 @@ export class StageComponent {
     }
     const area = this.store.area();
     return area ? { w: area.canvas.width, h: area.canvas.height } : null;
+  });
+
+  /** Changes only when the size of what is shown changes (not whenever `content()` is recomputed). */
+  private readonly contentKey = computed(() => {
+    const c = this.content();
+    return c ? `${c.w}x${c.h}` : '';
   });
 
   private readonly items = computed<StageItem[]>(() => {
@@ -219,13 +240,27 @@ export class StageComponent {
 
   /** Hint shown over the canvas while a tool needs explaining. */
   protected readonly message = computed(() => {
-    if (this.store.tool().kind === 'draw') {
+    const tool = this.store.tool();
+    const notice = this.store.toolNotice();
+    if (notice) return this.i18n.t(`stage.notice.${notice}` as MessageKey);
+    if (tool.kind === 'draw') {
       return this.i18n.t('stage.draw-hint');
     }
+    if (tool.kind === 'pen') {
+      return this.i18n.t(tool.mode === 'edit' ? 'stage.pen.edit-hint' : 'stage.pen.draw-hint');
+    }
+    if (tool.kind === 'brush') return this.i18n.t('stage.brush-hint');
+    if (tool.kind === 'mesh') return this.i18n.t('stage.mesh-hint');
     if (this.content() && this.store.assetErrors().length > 0) {
       return this.i18n.t('stage.assets-failed', { count: this.store.assetErrors().length });
     }
     return null;
+  });
+
+  /** The Pen / Brush / Mesh hints are long: they sit at the bottom so they never cover the toolbar pill. */
+  protected readonly toolMessage = computed(() => {
+    const kind = this.store.tool().kind;
+    return kind === 'pen' || kind === 'brush' || kind === 'mesh';
   });
 
   readonly zoomLabel = computed(() => `${Math.round(this.transform().scale * 100)}%`);
@@ -239,7 +274,8 @@ export class StageComponent {
   protected readonly cursor = computed(() => {
     if (this.panning()) return 'grabbing';
     const tool = this.store.tool().kind;
-    if (tool === 'draw') return 'crosshair';
+    if (tool === 'draw' || tool === 'pen') return 'crosshair';
+    if (tool === 'brush') return 'none';
     if (tool === 'pan') return 'grab';
     const handle = this.hoverHandle();
     return handle ? CURSORS[handle] : 'default';
@@ -307,9 +343,43 @@ export class StageComponent {
     });
   });
 
+  /** Outlines of the Bezier boundaries on the shown mockup (the Pen tool draws the one it edits itself). */
+  protected readonly maskOutlines = computed(() => {
+    const mockup = this.store.mockup();
+    const content = this.content();
+    if (!mockup || !content || this.store.view() !== 'mockup') return [];
+    const t = this.transform();
+    const tool = this.store.tool();
+    const selected = this.selectedItem()?.id;
+    return mockup.placements.flatMap((p) => {
+      if (p.mask?.type !== 'path') return [];
+      if (tool.kind === 'pen' && tool.areaId === p.printableAreaId) return [];
+      const isSelected = p.printableAreaId === selected;
+      if (!this.store.showBoundaries() && !isSelected) return [];
+      return [
+        {
+          id: p.printableAreaId,
+          selected: isSelected,
+          d: svgData(p.mask.path, (x, y) => [
+            x * content.w * t.scale + t.tx,
+            y * content.h * t.scale + t.ty,
+          ]),
+        },
+      ];
+    });
+  });
+
   protected readonly frame = computed(() => {
     const item = this.selectedItem();
-    if (!item || this.store.tool().kind === 'draw') return null;
+    const toolKind = this.store.tool().kind;
+    if (
+      !item ||
+      toolKind === 'draw' ||
+      toolKind === 'pen' ||
+      toolKind === 'brush' ||
+      toolKind === 'mesh'
+    )
+      return null;
     const t = this.transform();
     if (item.quad) {
       const pts = item.quad.map((p) => this.toScreen(p, t));
@@ -360,7 +430,10 @@ export class StageComponent {
 
   constructor() {
     const destroyRef = inject(DestroyRef);
-    destroyRef.onDestroy(() => this.cache.dispose());
+    destroyRef.onDestroy(() => {
+      this.cache.dispose();
+      this.brush.dispose();
+    });
 
     afterNextRender(() => {
       const host = this.hostRef().nativeElement;
@@ -394,6 +467,52 @@ export class StageComponent {
       });
     });
 
+    // Start / stop the interactive tools when the active tool (or the target area) changes. This must
+    // not depend on the decoded images or on the object identity of `content()`: both are replaced
+    // whenever the configuration is edited (every drag step), and restarting a tool mid-drag would
+    // drop the drag.
+    effect(() => {
+      const tool = this.store.tool();
+      const ready = this.contentKey() !== '';
+      untracked(() => {
+        if (!ready) return;
+        if (tool.kind === 'pen') this.pen.begin();
+        else this.pen.building.set(null);
+        if (tool.kind === 'brush') this.brush.begin();
+        else this.brush.dispose();
+        if (tool.kind === 'mesh') this.meshTool.begin();
+        this.drawing.set(null);
+        this.drag = null;
+      });
+    });
+
+    // The brush must not start from an empty canvas while the boundary it edits is still decoding:
+    // it waits (read-only) and loads the mask as soon as the image is available.
+    effect(() => {
+      this.store.assets.staticImages();
+      if (this.store.tool().kind === 'brush' && !this.brush.loaded()) {
+        untracked(() => this.brush.tryLoad());
+      }
+    });
+
+    // Inspector buttons that need the painter (clear mask, fit the placement to the painted region).
+    effect(() => {
+      const command = this.store.brushCommand();
+      if (!command) return;
+      untracked(() => (command.kind === 'clear' ? this.brush.clear() : this.brush.fitPlacement()));
+    });
+
+    // Brush overlay (translucent mask + boundary ring).
+    effect(() => {
+      this.size();
+      this.dpr();
+      this.transform();
+      this.store.tool();
+      this.store.view();
+      this.brush.version();
+      untracked(() => this.paintMaskOverlay());
+    });
+
     // Repaint.
     effect(() => {
       const size = this.size();
@@ -403,6 +522,7 @@ export class StageComponent {
       const evaluation = this.store.evaluation();
       const mockup = this.store.mockup();
       const area = this.store.area();
+      const quality = this.store.interacting() ? 'draft' : 'final';
       this.store.assets.staticImages();
       if (size.w === 0) return;
       const canvas = this.canvasRef().nativeElement;
@@ -429,6 +549,7 @@ export class StageComponent {
           composite.bitmap.width,
           composite.bitmap.height,
           dpr * t.scale,
+          { quality },
         );
       } else if (view === 'artwork' && area) {
         const scene = evaluation.areas.find((s) => s.areaId === area.id);
@@ -460,6 +581,52 @@ export class StageComponent {
         );
       }
     });
+  }
+
+  // ---- brush overlay ---------------------------------------------------------------------------------
+
+  /** Repaint the translucent mask overlay and boundary ring (screen resolution, never exported). */
+  private paintMaskOverlay(): void {
+    const target = this.maskRef().nativeElement;
+    const size = this.size();
+    const dpr = this.dpr();
+    const width = Math.round(size.w * dpr);
+    const height = Math.round(size.h * dpr);
+    if (width === 0 || height === 0) return;
+    if (target.width !== width || target.height !== height) {
+      target.width = width;
+      target.height = height;
+    }
+    if (this.store.tool().kind === 'brush' && this.store.view() === 'mockup') {
+      this.brush.paint(target, this.transform(), dpr);
+      return;
+    }
+    const ctx = target.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, target.width, target.height);
+    // Raster boundaries of the areas on this mockup: a ring around the painted region.
+    const mockup = this.store.mockup();
+    const content = this.content();
+    if (!mockup || !content || this.store.view() !== 'mockup') return;
+    const t = this.transform();
+    const selected = this.selectedItem()?.id;
+    const images = this.store.assets.staticImages();
+    const resolved = this.store.resolvedConfig()?.mockups.find((m) => m.id === mockup.id);
+    for (const p of resolved?.placements ?? []) {
+      if (p.mask?.type !== 'raster') continue;
+      const isSelected = p.printableAreaId === selected;
+      if (!this.store.showBoundaries() && !isSelected) continue;
+      const bitmap = images.get(p.mask.src);
+      if (!bitmap) continue;
+      const rect = {
+        x: t.tx * dpr,
+        y: t.ty * dpr,
+        width: content.w * t.scale * dpr,
+        height: content.h * t.scale * dpr,
+      };
+      drawMaskRing(ctx, bitmap, rect, dpr, isSelected ? '#ffffff' : '#fda4af');
+    }
   }
 
   // ---- zoom and pan -------------------------------------------------------------------------------
@@ -546,8 +713,35 @@ export class StageComponent {
     }
     if (tool.kind === 'draw' && this.store.view() === 'mockup') {
       capture();
-      this.drag = { kind: 'draw', shape: tool.shape, from: content, to: content };
+      this.drag = {
+        kind: 'draw',
+        shape: tool.shape,
+        curved: !!tool.curved,
+        from: content,
+        to: content,
+      };
       this.drawing.set({ shape: tool.shape, from: content, to: content });
+      return;
+    }
+    if (
+      (tool.kind === 'pen' || tool.kind === 'brush' || tool.kind === 'mesh') &&
+      this.store.view() === 'mockup'
+    ) {
+      const result =
+        tool.kind === 'pen'
+          ? this.pen.down(content, screen, event)
+          : tool.kind === 'brush'
+            ? this.brush.down(content, screen)
+            : this.meshTool.down(content, screen);
+      capture();
+      if (result.handled) {
+        this.drag = { kind: 'tool' };
+      } else {
+        // Empty space while editing: pan, like the select tool does.
+        this.panning.set(true);
+        const t = this.transform();
+        this.drag = { kind: 'pan', x: screen.x, y: screen.y, tx: t.tx, ty: t.ty };
+      }
       return;
     }
 
@@ -603,7 +797,10 @@ export class StageComponent {
   protected onMove(event: PointerEvent): void {
     const { screen, content } = this.pointer(event);
     const drag = this.drag;
+    const toolKind = this.store.tool().kind;
     if (!drag) {
+      if (toolKind === 'brush') this.brush.hover(screen);
+      if (toolKind === 'pen') this.pen.move(content, screen, event);
       const selected = this.selectedItem();
       this.hoverHandle.set(
         selected && !selected.locked ? (this.handleAt(selected, screen)?.handle ?? null) : null,
@@ -611,6 +808,11 @@ export class StageComponent {
       return;
     }
     switch (drag.kind) {
+      case 'tool':
+        if (toolKind === 'pen') this.pen.move(content, screen, event);
+        else if (toolKind === 'brush') this.brush.move(content, screen);
+        else if (toolKind === 'mesh') this.meshTool.move(content);
+        break;
       case 'pan':
         this.userZoomed = true;
         this.transform.update((t) => ({
@@ -650,6 +852,19 @@ export class StageComponent {
     }
   }
 
+  protected onDoubleClick(event: MouseEvent): void {
+    if (this.store.tool().kind !== 'pen') return;
+    const rect = this.overlayRef().nativeElement.getBoundingClientRect();
+    const t = this.transform();
+    const screen = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const content = { x: (screen.x - t.tx) / t.scale, y: (screen.y - t.ty) / t.scale };
+    this.pen.doubleClick(content, screen);
+  }
+
+  protected onLeave(): void {
+    if (this.store.tool().kind === 'brush') this.brush.hover(null);
+  }
+
   protected onUp(event: PointerEvent): void {
     const drag = this.drag;
     this.drag = null;
@@ -659,7 +874,12 @@ export class StageComponent {
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
     if (!drag) return;
     if (drag.kind === 'draw') this.finishDraw(drag);
-    else if (drag.kind !== 'pan') this.store.breakCoalescing();
+    else if (drag.kind === 'tool') {
+      const kind = this.store.tool().kind;
+      if (kind === 'pen') this.pen.up();
+      else if (kind === 'brush') this.brush.up();
+      else if (kind === 'mesh') this.meshTool.up();
+    } else if (drag.kind !== 'pan') this.store.breakCoalescing();
   }
 
   protected onKey(event: KeyboardEvent): void {
@@ -669,12 +889,37 @@ export class StageComponent {
       event.preventDefault();
       return;
     }
+    const toolKind = this.store.tool().kind;
+    if (toolKind === 'pen' && this.pen.key(event)) return this.consume(event, () => undefined);
+    if (toolKind === 'mesh' && this.meshTool.key(event))
+      return this.consume(event, () => undefined);
+    if (toolKind === 'brush') {
+      if (event.key === 'Escape') return this.consume(event, () => this.brush.exit());
+      if (event.key === '[' || event.key === ']') {
+        const factor = event.key === ']' ? 1.2 : 1 / 1.2;
+        return this.consume(event, () =>
+          this.store.brush.update((b) => ({
+            ...b,
+            size: Math.min(
+              600,
+              Math.max(1, Math.round(b.size * factor + (event.key === ']' ? 1 : -1))),
+            ),
+          })),
+        );
+      }
+      if (event.key.toLowerCase() === 'x') {
+        return this.consume(event, () =>
+          this.store.brush.update((b) => ({ ...b, mode: b.mode === 'add' ? 'erase' : 'add' })),
+        );
+      }
+    }
     if (event.key === '+' || event.key === '=') return this.consume(event, () => this.zoomBy(1.2));
     if (event.key === '-') return this.consume(event, () => this.zoomBy(1 / 1.2));
     if (event.key === '0') return this.consume(event, () => this.fit());
     if (event.key === 'Escape') {
       this.store.tool.set({ kind: 'select' });
       this.drawing.set(null);
+      this.store.toolNotice.set(null);
       return;
     }
     if (!selected || selected.locked) return;
@@ -872,6 +1117,7 @@ export class StageComponent {
         height: round(h / content.h, 5),
       },
       content,
+      drag.curved ? { surface: { ...DEFAULT_CYLINDER } } : {},
     );
   }
 }

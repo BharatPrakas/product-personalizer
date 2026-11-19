@@ -11,6 +11,9 @@ export function staticAssetUrls(config: ProductConfig): string[] {
   for (const mockup of config.mockups) {
     urls.add(mockup.src);
     for (const overlay of mockup.overlays ?? []) urls.add(overlay.src);
+    for (const placement of mockup.placements) {
+      if (placement.mask?.type === 'raster') urls.add(placement.mask.src);
+    }
   }
   for (const field of config.fields) {
     if (field.type === 'artwork') field.choices.forEach((choice) => urls.add(choice.src));

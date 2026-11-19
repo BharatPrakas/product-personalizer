@@ -385,6 +385,26 @@ select.input:focus {
   cursor: pointer;
 }
 
+.range-field .range-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.range-field input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  height: var(--h-md);
+  margin: 0;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+}
+
+.range-field .range-number {
+  flex: none;
+  width: 72px;
+}
+
 .color-input {
   width: 44px;
   height: var(--h-md);

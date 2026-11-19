@@ -72,6 +72,11 @@ seeded.
    - *Define a printable area*: **Add area** → choose Rectangle, Circle / ellipse or Custom shape (an uploaded SVG or
      pasted path) → **Draw on mockup** (or place it in the centre and adjust). Move, resize and rotate it on the
      canvas, or type exact values. Perspective placement (four corners) is available in the placement settings.
+     For products photographed with curves or at an angle there are three more tools, all described in
+     [`docs/printable-area-tools.md`](docs/printable-area-tools.md): **Pen / Bezier** (trace the printable region on the
+     photo with points and curves, holes included), **Brush mask** (paint it, with soft edges and an eraser) and
+     **Curved surface** (wrap the artwork around a cylinder: bottles, jars, mugs), with **Edit mesh** for hand-correcting
+     the result. The boundary and the surface combine freely, and none of them changes the flat production file.
    - *Design the artwork*: **Artwork** view of the canvas shows that area's own production canvas. The **Layers** tab
      adds *Photo upload*, *Editable text*, *Clipart choice* (customer inputs) and *Fixed image*, *Fixed text*,
      *Rectangle*, *Ellipse* (fixed design). Drag layers to reorder; hide, lock, duplicate or delete from the row.
@@ -88,7 +93,9 @@ seeded.
    is refused rather than overwritten.
 
 Keyboard: `Ctrl/Cmd+S` save draft, `Ctrl/Cmd+Z` / `Shift+Z` undo / redo, `V` select, `H` pan, arrow keys nudge the
-selection, `Esc` cancels drawing. The canvas has numeric alternatives for every move, resize and rotation.
+selection, `Esc` cancels drawing. The canvas has numeric alternatives for every move, resize and rotation. The Pen, Brush
+and Mesh tools add `[` / `]` (pick a point or change the brush size), `X` (brush add / erase), `Enter` and `Delete`; see the
+tool reference for the full list.
 
 ### Persistence and publishing: what is real
 
@@ -124,7 +131,8 @@ list, or *Clear all local data* in the developer tools).
 | Schema v2 | `models/product.models.ts`, `public/schema/product-config.schema.json`, validator `util/product-validator.ts` (drafts may be incomplete; published and storefront-loaded configurations are validated strictly) |
 | v1 compatibility | `util/config-upgrade.ts` turns a v1 configuration into a one-variant, one-mockup, one-area v2 configuration at load time; v1 hosts keep the v1 snapshot, events and messages |
 | Resolution | `util/resolve.ts`: variant → mockups → enabled areas → artwork per area → visible layers → active fields (declarative `showWhen` conditions) |
-| Rendering | `util/scene.ts` (one scene per area), `util/draw.ts` (masks, rotation, opacity, clipping, shapes, wrapped text, composition, perspective), `AreaCanvasCache` repaints only the area that changed |
+| Rendering | `util/scene.ts` (one scene per area), `util/draw.ts` (masks, rotation, opacity, clipping, shapes, wrapped text, composition, perspective, warped placements), `AreaCanvasCache` repaints only the area that changed |
+| Photo-space geometry | `util/bezier.ts`, `util/surface.ts`, `util/warp.ts` (printable boundary, cylinder / mesh surface, software rasterizer); editing in `editor/tools/` and `editor/util/{bezier-edit,mask-painter,mesh-edit}.ts`; reference: [`docs/printable-area-tools.md`](docs/printable-area-tools.md) |
 | Exports | `ExportService`: production PNG per area from its own canvas (transparent outside the mask; no mockup, placeholders or outlines); composite preview PNG per mockup |
 | Workspace | `src/app/workspace`: configuration records and lifecycle, repository interface and local implementation, publish readiness, import / export |
 | Editor | `src/app/editor`: store (undo / redo, selection, asset sync, save / publish), stage (zoom, pan, drag, resize, rotate, draw, snapping), sidebar tabs, inspector, immutable edit operations (`util/config-edit.ts`) |
@@ -139,7 +147,10 @@ list, or *Clear all local data* in the developer tools).
 - Print size is set per printable area, not per variant.
 - `idb:` and `data:` image sources are accepted only by the standalone app (`allowLocalAssets`); hosted configurations
   use `http(s)` assets, as before.
-- Perspective placements use a 14 x 14 triangle mesh (visually exact for mockup-sized quads, not a GPU warp).
+- Perspective placements use a 14 x 14 triangle mesh (visually exact for mockup-sized quads, not a GPU warp). Measured while adding
+  the surface tools: on *semi-transparent* artwork its 1 px triangle overlap blends twice (alpha up to 252 instead of 128 on about 40 %
+  of the interior in Chrome); opaque artwork is unaffected. It was left unchanged so existing previews stay identical; the new cylinder and
+  mesh surfaces use an exact rasterizer instead (`docs/printable-area-tools.md`).
 - Customer photo rotation is in 90 degree steps; text is single-style per layer; the visibility-rule editor edits one
   condition (advanced rules are preserved but not editable).
 - Undo / redo covers configuration edits, not images already written to IndexedDB.
@@ -596,7 +607,9 @@ load your stored customization and assets and assign `initialCustomization` + `a
 **Schema version 2** (`public/schema/product-config.schema.json`, types in `models/product.models.ts`, examples in
 `public/data/products/*.json`) is what the editor produces. Coordinates: layers use the area's canvas pixels, mockup
 placements are 0..1 fractions of the mockup photograph (so editor size never changes saved coordinates), z-order is
-array order. Layer ids are unique across the configuration; fields are bound by `layer.fieldId` and may be scoped to
+array order. A placement may additionally carry `mask` (printable boundary on the photo: Bezier path or an alpha-mask image
+asset), `surface` (cylinder) and `mesh` (control points in the placement's frame); all optional, validated strictly, never part of
+the flat production artwork. Layer ids are unique across the configuration; fields are bound by `layer.fieldId` and may be scoped to
 an area/artwork (omit the scope to share one field across artworks). Version 1 files are upgraded at load time.
 
 The rest of this section documents **schema version 1**. `public/schema/customizer-config.schema.json` is the JSON Schema; `src/app/customizer/models/` has the matching
@@ -719,6 +732,29 @@ mutation-checked: removing their fix makes them fail.
 - UI text is English only; prices format with the `en` locale and the currency/exponent from the config.
 
 ## Verification (what was actually run)
+
+Printable-area tools: Pen / Bezier, Brush mask, Curved surface, Edit mesh (2026-11-19; reference: [`docs/printable-area-tools.md`](docs/printable-area-tools.md)).
+Everything ran on this machine; the browser suite and builds ran in an isolated copy of the working tree so the running dev servers and `dist/` were not touched.
+Baseline before the change: 455 of 457 unit tests passed (two 5 s timeouts under load, not reproduced later), 231 browser tests passed.
+
+| Check | Result |
+|---|---|
+| `npx tsc -p tsconfig.app.json` / `tsconfig.spec.json` | clean |
+| `npm run test:ci` (44 spec files; new: `bezier`, `bezier-edit`, `surface`, `warp`, `mockup-geometry-validator`, `product-schema`) | 563 passed, 0 failed |
+| `npm run build:element` then the whole browser suite (headless Chrome 157, production bundles) | 261 passed, 2 skipped (the env-gated cloud end-to-end), 0 failed. New: `mockup-geometry` (17), `geometry-editor` (13, incl. axe at 1280 and 360 px with every tool open) |
+| `npm run build` (standalone app), `npm run test:types` (public declarations incl. the new placement types) | succeed |
+| Bundle budgets (`MANIFEST.json`) | storefront initial download 279.2 kB (unchanged; warn 440 / error 700), admin 614 kB (warn 1400 / error 2000) |
+| Existing previews | `heart-clock` (quad + path shape), `tshirt`, `bottle` render pixel-identically in a build of the previous commit and in this one |
+| `worker-api`: `npx tsc --noEmit`, `npm test` (local Miniflare D1, in-memory R2) | clean, 527 passed (8 new in `placement-geometry.test.ts`) |
+| Performance (headless Chrome, no GPU) | rasterizer about 8 M pixels / s; dragging a mesh point held 16.7 ms frames (p95 16.8, one 33 ms frame in 64); curvature scrubbing dropped none |
+
+Also fixed while verifying: the commit that renamed the build folder to `dist/PRODUCT_PERSONALIZATION` left the browser harness,
+`storefront-trigger.spec.ts`, `tests/types/consumer.ts`, `tsconfig.types.json` (the public `.d.ts` files were not being emitted into the shipped
+folder) and the `serve:element` script on the old lowercase path; they now use the new name.
+
+**Not verified here:** Safari / Firefox / touch input on the stage, a low-end mobile profile, mask uploads against a deployed Worker with real R2 / S3, and
+the real ZenBasket storefront. The committed `product-config.schema.json` does not compile in ajv strict mode (it never was compiled by a test); the new
+`product-schema.spec.ts` compiles it non-strict.
 
 Storefront trigger + modal (2026-11-18; the editor split out of the element into a lazy chunk). Baseline before the change on the
 same machine: 419 unit tests, 157 browser tests passed / 12 failed (the mock harness did not answer the presigned-upload routes,

@@ -6,6 +6,8 @@ import {
   CompositeOverlay,
   PRODUCTION,
   PlacedArea,
+  WarpCache,
+  WarpQuality,
   drawAreaScene,
   drawComposite,
   placementPixelSize,
@@ -32,13 +34,48 @@ export interface PreviewComposite {
   mockup: ProductMockup;
   bitmap: ImageBitmap;
   background?: string;
-  areas: { placement: AreaPlacement; scene: AreaScene }[];
+  areas: {
+    placement: AreaPlacement;
+    scene: AreaScene;
+    /** Decoded raster printable boundary of the placement, when it has one. */
+    maskBitmap?: ImageBitmap;
+  }[];
   overlays: CompositeOverlay[];
+}
+
+/**
+ * The placed areas of one mockup: each enabled area's scene with its placement and, for a raster
+ * printable boundary, the decoded mask image (looked up by its absolute URL).
+ */
+export function compositeAreas(
+  mockup: ProductMockup,
+  scenes: ReadonlyMap<string, AreaScene>,
+  images: ReadonlyMap<string, ImageBitmap>,
+): PreviewComposite['areas'] {
+  return mockup.placements
+    .filter((placement) => scenes.has(placement.printableAreaId))
+    .map((placement) => {
+      const maskBitmap =
+        placement.mask?.type === 'raster' ? images.get(placement.mask.src) : undefined;
+      return {
+        placement,
+        scene: scenes.get(placement.printableAreaId)!,
+        ...(maskBitmap ? { maskBitmap } : {}),
+      };
+    });
 }
 
 interface CacheEntry {
   key: string;
   canvas: HTMLCanvasElement;
+  /** Bumped every time the canvas is repainted. */
+  version: number;
+}
+
+/** Drawing options of a repaint of the on-screen preview. */
+export interface PaintOptions {
+  /** 'draft' while a handle is being dragged, 'final' otherwise (default). */
+  quality?: WarpQuality;
 }
 
 /**
@@ -49,14 +86,23 @@ interface CacheEntry {
 export class AreaCanvasCache {
   private readonly entries = new Map<string, CacheEntry>();
 
+  /** Warped (curved / meshed / masked) layers, reused until their area, placement or size change. */
+  readonly warps = new WarpCache();
+
   /** Redraws counted since creation; lets the editor and tests observe cache effectiveness. */
   renders = 0;
+
+  /** Changes whenever the area's canvas is repainted. */
+  version(areaId: string): number | undefined {
+    return this.entries.get(areaId)?.version;
+  }
 
   get(scene: AreaScene, width: number, height: number): HTMLCanvasElement {
     const key = `${sceneSignature(scene)}|${width}x${height}`;
     const cached = this.entries.get(scene.areaId);
     if (cached && cached.key === key) return cached.canvas;
     const canvas = cached?.canvas ?? createCanvas(width, height);
+    const version = (cached?.version ?? 0) + 1;
     if (canvas.width !== width || canvas.height !== height) {
       canvas.width = width;
       canvas.height = height;
@@ -74,7 +120,7 @@ export class AreaCanvasCache {
       },
     );
     this.renders++;
-    this.entries.set(scene.areaId, { key, canvas });
+    this.entries.set(scene.areaId, { key, canvas, version });
     return canvas;
   }
 
@@ -85,6 +131,7 @@ export class AreaCanvasCache {
       entry.canvas.width = entry.canvas.height = 0;
       this.entries.delete(id);
     }
+    this.warps.retain(areaIds);
   }
 
   dispose(): void {
@@ -175,8 +222,13 @@ export class RenderService {
   ): void {
     const ctx = context(canvas);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const input = this.compositeInput(composite, canvas.width, canvas.height, (scene, w, h) =>
-      cache.get(scene, w, h),
+    const input = this.compositeInput(
+      composite,
+      canvas.width,
+      canvas.height,
+      (scene, w, h) => cache.get(scene, w, h),
+      1,
+      cache,
     );
     drawComposite(ctx, input, canvas.width, canvas.height);
     cache.retain(new Set(composite.areas.map((a) => a.scene.areaId)));
@@ -194,6 +246,7 @@ export class RenderService {
     width: number,
     height: number,
     detail: number,
+    options: PaintOptions = {},
   ): void {
     const input = this.compositeInput(
       composite,
@@ -201,6 +254,8 @@ export class RenderService {
       height,
       (scene, w, h) => cache.get(scene, w, h),
       detail,
+      cache,
+      options.quality,
     );
     drawComposite(ctx, input, width, height);
     cache.retain(new Set(composite.areas.map((a) => a.scene.areaId)));
@@ -212,20 +267,29 @@ export class RenderService {
     height: number,
     areaCanvas: (scene: AreaScene, w: number, h: number) => HTMLCanvasElement,
     detail = 1,
+    cache?: AreaCanvasCache,
+    quality?: WarpQuality,
   ): CompositeInput {
-    const areas: PlacedArea[] = composite.areas.map(({ placement, scene }) => {
+    const areas: PlacedArea[] = composite.areas.map(({ placement, scene, maskBitmap }) => {
       const placed = placementPixelSize(placement, width, height);
       const target = { w: placed.w * detail, h: placed.h * detail };
       const scale = Math.min(1, Math.max(target.w / scene.width, target.h / scene.height));
       const w = Math.max(8, Math.round(scene.width * scale));
       const h = Math.max(8, Math.round(scene.height * scale));
-      return { placement, source: areaCanvas(scene, w, h) };
+      const source = areaCanvas(scene, w, h);
+      return {
+        placement,
+        source,
+        ...(maskBitmap ? { maskBitmap } : {}),
+        sourceVersion: cache?.version(scene.areaId),
+      };
     });
     return {
       mockup: composite.bitmap,
       background: composite.background,
       areas,
       overlays: composite.overlays,
+      ...(cache || quality ? { options: { cache: cache?.warps, quality } } : {}),
     };
   }
 }

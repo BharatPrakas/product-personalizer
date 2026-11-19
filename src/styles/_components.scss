@@ -127,6 +127,99 @@ app-stage {
     vector-effect: non-scaling-stroke;
   }
 
+  // Editing aids for the Pen, Brush and Mesh tools. They live on the overlay only: nothing here is
+  // drawn into an export or the customer preview.
+  .stage-mask {
+    pointer-events: none;
+  }
+
+  .mask-outline {
+    fill: none;
+    stroke: #fff;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    paint-order: stroke;
+    filter: drop-shadow(0 0 1px rgba(15, 23, 42, 0.9));
+    pointer-events: none;
+  }
+
+  .pen-path {
+    fill: rgba(79, 70, 229, 0.12);
+    stroke: var(--c-primary);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    fill-rule: evenodd;
+    pointer-events: none;
+  }
+
+  .pen-handle-line {
+    stroke: var(--c-primary);
+    stroke-width: 1;
+    pointer-events: none;
+  }
+
+  .pen-handle {
+    fill: var(--c-primary);
+    stroke: #fff;
+    stroke-width: 1.5;
+  }
+
+  .pen-anchor {
+    fill: #fff;
+    stroke: var(--c-primary);
+    stroke-width: 2;
+  }
+
+  .pen-anchor.is-selected {
+    fill: var(--c-primary);
+    stroke: #fff;
+  }
+
+  .pen-close {
+    fill: none;
+    stroke: var(--c-primary);
+    stroke-width: 2;
+    stroke-dasharray: 3 3;
+    pointer-events: none;
+  }
+
+  .mesh-grid {
+    fill: none;
+    stroke: #fff;
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 1px rgba(15, 23, 42, 0.9));
+    pointer-events: none;
+  }
+
+  .mesh-grid.is-folded {
+    stroke: #fda4af;
+  }
+
+  .mesh-point {
+    fill: #fff;
+    stroke: var(--c-primary);
+    stroke-width: 2;
+  }
+
+  .mesh-point.is-selected {
+    fill: var(--c-primary);
+    stroke: #fff;
+  }
+
+  .brush-cursor {
+    fill: none;
+    stroke: #fff;
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 1px rgba(15, 23, 42, 0.95));
+    pointer-events: none;
+  }
+
+  .brush-cursor.is-erase {
+    stroke-dasharray: 4 3;
+  }
+
   .stage-message {
     position: absolute;
     top: var(--s-3);
@@ -142,6 +235,13 @@ app-stage {
     transform: translateX(-50%);
   }
 
+  .stage-message--tool {
+    top: auto;
+    bottom: var(--s-3);
+    max-width: calc(100% - 220px);
+    text-align: center;
+    border-radius: var(--r-lg);
+  }
 }
 
 // Orders ------------------------------------------------------------------------------------------

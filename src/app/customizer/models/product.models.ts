@@ -178,6 +178,115 @@ export type BlendMode = 'normal' | 'multiply' | 'overlay' | 'soft-light';
 
 export type Point = readonly [x: number, y: number];
 
+// ---- mockup-space geometry ---------------------------------------------------------------------
+//
+// Three concerns, kept apart so none can change the others:
+//  - Printable boundary (`AreaPlacement.mask`): which pixels of the PRODUCT PHOTO may show artwork.
+//    Authored on the photo, stored as fractions of it, applied after the artwork has been warped.
+//  - Surface transformation (`AreaPlacement.surface` / `.mesh`): how the flat artwork is bent onto the
+//    photographed object. Only the preview / composite uses it.
+//  - Production artwork (`PrintableArea.canvas` + `.shape`): flat, in canvas pixels. Neither of the
+//    above ever changes it, so a curved bottle label is still a flat rectangle in the print file.
+
+/** One anchor of a cubic Bezier contour. Positions are fractions of the mockup photograph. */
+export interface BezierAnchor {
+  x: number;
+  y: number;
+  /** Absolute position of the control handle before this anchor. Omitted: no handle (a corner). */
+  handleIn?: Point;
+  /** Absolute position of the control handle after this anchor. Omitted: no handle (a corner). */
+  handleOut?: Point;
+  /** Editor hint: dragging one handle mirrors the other. Rendering ignores it. */
+  smooth?: boolean;
+}
+
+/** A closed contour of at least three anchors; consecutive anchors (and last -> first) are joined by one cubic segment. */
+export interface BezierContour {
+  anchors: BezierAnchor[];
+}
+
+/**
+ * Editable, versioned cubic Bezier geometry. Several contours may be combined (a hole is a contour
+ * inside another one); `fillRule` decides what is inside. Self-intersecting contours are allowed and
+ * filled by the rule; the editor warns about them.
+ */
+export interface BezierPath {
+  version: 1;
+  fillRule: 'nonzero' | 'evenodd';
+  contours: BezierContour[];
+}
+
+export const BEZIER_VERSION = 1;
+
+export const BEZIER_LIMITS = {
+  maxContours: 16,
+  minAnchorsPerContour: 3,
+  maxAnchorsPerContour: 256,
+  maxAnchors: 1024,
+  /** Coordinates may leave the photo a little (handles of an edge anchor often do). */
+  minCoordinate: -1,
+  maxCoordinate: 2,
+} as const;
+
+/**
+ * The printable boundary of one placement, in the coordinate space of the mockup photograph.
+ *  - `path`: closed Bezier contours.
+ *  - `raster`: an alpha-mask image (PNG; its alpha channel is the coverage, so soft edges and
+ *    partially transparent pixels are kept) stretched over the whole photo. It is an ordinary image
+ *    asset: `src` follows the same rules, storage and cleanup as a mockup image.
+ */
+export type PlacementMask =
+  | { type: 'path'; path: BezierPath }
+  | { type: 'raster'; src: string; width: number; height: number };
+
+/**
+ * Vertical-cylinder surface (bottle, jar, mug, tube). The artwork wraps around the cylinder,
+ * is seen with an orthographic camera and is clipped where the surface turns away from the camera.
+ * The placement rectangle bounds the visible part of the artwork. Angles are degrees measured from
+ * the meridian that faces the camera (see `util/surface.ts` for the exact mapping).
+ */
+export interface CylinderSurface {
+  type: 'cylinder';
+  /** Angle the WHOLE artwork spans around the cylinder: 0 is flat, 360 wraps all the way round. */
+  curvature: number;
+  /** Where the artwork's centre sits on the cylinder, from the camera-facing meridian. */
+  centre: number;
+  /** How far left of the camera-facing meridian the surface is still visible (1..90). */
+  visibleLeft: number;
+  /** How far right of the camera-facing meridian the surface is still visible (1..90). */
+  visibleRight: number;
+  /** Camera elevation: bows horizontal edges (positive looks down on the object). */
+  tilt: number;
+}
+
+export const SURFACE_LIMITS = {
+  maxCurvature: 360,
+  maxCentre: 180,
+  minVisible: 1,
+  maxVisible: 90,
+  maxTilt: 60,
+} as const;
+
+/**
+ * Editable mesh: a cols x rows grid of control points, smoothly interpolated (Catmull-Rom), that
+ * the flat artwork is stretched over. Points are fractions of the PLACEMENT'S OWN FRAME
+ * ((0,0) top-left, (1,1) bottom-right of its rectangle or quad), so moving, resizing or
+ * rotating the placement carries the mesh along and viewport zoom never matters.
+ */
+export interface MeshSpec {
+  cols: number;
+  rows: number;
+  /** Row-major `[x0, y0, x1, y1, ...]`: `cols * rows * 2` finite numbers. */
+  points: number[];
+}
+
+export const MESH_LIMITS = {
+  minCells: 2,
+  maxCells: 12,
+  minCoordinate: -1,
+  maxCoordinate: 2,
+} as const;
+
 export interface AreaPlacement {
   printableAreaId: string;
   /**
@@ -195,6 +304,17 @@ export interface AreaPlacement {
   blendMode?: BlendMode;
   /** 0..1. Default 1. */
   opacity?: number;
+  /** Printable boundary on the photo; the warped artwork is clipped to it. */
+  mask?: PlacementMask;
+  /** Cylindrical wrap, evaluated inside the placement frame. */
+  surface?: CylinderSurface;
+  /** Free-form mesh, evaluated inside the placement frame. Overrides `surface` while present. */
+  mesh?: MeshSpec;
+}
+
+/** True when the placement needs the warp / mask pipeline rather than a plain rectangle or quad. */
+export function hasMockupGeometry(placement: AreaPlacement): boolean {
+  return !!(placement.mask || placement.surface || placement.mesh);
 }
 
 export interface MockupOverlay {

@@ -202,9 +202,9 @@ describe('lazy editor', () => {
   });
 
   it('the download graph of the storefront entry does not contain the editor', async () => {
-    const manifest = JSON.parse(readFileSync(new URL('../../dist/product-personalization/MANIFEST.json', import.meta.url), 'utf8'));
+    const manifest = JSON.parse(readFileSync(new URL('../../dist/PRODUCT_PERSONALIZATION/MANIFEST.json', import.meta.url), 'utf8'));
     const entry = manifest.entries['storefront.js'];
-    const initial = (entry.initialFiles as string[]).map((f) => readFileSync(new URL(`../../dist/product-personalization/${f}`, import.meta.url), 'utf8')).join('\n');
+    const initial = (entry.initialFiles as string[]).map((f) => readFileSync(new URL(`../../dist/PRODUCT_PERSONALIZATION/${f}`, import.meta.url), 'utf8')).join('\n');
     // Code that only the editor needs stays out of what every shopper downloads.
     expect(initial).not.toContain('Waiting for configuration');
     expect(initial).not.toContain('Before you can save');

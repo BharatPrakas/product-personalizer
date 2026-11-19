@@ -1,5 +1,6 @@
 <div class="stage" #host [style.--grid-x]="gridOffset().x" [style.--grid-y]="gridOffset().y">
   <canvas #canvas class="stage-canvas" aria-hidden="true"></canvas>
+  <canvas #maskCanvas class="stage-canvas stage-mask" aria-hidden="true"></canvas>
   <svg
     #overlay
     class="stage-overlay"
@@ -11,6 +12,8 @@
     (pointermove)="onMove($event)"
     (pointerup)="onUp($event)"
     (pointercancel)="onUp($event)"
+    (pointerleave)="onLeave()"
+    (dblclick)="onDoubleClick($event)"
     (keydown)="onKey($event)"
   >
     @for (shape of outlines(); track shape.id) {
@@ -89,6 +92,74 @@
       }
     }
 
+    @for (outline of maskOutlines(); track outline.id) {
+      <path class="mask-outline" [attr.d]="outline.d" [class.outline-selected]="outline.selected" />
+    }
+
+    @if (toolKind() === 'pen') {
+      @if (pen.outline(); as d) {
+        <path class="pen-path" [attr.d]="d" />
+      }
+      @for (h of pen.handles(); track $index) {
+        <line
+          class="pen-handle-line"
+          [attr.x1]="h.ax"
+          [attr.y1]="h.ay"
+          [attr.x2]="h.hx"
+          [attr.y2]="h.hy"
+        />
+        <circle class="pen-handle" [attr.cx]="h.hx" [attr.cy]="h.hy" r="4" />
+      }
+      @for (a of pen.anchors(); track $index) {
+        @if (a.smooth) {
+          <circle
+            class="pen-anchor"
+            [class.is-selected]="a.selected"
+            [attr.cx]="a.x"
+            [attr.cy]="a.y"
+            r="5.5"
+          />
+        } @else {
+          <rect
+            class="pen-anchor"
+            [class.is-selected]="a.selected"
+            [attr.x]="a.x - 5"
+            [attr.y]="a.y - 5"
+            width="10"
+            height="10"
+          />
+        }
+      }
+      @if (pen.closeTarget(); as c) {
+        <circle class="pen-close" [attr.cx]="c.x" [attr.cy]="c.y" r="9" />
+      }
+    }
+
+    @if (toolKind() === 'mesh') {
+      @if (meshTool.grid(); as g) {
+        <path class="mesh-grid" [class.is-folded]="meshTool.folded() > 0" [attr.d]="g" />
+      }
+      @for (p of meshTool.points(); track p.index) {
+        <circle
+          class="mesh-point"
+          [class.is-selected]="p.selected"
+          [attr.cx]="p.x"
+          [attr.cy]="p.y"
+          r="6"
+        />
+      }
+    }
+
+    @if (toolKind() === 'brush' && brush.cursor(); as c) {
+      <circle
+        class="brush-cursor"
+        [class.is-erase]="store.brush().mode === 'erase'"
+        [attr.cx]="c.x"
+        [attr.cy]="c.y"
+        [attr.r]="brush.cursorRadius()"
+      />
+    }
+
     @if (draft(); as d) {
       <g [attr.transform]="d.transform">
         @switch (d.kind) {
@@ -114,6 +185,8 @@
   </svg>
 
   @if (message(); as text) {
-    <p class="stage-message" role="status">{{ text }}</p>
+    <p class="stage-message" [class.stage-message--tool]="toolMessage()" role="status">
+      {{ text }}
+    </p>
   }
 </div>

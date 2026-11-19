@@ -1,0 +1,66 @@
+{
+  "supplement": {
+    "width": 480,
+    "height": 480,
+    "label": {
+      "x": 0.2813,
+      "y": 0.3958,
+      "width": 0.4375,
+      "height": 0.3958
+    }
+  },
+  "spray": {
+    "width": 480,
+    "height": 640,
+    "angle": -20,
+    "placement": {
+      "x": 0.3542,
+      "y": 0.3906,
+      "width": 0.2917,
+      "height": 0.25,
+      "rotation": -20
+    },
+    "outline": {
+      "version": 1,
+      "fillRule": "nonzero",
+      "contours": [
+        {
+          "anchors": [
+            {
+              "x": 0.306,
+              "y": 0.4356,
+              "handleOut": [
+                0.4106,
+                0.438
+              ]
+            },
+            {
+              "x": 0.58,
+              "y": 0.3608,
+              "handleIn": [
+                0.502,
+                0.4131
+              ]
+            },
+            {
+              "x": 0.694,
+              "y": 0.5957,
+              "handleOut": [
+                0.616,
+                0.648
+              ]
+            },
+            {
+              "x": 0.42,
+              "y": 0.6705,
+              "handleIn": [
+                0.5246,
+                0.673
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

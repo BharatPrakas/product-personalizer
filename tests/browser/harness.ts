@@ -10,7 +10,9 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from 'puppetee
 import { createStaticHandler } from '../../scripts/serve-static.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const ELEMENT_DIR = join(root, 'dist', 'product-personalization');
+const ELEMENT_DIR = join(root, 'dist', 'PRODUCT_PERSONALIZATION');
+/** URL prefix under which `writeFixture` files are served by the main test server. */
+export const TMP_FILES = '/tmp-files';
 const HOST_DIR = join(dirname(fileURLToPath(import.meta.url)), 'host');
 export const NESTED = '/nested/path/customizer';
 
@@ -212,14 +214,16 @@ export interface Environment {
 
 export async function startEnvironment(): Promise<Environment> {
   const mock = createMockApi();
+  const tmp = mkdtempSync(join(tmpdir(), 'zbc-tests-'));
   const main = await listen([
     mock.handler,
     createStaticHandler({ root: ELEMENT_DIR, mount: NESTED }),
+    // Files a test wrote with `writeFixture`, reachable from the page as `${origin}/tmp-files/<name>`.
+    createStaticHandler({ root: tmp, mount: TMP_FILES }),
     createStaticHandler({ root: HOST_DIR, mount: '' }),
   ], Number(process.env['ZB_E2E_PORT'] ?? 0));
   const cors = await listen([createStaticHandler({ root: ELEMENT_DIR, cors: true })]);
   const plain = await listen([createStaticHandler({ root: ELEMENT_DIR, cors: false })]);
-  const tmp = mkdtempSync(join(tmpdir(), 'zbc-tests-'));
   const browser = await puppeteer.launch({
     executablePath: process.env['CHROME_PATH'] ?? '/usr/bin/google-chrome',
     headless: true,

@@ -40,7 +40,7 @@ import { UploadError } from './errors';
 import { FontService } from './font.service';
 import { ImageService } from './image.service';
 import { LoadOutcome } from './load-pipeline.service';
-import { PreviewComposite, RenderService } from './render.service';
+import { PreviewComposite, RenderService, compositeAreas } from './render.service';
 import { SaveCoordinator } from './save-coordinator.service';
 
 export type CustomizerStatus =
@@ -177,9 +177,7 @@ export class StateService {
         mockup,
         bitmap,
         background: config.preview?.background,
-        areas: mockup.placements
-          .filter((placement) => scenes.has(placement.printableAreaId))
-          .map((placement) => ({ placement, scene: scenes.get(placement.printableAreaId)! })),
+        areas: compositeAreas(mockup, scenes, images),
         overlays: (mockup.overlays ?? [])
           .map((overlay) => ({ overlay, bitmap: images.get(overlay.src) }))
           .filter(

@@ -1,9 +1,11 @@
 /**
- * Compiled by `npm run test:types` against the declarations that ship in dist/product-personalization/types.
+ * Compiled by `npm run test:types` against the declarations that ship in dist/PRODUCT_PERSONALIZATION/types.
  * It is what a host application's TypeScript sees; `@ts-expect-error` lines must stay errors.
  */
 import type {
   AdminErrorDetail,
+  AreaPlacement,
+  BezierPath,
   ConfigArchivedDetail,
   ConfigPublishedDetail,
   ConfigSavedDetail,
@@ -11,9 +13,12 @@ import type {
   CustomizerConfig,
   CustomizerErrorDetail,
   CustomizerSaveDetail,
+  CylinderSurface,
   Customization,
   LineExtensionValues,
   MappingChangedDetail,
+  MeshSpec,
+  PlacementMask,
   PersonalizationSavedData,
   ProductMapping,
   ProductRef,
@@ -25,7 +30,7 @@ import type {
   ZbStandardEventData,
   ZbPersonalizationAdminElement,
   ZbProductCustomizerElement,
-} from '../../dist/product-personalization/types/index';
+} from '../../dist/PRODUCT_PERSONALIZATION/types/index';
 
 // The tag name map is augmented globally, so createElement is typed.
 const element = document.createElement('zb-product-customizer');
@@ -276,3 +281,33 @@ void values.then((v) => {
   // @ts-expect-error values are read-only strings
   v['customizationId'] = 'x';
 });
+
+// Placement geometry (printable boundary, cylinder surface, mesh) is part of the public configuration types.
+const outline: BezierPath = {
+  version: 1,
+  fillRule: 'evenodd',
+  contours: [{ anchors: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.1, handleOut: [0.95, 0.4], smooth: true }, { x: 0.5, y: 0.9 }] }],
+};
+const boundary: PlacementMask = { type: 'path', path: outline };
+const paintedBoundary: PlacementMask = { type: 'raster', src: 'masks/label.png', width: 1000, height: 800 };
+const cylinder: CylinderSurface = { type: 'cylinder', curvature: 140, centre: 0, visibleLeft: 90, visibleRight: 90, tilt: 0 };
+const mesh: MeshSpec = { cols: 2, rows: 2, points: [0, 0, 1, 0, 0, 1, 1, 1] };
+const placement: AreaPlacement = {
+  printableAreaId: 'label',
+  type: 'rect',
+  x: 0.2,
+  y: 0.3,
+  width: 0.5,
+  height: 0.3,
+  mask: boundary,
+  surface: cylinder,
+  mesh,
+};
+void [paintedBoundary, placement];
+// @ts-expect-error only a cylinder surface exists
+const cone: CylinderSurface = { ...cylinder, type: 'cone' };
+// @ts-expect-error a painted boundary needs the pixel size of its mask image
+const sizeless: PlacementMask = { type: 'raster', src: 'masks/label.png' };
+// @ts-expect-error the fill rule is one of two
+const rule: BezierPath = { ...outline, fillRule: 'winding' };
+void [cone, sizeless, rule];

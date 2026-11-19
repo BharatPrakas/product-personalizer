@@ -7,6 +7,7 @@ import { SectionComponent } from '../../ui/section.component';
 import { EditorStore } from '../services/editor-store.service';
 import * as edit from '../util/config-edit';
 import { CONTROLS } from './controls.component';
+import { GeometryFieldsComponent } from './geometry-fields.component';
 import { PlacementFieldsComponent } from './placement-fields.component';
 import { ShapeFieldComponent } from './shape-field.component';
 
@@ -18,6 +19,7 @@ import { ShapeFieldComponent } from './shape-field.component';
     ShapeFieldComponent,
     SectionComponent,
     PlacementFieldsComponent,
+    GeometryFieldsComponent,
     TranslatePipe,
   ],
   template: `
@@ -46,6 +48,7 @@ import { ShapeFieldComponent } from './shape-field.component';
           <app-section [title]="'inspector.area.placement' | t: { name: m.name }">
             <app-placement-fields [mockupId]="m.id" [placement]="p" />
           </app-section>
+          <app-geometry-fields [mockupId]="m.id" [placement]="p" />
         } @else {
           <app-section [title]="'inspector.area.placement' | t: { name: m.name }">
             <p class="field-hint">{{ 'inspector.area.not-placed' | t }}</p>

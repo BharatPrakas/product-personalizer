@@ -25,6 +25,7 @@ import {
   layerFieldId,
 } from '../../customizer/models/product.models';
 import { boundFieldIds } from '../../customizer/util/resolve';
+import { translatePath } from './bezier-edit';
 
 // ---- ids --------------------------------------------------------------------------------------
 
@@ -503,8 +504,15 @@ export function duplicateArea(
       const original = m.placements.find((p) => p.printableAreaId === id);
       if (!original) return m;
       const copy: AreaPlacement = { ...structuredClone(original), printableAreaId: areaId };
-      copy.x = Math.min(0.95, original.x + 0.04);
-      copy.y = Math.min(0.95, original.y + 0.04);
+      // A raster boundary is a picture of the photo and cannot be moved, so its copy stays in place
+      // (the merchant moves the copy afterwards); everything else is nudged so the copy is visible.
+      if (original.mask?.type === 'raster') return { ...m, placements: [...m.placements, copy] };
+      const dx = Math.min(0.95, original.x + 0.04) - original.x;
+      const dy = Math.min(0.95, original.y + 0.04) - original.y;
+      copy.x = original.x + dx;
+      copy.y = original.y + dy;
+      // A Bezier boundary moves with its copy; a mesh is relative to the placement and follows by itself.
+      if (copy.mask?.type === 'path') copy.mask = { type: 'path', path: translatePath(copy.mask.path, dx, dy) };
       if (copy.corners)
         copy.corners = copy.corners.map(([x, y]) => [
           x + 0.04,

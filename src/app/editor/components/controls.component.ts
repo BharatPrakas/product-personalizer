@@ -216,6 +216,60 @@ export class FileComponent {
   }
 }
 
+/** A slider with a number box beside it; both change the same value and are labelled by `label`. */
+@Component({
+  selector: 'app-range',
+  template: `
+    <div class="field range-field">
+      <label class="field-label" [for]="id">{{ label() }}</label>
+      <div class="range-row">
+        <input
+          type="range"
+          [id]="id"
+          [attr.min]="min()"
+          [attr.max]="max()"
+          [attr.step]="step()"
+          [value]="value()"
+          [disabled]="disabled()"
+          [attr.aria-valuetext]="value() + unit()"
+          (input)="onInput($event)"
+        />
+        <input
+          class="input range-number"
+          type="number"
+          inputmode="decimal"
+          [attr.aria-label]="label()"
+          [attr.min]="min()"
+          [attr.max]="max()"
+          [attr.step]="step()"
+          [value]="value()"
+          [disabled]="disabled()"
+          (input)="onInput($event)"
+        />
+      </div>
+    </div>
+  `,
+})
+export class RangeComponent {
+  protected readonly id = uid('range');
+  readonly label = input.required<string>();
+  readonly value = input.required<number>();
+  readonly min = input.required<number>();
+  readonly max = input.required<number>();
+  readonly step = input<number | string>(1);
+  readonly unit = input('');
+  readonly disabled = input(false);
+  readonly changed = output<number>();
+
+  protected onInput(event: Event): void {
+    const raw = (event.target as HTMLInputElement).value;
+    if (raw === '') return;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return;
+    this.changed.emit(Math.min(this.max(), Math.max(this.min(), n)));
+  }
+}
+
 export const CONTROLS = [
   NumComponent,
   TextInComponent,
@@ -223,4 +277,5 @@ export const CONTROLS = [
   SelectComponent,
   ColorComponent,
   FileComponent,
+  RangeComponent,
 ] as const;

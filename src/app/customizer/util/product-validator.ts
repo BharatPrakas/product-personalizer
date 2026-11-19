@@ -10,17 +10,27 @@ import {
   AreaPlacement,
   Artwork,
   ArtworkLayer,
+  BEZIER_LIMITS,
+  BEZIER_VERSION,
+  BezierAnchor,
+  BezierContour,
+  BezierPath,
   BlendMode,
   BoundarySpec,
   Condition,
+  CylinderSurface,
+  MESH_LIMITS,
+  MeshSpec,
   MockupOverlay,
   PRODUCT_LIMITS,
   PRODUCT_SCHEMA_VERSION,
+  PlacementMask,
   Point,
   PrintableArea,
   ProductConfig,
   ProductMockup,
   ProductVariant,
+  SURFACE_LIMITS,
   ShapeSpec,
   layerFieldId,
 } from '../models/product.models';
@@ -37,8 +47,10 @@ import {
   validatePrint,
   validateProduct,
 } from './config-validator';
+import { isDegenerateContour } from './bezier';
 import { ASPECT_TOLERANCE } from './crop-math';
 import { isSafePathData } from './geometry';
+import { meshFolds } from './surface';
 import { AssetPolicy, ResolvedBase, checkAssetSrc, resolveAssetDir } from './url-policy';
 
 export type ProductValidationResult =
@@ -56,6 +68,8 @@ export interface ProductValidateOptions {
 }
 
 const MAX_LAYER_EDGE = 16_384;
+/** Longest edge, in pixels, of a raster printable-boundary mask. */
+export const MAX_MASK_EDGE = 4096;
 const BLEND_MODES: readonly BlendMode[] = ['normal', 'multiply', 'overlay', 'soft-light'];
 
 export function validateProductConfig(
@@ -621,7 +635,7 @@ function validateMockups(
     const placements = (
       c.array(o['placements'], `${path}.placements`, 0, PRODUCT_LIMITS.maxAreas) ?? []
     )
-      .map((p, i) => validatePlacement(p, `${path}.placements[${i}]`, c))
+      .map((p, i) => validatePlacement(p, `${path}.placements[${i}]`, c, resolveSrc))
       .filter((p): p is AreaPlacement => p !== null);
     const overlays =
       o['overlays'] === undefined
@@ -670,7 +684,12 @@ function validateOverlay(
     : null;
 }
 
-function validatePlacement(value: unknown, path: string, c: Collector): AreaPlacement | null {
+function validatePlacement(
+  value: unknown,
+  path: string,
+  c: Collector,
+  resolveSrc: SrcResolver,
+): AreaPlacement | null {
   const o = c.object(value, path, [
     'printableAreaId',
     'type',
@@ -682,6 +701,9 @@ function validatePlacement(value: unknown, path: string, c: Collector): AreaPlac
     'corners',
     'blendMode',
     'opacity',
+    'mask',
+    'surface',
+    'mesh',
   ]);
   if (!o) return null;
   const printableAreaId = c.id(o['printableAreaId'], `${path}.printableAreaId`);
@@ -722,6 +744,11 @@ function validatePlacement(value: unknown, path: string, c: Collector): AreaPlac
     c.add(`${path}.blendMode`, 'enum', `must be one of ${BLEND_MODES.join(', ')}`);
   const opacity =
     o['opacity'] === undefined ? undefined : c.number(o['opacity'], `${path}.opacity`, 0, 1);
+  const mask =
+    o['mask'] === undefined ? undefined : validateMask(o['mask'], `${path}.mask`, c, resolveSrc);
+  const surface =
+    o['surface'] === undefined ? undefined : validateSurface(o['surface'], `${path}.surface`, c);
+  const mesh = o['mesh'] === undefined ? undefined : validateMesh(o['mesh'], `${path}.mesh`, c);
   if (
     !printableAreaId ||
     (type !== 'rect' && type !== 'quad') ||
@@ -733,6 +760,9 @@ function validatePlacement(value: unknown, path: string, c: Collector): AreaPlac
     height <= 0 ||
     rotation === null ||
     opacity === null ||
+    mask === null ||
+    surface === null ||
+    mesh === null ||
     (type === 'quad' && !corners) ||
     (blendMode !== undefined && !BLEND_MODES.includes(blendMode as BlendMode))
   )
@@ -748,7 +778,206 @@ function validatePlacement(value: unknown, path: string, c: Collector): AreaPlac
     ...(corners ? { corners } : {}),
     ...(blendMode && blendMode !== 'normal' ? { blendMode: blendMode as BlendMode } : {}),
     ...(opacity !== undefined && opacity !== 1 ? { opacity } : {}),
+    ...(mask ? { mask } : {}),
+    ...(surface ? { surface } : {}),
+    ...(mesh ? { mesh } : {}),
   };
+}
+
+// ---- mockup-space geometry: boundary, surface, mesh ------------------------------------------------
+
+function validateMask(
+  value: unknown,
+  path: string,
+  c: Collector,
+  resolveSrc: SrcResolver,
+): PlacementMask | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    c.add(path, 'type', 'must be an object');
+    return null;
+  }
+  const type = (value as Obj)['type'];
+  if (type === 'path') {
+    const o = c.object(value, path, ['type', 'path']);
+    if (!o) return null;
+    const bezier = validateBezierPath(o['path'], `${path}.path`, c);
+    return bezier ? { type, path: bezier } : null;
+  }
+  if (type === 'raster') {
+    const o = c.object(value, path, ['type', 'src', 'width', 'height']);
+    if (!o) return null;
+    const src = resolveSrc(o['src'], `${path}.src`);
+    const width = c.number(o['width'], `${path}.width`, 1, MAX_MASK_EDGE, true);
+    const height = c.number(o['height'], `${path}.height`, 1, MAX_MASK_EDGE, true);
+    return src && width !== null && height !== null ? { type, src, width, height } : null;
+  }
+  c.add(`${path}.type`, 'enum', 'must be "path" or "raster"');
+  return null;
+}
+
+function validateBezierPath(value: unknown, path: string, c: Collector): BezierPath | null {
+  const o = c.object(value, path, ['version', 'fillRule', 'contours']);
+  if (!o) return null;
+  let ok = true;
+  if (o['version'] !== BEZIER_VERSION) {
+    c.add(
+      `${path}.version`,
+      'unsupported-version',
+      `unsupported path version; expected ${BEZIER_VERSION}`,
+    );
+    ok = false;
+  }
+  const fillRule = o['fillRule'];
+  if (fillRule !== 'nonzero' && fillRule !== 'evenodd') {
+    c.add(`${path}.fillRule`, 'enum', 'must be "nonzero" or "evenodd"');
+    ok = false;
+  }
+  const list = c.array(o['contours'], `${path}.contours`, 1, BEZIER_LIMITS.maxContours);
+  if (!list) return null;
+  let anchorTotal = 0;
+  const contours = list.map((entry, i): BezierContour | null => {
+    const cp = `${path}.contours[${i}]`;
+    const co = c.object(entry, cp, ['anchors']);
+    if (!co) return null;
+    const raw = c.array(
+      co['anchors'],
+      `${cp}.anchors`,
+      BEZIER_LIMITS.minAnchorsPerContour,
+      BEZIER_LIMITS.maxAnchorsPerContour,
+    );
+    if (!raw) return null;
+    anchorTotal += raw.length;
+    const anchors = raw.map((a, k) => validateAnchor(a, `${cp}.anchors[${k}]`, c));
+    if (anchors.some((a) => a === null)) return null;
+    const contour: BezierContour = { anchors: anchors as BezierAnchor[] };
+    if (raw.length >= BEZIER_LIMITS.minAnchorsPerContour && isDegenerateContour(contour)) {
+      c.add(cp, 'degenerate', 'must enclose an area (its anchors are collinear or coincide)');
+      return null;
+    }
+    return contour;
+  });
+  if (anchorTotal > BEZIER_LIMITS.maxAnchors) {
+    c.add(
+      `${path}.contours`,
+      'length',
+      `must contain at most ${BEZIER_LIMITS.maxAnchors} anchors in total`,
+    );
+    ok = false;
+  }
+  if (!ok || contours.some((x) => x === null)) return null;
+  return {
+    version: BEZIER_VERSION,
+    fillRule: fillRule as BezierPath['fillRule'],
+    contours: contours as BezierContour[],
+  };
+}
+
+function validateAnchor(value: unknown, path: string, c: Collector): BezierAnchor | null {
+  const o = c.object(value, path, ['x', 'y', 'handleIn', 'handleOut', 'smooth']);
+  if (!o) return null;
+  const { minCoordinate: lo, maxCoordinate: hi } = BEZIER_LIMITS;
+  const x = c.number(o['x'], `${path}.x`, lo, hi);
+  const y = c.number(o['y'], `${path}.y`, lo, hi);
+  const handle = (key: 'handleIn' | 'handleOut'): Point | undefined | null => {
+    const raw = o[key];
+    if (raw === undefined) return undefined;
+    if (
+      !Array.isArray(raw) ||
+      raw.length !== 2 ||
+      !raw.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi)
+    ) {
+      c.add(`${path}.${key}`, 'type', `must be [x, y] with finite numbers from ${lo} to ${hi}`);
+      return null;
+    }
+    return [raw[0], raw[1]];
+  };
+  const handleIn = handle('handleIn');
+  const handleOut = handle('handleOut');
+  const smooth = o['smooth'] === undefined ? undefined : c.boolean(o['smooth'], `${path}.smooth`);
+  if (x === null || y === null || handleIn === null || handleOut === null || smooth === null)
+    return null;
+  return {
+    x,
+    y,
+    ...(handleIn ? { handleIn } : {}),
+    ...(handleOut ? { handleOut } : {}),
+    ...(smooth ? { smooth: true } : {}),
+  };
+}
+
+function validateSurface(value: unknown, path: string, c: Collector): CylinderSurface | null {
+  const o = c.object(value, path, [
+    'type',
+    'curvature',
+    'centre',
+    'visibleLeft',
+    'visibleRight',
+    'tilt',
+  ]);
+  if (!o) return null;
+  if (o['type'] !== 'cylinder') {
+    c.add(`${path}.type`, 'enum', 'must be "cylinder"');
+    return null;
+  }
+  const L = SURFACE_LIMITS;
+  const curvature = c.number(o['curvature'], `${path}.curvature`, 0, L.maxCurvature);
+  const centre = c.number(o['centre'], `${path}.centre`, -L.maxCentre, L.maxCentre);
+  const visibleLeft = c.number(o['visibleLeft'], `${path}.visibleLeft`, L.minVisible, L.maxVisible);
+  const visibleRight = c.number(
+    o['visibleRight'],
+    `${path}.visibleRight`,
+    L.minVisible,
+    L.maxVisible,
+  );
+  const tilt = c.number(o['tilt'], `${path}.tilt`, -L.maxTilt, L.maxTilt);
+  if (
+    curvature === null ||
+    centre === null ||
+    visibleLeft === null ||
+    visibleRight === null ||
+    tilt === null
+  )
+    return null;
+  return { type: 'cylinder', curvature, centre, visibleLeft, visibleRight, tilt };
+}
+
+function validateMesh(value: unknown, path: string, c: Collector): MeshSpec | null {
+  const o = c.object(value, path, ['cols', 'rows', 'points']);
+  if (!o) return null;
+  const cols = c.number(
+    o['cols'],
+    `${path}.cols`,
+    MESH_LIMITS.minCells,
+    MESH_LIMITS.maxCells,
+    true,
+  );
+  const rows = c.number(
+    o['rows'],
+    `${path}.rows`,
+    MESH_LIMITS.minCells,
+    MESH_LIMITS.maxCells,
+    true,
+  );
+  if (cols === null || rows === null) return null;
+  const raw = c.array(o['points'], `${path}.points`, cols * rows * 2, cols * rows * 2);
+  if (!raw || raw.length !== cols * rows * 2) return null;
+  const { minCoordinate: lo, maxCoordinate: hi } = MESH_LIMITS;
+  const points: number[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const n = c.number(raw[i], `${path}.points[${i}]`, lo, hi);
+    if (n === null) return null;
+    points.push(n);
+  }
+  const mesh: MeshSpec = { cols, rows, points };
+  if (meshFolds(mesh).length > 0) {
+    c.add(
+      path,
+      'folded',
+      'the mesh folds over itself or has collapsed cells; move the points apart',
+    );
+    return null;
+  }
+  return mesh;
 }
 
 // ---- variants, preview ----------------------------------------------------------------------------

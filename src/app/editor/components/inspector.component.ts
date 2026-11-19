@@ -5,6 +5,7 @@ import { ArtworkPropsComponent } from './artwork-props.component';
 import { ConfigurationInspectorComponent } from './configuration-inspector.component';
 import { LayerPropsComponent } from './layer-props.component';
 import { MockupPropsComponent } from './mockup-props.component';
+import { ToolPanelComponent } from './tool-panel.component';
 
 /** Right sidebar: properties of whatever is selected. */
 @Component({
@@ -15,8 +16,10 @@ import { MockupPropsComponent } from './mockup-props.component';
     AreaPropsComponent,
     ArtworkPropsComponent,
     LayerPropsComponent,
+    ToolPanelComponent,
   ],
   template: `
+    <app-tool-panel />
     @switch (store.selection().kind) {
       @case ('layer') {
         <app-layer-props />

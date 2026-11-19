@@ -5,7 +5,7 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "noEmit": false,
-    "outDir": "dist/product-personalization/types",
+    "outDir": "dist/PRODUCT_PERSONALIZATION/types",
     "rootDir": "src/app/customizer/models",
     "types": [],
     "composite": false

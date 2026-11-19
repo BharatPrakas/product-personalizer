@@ -2,12 +2,13 @@ import { I18n, TranslatePipe } from '../../admin/i18n/i18n.service';
 import { Component, computed, inject, signal } from '@angular/core';
 import type { MessageKey } from '../../admin/i18n/messages.en';
 import { ShapeSpec } from '../../customizer/models/product.models';
+import { DEFAULT_CYLINDER } from '../../customizer/util/surface';
 import { HEART_SHAPE, isSafePathData, parseSvgMask } from '../../customizer/util/geometry';
 import { DialogComponent } from '../../ui/dialog.component';
 import { IconComponent, IconName } from '../../ui/icon.component';
 import { EditorStore } from '../services/editor-store.service';
 
-type Kind = 'rect' | 'ellipse' | 'path';
+type Kind = 'rect' | 'ellipse' | 'path' | 'pen' | 'brush' | 'curved';
 
 interface Option {
   id: Kind;
@@ -99,6 +100,18 @@ interface Option {
         </div>
       }
 
+      @switch (kind()) {
+        @case ('pen') {
+          <p class="field-hint">{{ 'addarea.pen-hint' | t }}</p>
+        }
+        @case ('brush') {
+          <p class="field-hint">{{ 'addarea.brush-hint' | t }}</p>
+        }
+        @case ('curved') {
+          <p class="field-hint">{{ 'addarea.curved-hint' | t }}</p>
+        }
+      }
+
       @if (!store.mockup()) {
         <p class="notice notice--warning">
           <app-icon name="alert" />
@@ -108,12 +121,22 @@ interface Option {
 
       <ng-container dialogActions>
         <button type="button" class="btn" (click)="close()">{{ 'common.cancel' | t }}</button>
-        <button type="button" class="btn" [disabled]="!ready()" (click)="placeAtCentre()">
-          {{ 'addarea.centre' | t }}
-        </button>
-        <button type="button" class="btn btn--primary" [disabled]="!ready()" (click)="draw()">
-          <app-icon name="pen" [size]="16" /> {{ 'addarea.draw' | t }}
-        </button>
+        @if (kind() === 'pen') {
+          <button type="button" class="btn btn--primary" [disabled]="!ready()" (click)="trace()">
+            <app-icon name="pen" [size]="16" /> {{ 'addarea.trace' | t }}
+          </button>
+        } @else if (kind() === 'brush') {
+          <button type="button" class="btn btn--primary" [disabled]="!ready()" (click)="paint()">
+            <app-icon name="pen" [size]="16" /> {{ 'addarea.paint' | t }}
+          </button>
+        } @else {
+          <button type="button" class="btn" [disabled]="!ready()" (click)="placeAtCentre()">
+            {{ 'addarea.centre' | t }}
+          </button>
+          <button type="button" class="btn btn--primary" [disabled]="!ready()" (click)="draw()">
+            <app-icon name="pen" [size]="16" /> {{ 'addarea.draw' | t }}
+          </button>
+        }
       </ng-container>
     </app-dialog>
   `,
@@ -141,6 +164,24 @@ export class AddAreaDialogComponent {
       description: 'addarea.opt.path.desc',
       icon: 'vector',
     },
+    {
+      id: 'pen',
+      title: 'addarea.opt.pen.title',
+      description: 'addarea.opt.pen.desc',
+      icon: 'pen',
+    },
+    {
+      id: 'brush',
+      title: 'addarea.opt.brush.title',
+      description: 'addarea.opt.brush.desc',
+      icon: 'image',
+    },
+    {
+      id: 'curved',
+      title: 'addarea.opt.curved.title',
+      description: 'addarea.opt.curved.desc',
+      icon: 'shapes',
+    },
   ];
 
   protected readonly kind = signal<Kind>('rect');
@@ -150,7 +191,10 @@ export class AddAreaDialogComponent {
 
   protected readonly shape = computed<ShapeSpec | null>(() => {
     const kind = this.kind();
-    return kind === 'path' ? this.custom() : { type: kind };
+    if (kind === 'path') return this.custom();
+    // Curved surface, Pen and Brush keep a plain rectangular production canvas: the production file
+    // is always flat, only the photo-space boundary and surface differ.
+    return kind === 'ellipse' ? { type: 'ellipse' } : { type: 'rect' };
   });
   protected readonly ready = computed(() => !!this.shape() && !!this.store.mockup());
 
@@ -200,7 +244,19 @@ export class AddAreaDialogComponent {
     const shape = this.shape();
     if (!shape) return;
     this.store.view.set('mockup');
-    this.store.tool.set({ kind: 'draw', shape });
+    this.store.tool.set({ kind: 'draw', shape, curved: this.kind() === 'curved' });
+    this.close();
+  }
+
+  protected trace(): void {
+    this.store.view.set('mockup');
+    this.store.tool.set({ kind: 'pen', mode: 'new-area', areaId: null });
+    this.close();
+  }
+
+  protected paint(): void {
+    this.store.view.set('mockup');
+    this.store.tool.set({ kind: 'brush', areaId: null });
     this.close();
   }
 
@@ -208,7 +264,10 @@ export class AddAreaDialogComponent {
     const shape = this.shape();
     if (!shape) return;
     this.store.view.set('mockup');
-    this.store.addAreaDefault(shape);
+    this.store.addAreaDefault(
+      shape,
+      this.kind() === 'curved' ? { surface: { ...DEFAULT_CYLINDER } } : {},
+    );
     this.close();
   }
 }

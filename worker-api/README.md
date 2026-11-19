@@ -193,6 +193,14 @@ with SQLite's `json_valid()`/`json_type()` rather than Postgres's `jsonb_typeof(
 | `config_versions` | Immutable publish history (one row per publish). |
 | `assets` | Metadata for every binary in object storage: `object_key`, verified `content_type`, `size_bytes`, dimensions, `checksum_sha256`, `status`, and the client's `idb:` ref for dedupe. |
 
+**Placement geometry needs nothing here.** A placement may carry `mask` (a Bezier boundary, or a raster alpha mask), `surface` and `mesh`
+(see [`docs/printable-area-tools.md`](../docs/printable-area-tools.md)). The Worker validates only the configuration envelope and stores the
+JSON verbatim, so these fields round-trip through save, publish, versions and the storefront route with no migration. A raster boundary is an
+ordinary PNG asset referenced from `placements[].mask.src`: because the key is named `src`, adoption, the 409 on deleting a referenced asset,
+deletion with the configuration, the public URL rewrite and cross-tenant refusal all apply unchanged (pinned by `test/placement-geometry.test.ts`).
+The deep structural checks (anchor limits, fold detection of a mesh, ranges) run in the Angular validator, which the editor applies before saving
+and publishing and the storefront applies when it loads the configuration; the Worker does not duplicate them.
+
 ### Mappings and markups
 
 | Table | Purpose |

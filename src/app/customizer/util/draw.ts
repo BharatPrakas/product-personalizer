@@ -5,8 +5,13 @@
  */
 
 import type { AreaPlacement, BlendMode, MockupOverlay, Point } from '../models/product.models';
+import { hasMockupGeometry } from '../models/product.models';
+import { bezierBounds, bezierToPath2D } from './bezier';
 import { DEG, boxCenter, clipToShape, shapePath } from './geometry';
+import { projectSquare, squareToQuad } from './homography';
 import { AreaScene, ImageOp, PlaceholderOp, SceneOp, ShapeOp, TextOp } from './scene';
+import { buildWarpGrid, gridBounds } from './surface';
+import { PixelImage, rasterizeWarp } from './warp';
 
 export interface SceneTransform {
   x: number;
@@ -198,6 +203,25 @@ export interface PlacedArea {
   placement: AreaPlacement;
   /** The area rendered on its own canvas (any resolution, same aspect as the area). */
   source: CanvasImageSource & { width: number; height: number };
+  /**
+   * The decoded alpha mask when the placement has a raster printable boundary. A raster boundary
+   * whose image is not available yet hides the area (the artwork is never shown unclipped).
+   */
+  maskBitmap?: ImageBitmap;
+  /** Changes whenever `source`'s pixels change; lets a `WarpCache` reuse its work. */
+  sourceVersion?: number;
+}
+
+/**
+ * 'final': supersampled, for exports and resting views. 'draft': one sample per pixel, used while a
+ * handle is being dragged so the preview keeps up with the pointer.
+ */
+export type WarpQuality = 'draft' | 'final';
+
+export interface CompositeOptions {
+  quality?: WarpQuality;
+  /** Reuses warped layers between repaints (pan, zoom steps, unrelated edits). */
+  cache?: WarpCache;
 }
 
 export interface CompositeOverlay {
@@ -210,6 +234,7 @@ export interface CompositeInput {
   background?: string;
   areas: PlacedArea[];
   overlays: CompositeOverlay[];
+  options?: CompositeOptions;
 }
 
 const BLEND: Record<BlendMode, GlobalCompositeOperation> = {
@@ -247,7 +272,7 @@ export function drawComposite(
     ctx.fillRect(0, 0, width, height);
   }
   ctx.drawImage(input.mockup, 0, 0, width, height);
-  for (const placed of input.areas) drawPlaced(ctx, placed, width, height);
+  for (const placed of input.areas) drawPlaced(ctx, placed, width, height, input.options);
   for (const { overlay, bitmap } of input.overlays) {
     ctx.globalAlpha = overlay.opacity ?? 1;
     ctx.drawImage(
@@ -263,14 +288,18 @@ export function drawComposite(
 
 function drawPlaced(
   ctx: CanvasRenderingContext2D,
-  { placement, source }: PlacedArea,
+  placed: PlacedArea,
   width: number,
   height: number,
+  options?: CompositeOptions,
 ): void {
+  const { placement, source } = placed;
   ctx.save();
   ctx.globalAlpha = placement.opacity ?? 1;
   ctx.globalCompositeOperation = BLEND[placement.blendMode ?? 'normal'];
-  if (placement.type === 'quad' && placement.corners) {
+  if (hasMockupGeometry(placement)) {
+    drawWarped(ctx, placed, width, height, options);
+  } else if (placement.type === 'quad' && placement.corners) {
     drawQuad(ctx, source, placement.corners, width, height);
   } else {
     const w = placement.width * width;
@@ -286,26 +315,6 @@ function drawPlaced(
 }
 
 // ---- four-corner perspective -------------------------------------------------------------------
-
-/** Projective map of the unit square onto `quad` (Heckbert), as 8 coefficients. */
-function squareToQuad(q: readonly [Point, Point, Point, Point]): number[] | null {
-  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = q;
-  const dx1 = x1 - x2;
-  const dx2 = x3 - x2;
-  const dy1 = y1 - y2;
-  const dy2 = y3 - y2;
-  const sx = x0 - x1 + x2 - x3;
-  const sy = y0 - y1 + y2 - y3;
-  let g = 0;
-  let h = 0;
-  if (Math.abs(sx) > 1e-9 || Math.abs(sy) > 1e-9) {
-    const det = dx1 * dy2 - dx2 * dy1;
-    if (Math.abs(det) < 1e-12) return null;
-    g = (sx * dy2 - dx2 * sy) / det;
-    h = (dx1 * sy - sx * dy1) / det;
-  }
-  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h];
-}
 
 const QUAD_GRID = 14;
 
@@ -329,10 +338,7 @@ function drawQuad(
   ];
   const m = squareToQuad(px);
   if (!m) return;
-  const project = (u: number, v: number): [number, number] => {
-    const w = m[6] * u + m[7] * v + 1;
-    return [(m[0] * u + m[1] * v + m[2]) / w, (m[3] * u + m[4] * v + m[5]) / w];
-  };
+  const project = (u: number, v: number): [number, number] => projectSquare(m, u, v);
   const sw = source.width;
   const sh = source.height;
   for (let j = 0; j < QUAD_GRID; j++) {
@@ -418,4 +424,269 @@ function growTriangle(a: P2, b: P2, c: P2, by: number): [P2, P2, P2] {
   const k = (radius + by) / radius;
   const scale = (p: P2): P2 => [ix + (p[0] - ix) * k, iy + (p[1] - iy) * k];
   return [scale(a), scale(b), scale(c)];
+}
+
+// ---- surfaces, meshes and printable boundaries ----------------------------------------------------------
+
+/** Most pixels one warped layer may have; larger ones are rendered smaller and scaled up when drawn. */
+const MAX_LAYER_PIXELS = 4_000_000;
+/** While a handle is dragged the layer is kept this small, so the preview follows the pointer. */
+const DRAFT_LAYER_PIXELS = 300_000;
+/** Largest layer that is still supersampled in 'final' quality (the rasterizer does about 7 megapixels per second). */
+const MAX_SUPERSAMPLED_PIXELS = 600_000;
+
+interface WarpLayer {
+  canvas: HTMLCanvasElement;
+  /** Where the layer goes, in the units of the composite (`width` x `height`). */
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface WarpEntry {
+  placement: AreaPlacement;
+  maskBitmap: ImageBitmap | undefined;
+  version: number | undefined;
+  key: string;
+  layer: WarpLayer;
+}
+
+/**
+ * Warped layers (and the source pixels they were read from) per printable area. A layer is reused
+ * while the placement, its mask, the artwork pixels and the target size are unchanged, so panning
+ * and zooming the editor, or editing another area, never re-run the warp.
+ */
+export class WarpCache {
+  private readonly entries = new Map<string, WarpEntry>();
+  private readonly pixels = new Map<string, { version: number; image: PixelImage }>();
+
+  /** Warps computed since creation (lets tests and the editor observe cache effectiveness). */
+  builds = 0;
+
+  layerFor(
+    id: string,
+    placed: PlacedArea,
+    key: string,
+    build: () => WarpLayer | null,
+  ): WarpLayer | null {
+    const { placement, maskBitmap, sourceVersion } = placed;
+    const hit = this.entries.get(id);
+    if (
+      hit &&
+      sourceVersion !== undefined &&
+      hit.version === sourceVersion &&
+      hit.placement === placement &&
+      hit.maskBitmap === maskBitmap &&
+      hit.key === key
+    )
+      return hit.layer;
+    if (hit) hit.layer.canvas.width = hit.layer.canvas.height = 0;
+    const layer = build();
+    this.builds++;
+    if (!layer) {
+      this.entries.delete(id);
+      return null;
+    }
+    this.entries.set(id, { placement, maskBitmap, version: sourceVersion, key, layer });
+    return layer;
+  }
+
+  /** The area canvas's pixels, read back once per version. */
+  pixelsFor(id: string, source: PlacedArea['source'], version: number | undefined): PixelImage {
+    const hit = this.pixels.get(id);
+    if (hit && version !== undefined && hit.version === version) return hit.image;
+    const image = readPixels(source);
+    if (version !== undefined) this.pixels.set(id, { version, image });
+    return image;
+  }
+
+  retain(areaIds: ReadonlySet<string>): void {
+    for (const [id, entry] of this.entries) {
+      if (areaIds.has(id)) continue;
+      entry.layer.canvas.width = entry.layer.canvas.height = 0;
+      this.entries.delete(id);
+    }
+    for (const id of this.pixels.keys()) if (!areaIds.has(id)) this.pixels.delete(id);
+  }
+
+  dispose(): void {
+    this.retain(new Set());
+  }
+}
+
+function readPixels(source: PlacedArea['source']): PixelImage {
+  const width = Math.max(1, Math.round(source.width));
+  const height = Math.max(1, Math.round(source.height));
+  let canvas: HTMLCanvasElement;
+  if (typeof HTMLCanvasElement !== 'undefined' && source instanceof HTMLCanvasElement) {
+    canvas = source;
+  } else {
+    canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d')?.drawImage(source, 0, 0, width, height);
+  }
+  const data = canvas.getContext('2d')?.getImageData(0, 0, width, height);
+  if (!data) return { width, height, data: new Uint8ClampedArray(width * height * 4) };
+  return { width, height, data: data.data };
+}
+
+/** Axis-aligned bounds, in composite units, of the part of the page the placement can touch. */
+function placementBounds(
+  placed: PlacedArea,
+  width: number,
+  height: number,
+): { x: number; y: number; width: number; height: number } | null {
+  const { placement } = placed;
+  const canvasAspect = placed.source.width / placed.source.height;
+  let bounds: { x: number; y: number; width: number; height: number } | null = null;
+  if (placement.surface || placement.mesh) {
+    const grid = buildWarpGrid(placement, width, height, canvasAspect);
+    bounds = grid ? gridBounds(grid) : null;
+  } else if (placement.type === 'quad' && placement.corners) {
+    const xs = placement.corners.map((p) => p[0] * width);
+    const ys = placement.corners.map((p) => p[1] * height);
+    bounds = {
+      x: Math.min(...xs),
+      y: Math.min(...ys),
+      width: Math.max(...xs) - Math.min(...xs),
+      height: Math.max(...ys) - Math.min(...ys),
+    };
+  } else {
+    const w = placement.width * width;
+    const h = placement.height * height;
+    const a = (placement.rotation ?? 0) * DEG;
+    const bw = Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a));
+    const bh = Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a));
+    bounds = {
+      x: (placement.x + placement.width / 2) * width - bw / 2,
+      y: (placement.y + placement.height / 2) * height - bh / 2,
+      width: bw,
+      height: bh,
+    };
+  }
+  if (!bounds) return null;
+  // Artwork only shows inside a path boundary: render just that part.
+  if (placement.mask?.type === 'path') {
+    const m = bezierBounds(placement.mask.path);
+    if (!m) return null;
+    const x0 = Math.max(bounds.x, m.x * width);
+    const y0 = Math.max(bounds.y, m.y * height);
+    const x1 = Math.min(bounds.x + bounds.width, (m.x + m.width) * width);
+    const y1 = Math.min(bounds.y + bounds.height, (m.y + m.height) * height);
+    if (!(x1 > x0 && y1 > y0)) return null;
+    bounds = { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+  return bounds;
+}
+
+/**
+ * Draw a placement that has a printable boundary and/or a surface. The artwork is first rendered
+ * (warped) into its own transparent layer in photo space, THEN clipped to the boundary, THEN drawn
+ * with the placement's opacity and blend mode: the boundary is a region of the photograph, so it
+ * must clip the final warped picture, never the flat artwork.
+ */
+function drawWarped(
+  ctx: CanvasRenderingContext2D,
+  placed: PlacedArea,
+  width: number,
+  height: number,
+  options?: CompositeOptions,
+): void {
+  const { placement } = placed;
+  if (placement.mask?.type === 'raster' && !placed.maskBitmap) return;
+  const t = ctx.getTransform();
+  const density = Math.max(1e-3, Math.hypot(t.a, t.b));
+  const quality = options?.quality ?? 'final';
+  const cache = options?.cache;
+  const id = placement.printableAreaId;
+  const key = `${width}x${height}|${density.toFixed(3)}|${quality}`;
+  const build = () => buildLayer(placed, width, height, density, quality, cache);
+  const layer = cache ? cache.layerFor(id, placed, key, build) : build();
+  if (!layer) return;
+  ctx.drawImage(layer.canvas, layer.x, layer.y, layer.width, layer.height);
+  if (!cache) layer.canvas.width = layer.canvas.height = 0;
+}
+
+function buildLayer(
+  placed: PlacedArea,
+  width: number,
+  height: number,
+  density: number,
+  quality: WarpQuality,
+  cache: WarpCache | undefined,
+): WarpLayer | null {
+  const { placement, source } = placed;
+  const bounds = placementBounds(placed, width, height);
+  if (!bounds || !(bounds.width > 0 && bounds.height > 0)) return null;
+
+  // Layer resolution: `density` layer pixels per unit, reduced when the layer would be too large.
+  let scale = density;
+  const wanted = bounds.width * scale * (bounds.height * scale);
+  const budget = quality === 'draft' ? DRAFT_LAYER_PIXELS : MAX_LAYER_PIXELS;
+  if (wanted > budget) scale *= Math.sqrt(budget / wanted);
+  const originX = Math.floor(bounds.x * scale) - 1;
+  const originY = Math.floor(bounds.y * scale) - 1;
+  const lw = Math.max(1, Math.ceil((bounds.x + bounds.width) * scale) - originX + 1);
+  const lh = Math.max(1, Math.ceil((bounds.y + bounds.height) * scale) - originY + 1);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = lw;
+  canvas.height = lh;
+  const lctx = canvas.getContext('2d');
+  if (!lctx) return null;
+  lctx.imageSmoothingEnabled = true;
+  lctx.imageSmoothingQuality = 'high';
+
+  if (placement.surface || placement.mesh) {
+    const grid = buildWarpGrid(placement, width, height, source.width / source.height, {
+      detail: scale,
+    });
+    if (!grid) return null;
+    const id = placement.printableAreaId;
+    const pixels = cache ? cache.pixelsFor(id, source, placed.sourceVersion) : readPixels(source);
+    const supersample = quality === 'final' && lw * lh <= MAX_SUPERSAMPLED_PIXELS ? 2 : 1;
+    const warped = rasterizeWarp({
+      grid,
+      source: pixels,
+      scale,
+      originX,
+      originY,
+      width: lw,
+      height: lh,
+      supersample,
+    });
+    lctx.putImageData(new ImageData(warped.data, warped.width, warped.height), 0, 0);
+  } else {
+    // Boundary only: the placement itself is a plain rectangle or perspective quad.
+    lctx.setTransform(scale, 0, 0, scale, -originX, -originY);
+    if (placement.type === 'quad' && placement.corners) {
+      drawQuad(lctx, source, placement.corners, width, height);
+    } else {
+      const w = placement.width * width;
+      const h = placement.height * height;
+      lctx.translate(
+        (placement.x + placement.width / 2) * width,
+        (placement.y + placement.height / 2) * height,
+      );
+      lctx.rotate((placement.rotation ?? 0) * DEG);
+      lctx.drawImage(source, -w / 2, -h / 2, w, h);
+    }
+  }
+
+  const mask = placement.mask;
+  if (mask) {
+    lctx.setTransform(scale, 0, 0, scale, -originX, -originY);
+    lctx.globalCompositeOperation = 'destination-in';
+    lctx.fillStyle = '#000';
+    if (mask.type === 'path') {
+      lctx.fill(bezierToPath2D(mask.path, width, height), mask.path.fillRule);
+    } else if (placed.maskBitmap) {
+      // The alpha channel is the coverage: destination-in multiplies, so partial alpha stays partial.
+      lctx.drawImage(placed.maskBitmap, 0, 0, width, height);
+    }
+    lctx.globalCompositeOperation = 'source-over';
+  }
+  return { canvas, x: originX / scale, y: originY / scale, width: lw / scale, height: lh / scale };
 }

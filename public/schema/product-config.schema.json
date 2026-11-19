@@ -158,6 +158,94 @@
         }
       }
     },
+    "bezierAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": -1, "maximum": 2 },
+        "y": { "type": "number", "minimum": -1, "maximum": 2 },
+        "handleIn": { "$ref": "#/$defs/photoPoint", "description": "Absolute position of the control handle before this anchor; omitted for a corner." },
+        "handleOut": { "$ref": "#/$defs/photoPoint", "description": "Absolute position of the control handle after this anchor; omitted for a corner." },
+        "smooth": { "type": "boolean", "description": "Editor hint: dragging one handle mirrors the other." }
+      }
+    },
+    "photoPoint": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "type": "number", "minimum": -1, "maximum": 2 }
+    },
+    "bezierPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "fillRule", "contours"],
+      "description": "Closed cubic Bezier contours in fractions of the mockup photograph. Self-intersecting contours are allowed and filled by fillRule. At most 1024 anchors in total.",
+      "properties": {
+        "version": { "const": 1 },
+        "fillRule": { "enum": ["nonzero", "evenodd"] },
+        "contours": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["anchors"],
+            "properties": {
+              "anchors": { "type": "array", "minItems": 3, "maxItems": 256, "items": { "$ref": "#/$defs/bezierAnchor" } }
+            }
+          }
+        }
+      }
+    },
+    "placementMask": {
+      "description": "Printable boundary: the region of the product photograph that may show artwork. Applied after the artwork has been warped; never changes the flat production artwork.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path"],
+          "properties": { "type": { "const": "path" }, "path": { "$ref": "#/$defs/bezierPath" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "src", "width", "height"],
+          "properties": {
+            "type": { "const": "raster" },
+            "src": { "$ref": "#/$defs/src", "description": "PNG alpha mask stretched over the whole photograph; its alpha channel is the coverage." },
+            "width": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "height": { "type": "integer", "minimum": 1, "maximum": 4096 }
+          }
+        }
+      ]
+    },
+    "cylinderSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "curvature", "centre", "visibleLeft", "visibleRight", "tilt"],
+      "description": "Vertical cylinder seen with an orthographic camera, evaluated inside the placement frame (see docs/printable-area-tools.md). Angles are degrees from the camera-facing meridian.",
+      "properties": {
+        "type": { "const": "cylinder" },
+        "curvature": { "type": "number", "minimum": 0, "maximum": 360, "description": "Angle the whole artwork spans around the cylinder; 0 is flat." },
+        "centre": { "type": "number", "minimum": -180, "maximum": 180 },
+        "visibleLeft": { "type": "number", "minimum": 1, "maximum": 90 },
+        "visibleRight": { "type": "number", "minimum": 1, "maximum": 90 },
+        "tilt": { "type": "number", "minimum": -60, "maximum": 60, "description": "Camera elevation; bows horizontal edges." }
+      }
+    },
+    "meshSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cols", "rows", "points"],
+      "description": "cols x rows control points in fractions of the placement's own frame, row-major [x0,y0,x1,y1,...] (cols * rows * 2 numbers). A mesh that folds over itself is invalid.",
+      "properties": {
+        "cols": { "type": "integer", "minimum": 2, "maximum": 12 },
+        "rows": { "type": "integer", "minimum": 2, "maximum": 12 },
+        "points": { "type": "array", "minItems": 8, "maxItems": 288, "items": { "type": "number", "minimum": -1, "maximum": 2 } }
+      }
+    },
     "placement": {
       "type": "object",
       "additionalProperties": false,
@@ -181,7 +269,10 @@
           "description": "top-left, top-right, bottom-right, bottom-left (quad only)."
         },
         "blendMode": { "enum": ["normal", "multiply", "overlay", "soft-light"] },
-        "opacity": { "type": "number", "minimum": 0, "maximum": 1 }
+        "opacity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mask": { "$ref": "#/$defs/placementMask" },
+        "surface": { "$ref": "#/$defs/cylinderSurface" },
+        "mesh": { "$ref": "#/$defs/meshSpec" }
       }
     },
     "mockup": {
